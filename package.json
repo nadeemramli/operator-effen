@@ -1,0 +1,16 @@
+{
+  "name": "operator-effen",
+  "private": true,
+  "packageManager": "pnpm@11.16.0",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @operator/web dev",
+    "build": "pnpm --filter @operator/web build",
+    "start": "pnpm --filter @operator/web start",
+    "lint": "pnpm --filter @operator/web lint",
+    "typecheck": "pnpm --filter @operator/web typecheck",
+    "check:env": "node scripts/check-env.mjs"
+  }
+}
