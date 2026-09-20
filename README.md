@@ -5,12 +5,12 @@ Environment foundation for the EFFEN operations application. The current page is
 ## Stack
 
 - Node.js 24 (see `.nvmrc`), pnpm 11.16.0
-- Next.js 16.2.11, React 19.2.4, TypeScript
+- Next.js 16.3.5, React 19.2.4, TypeScript
 - Tailwind CSS 4, shadcn-compatible theme, Geist typography
 - Supabase for the planned operational database and authentication
 - Vercel for hosting
 
-The workspace layout (`apps/web`), framework versions and theme align with Fullkit. The theme was copied from Fullkit commit `c56d0b4b311a8bff13582238f5ce566b6e272c57`; Geist uses its bundled font package so builds do not need Google Fonts access.
+The workspace layout (`apps/web`), framework family and theme align with Fullkit. Next.js and its ESLint config use 16.3.5 to address dependency advisories affecting the original 16.2.11 baseline. The theme was copied from Fullkit commit `c56d0b4b311a8bff13582238f5ce566b6e272c57`; Geist uses its bundled font package so builds do not need Google Fonts access.
 
 ## Local setup
 
