@@ -62,3 +62,35 @@ No database migrations, catalog imports, production records or user accounts are
 ## Repository boundary
 
 Keep credentials, AWB/customer documents, staff rosters and private business documentation outside this repository. The requirements remain in the private Operator knowledge folder.
+
+## Team UI draft
+
+The deployed workspace is a shared, fictional test sandbox with an authenticated
+role preview for production, stock in, stock out, office admin, packing and management.
+Its English/Malay interface uses Fullkit's theme tokens and Geist fonts.
+
+- Supabase Auth checks the administrator-controlled `ui_draft_access` app metadata.
+  The shared test credentials are distributed privately, never committed.
+- The only persistence table is `ui_draft_workspaces`. RLS limits access to the
+  approved authenticated account's row. State revisions reject concurrent overwrites.
+- Role selection previews workflows; it is not separate employee authentication.
+- The database is dedicated to this draft. Vercel's **Production hosting target**
+  points to this test backend so the stable Vercel URL is available to the team;
+  that label does not mean live operational inventory.
+- No customer PII, live stock, messages, PDF imports or Fullkit writes are involved.
+
+Run `pnpm test` for the stock conservation, traceability, role-action and correction
+invariants. Run `pnpm lint`, `pnpm typecheck` and `pnpm build` before publishing.
+
+The draft supports batch steps, factory transfers, carton receipt, explicit
+sachet-to-box conversion, monthly carton counts and reasoned adjustments, manual
+AWBs, stock issue, packer declarations, supervisor quantity corrections, separate
+courier handover, trace lookup, management review notes, CSV export and shared feedback.
+The test reset is destructive only to this sandbox and requires UI confirmation.
+
+Known boundaries: sample packages and staff; one product per AWB and one batch per
+carton; provisional sachet steps; aggregate workspace reports; no PDF parsing or
+external integrations. Process-record correction and real approval permissions
+need the remaining operational decisions before live use. A recorded QC grouping
+does not imply QC was performed or passed. Parcel declarations and allocation logs
+are evidence of recorded work, not a physical guarantee of parcel contents.

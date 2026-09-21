@@ -12,7 +12,8 @@
     "lint": "pnpm --filter @operator/web lint",
     "typecheck": "pnpm --filter @operator/web typecheck",
     "check:env": "node scripts/check-env.mjs",
-    "check:connection": "node scripts/check-connection.mjs"
+    "check:connection": "node scripts/check-connection.mjs",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "supabase": "2.117.0"

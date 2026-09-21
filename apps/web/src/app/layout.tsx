@@ -13,7 +13,10 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable} dark antialiased`}>
+    <html
+      lang="en"
+      className={`${GeistSans.variable} ${GeistMono.variable} dark antialiased`}
+    >
       <body className="min-h-dvh">{children}</body>
     </html>
   );

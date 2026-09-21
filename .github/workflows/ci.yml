@@ -25,6 +25,7 @@ jobs:
           node-version-file: .nvmrc
       - run: npm install --global pnpm@11.16.0
       - run: pnpm install --frozen-lockfile
+      - run: pnpm test
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm build
