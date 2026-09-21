@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
@@ -32,6 +38,8 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { ProductionWorkspace } from "./production-workspace";
+import { AwbIntake } from "./awb-intake";
+import { channels } from "@/lib/awb-import";
 import { PersonBadge } from "./person-profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -58,6 +66,8 @@ import {
   Metric,
   Panel,
   ProductName,
+  OrderProducts,
+  OrderQuantities,
   Status,
   fmt,
   units,
@@ -69,6 +79,7 @@ import {
   batchReceived,
   batchUnit,
   orderIssued,
+  orderLines,
   people,
   product,
   products,
@@ -230,6 +241,7 @@ const copy: Record<View, [string, string, string, string]> = {
 };
 
 export function DraftApp() {
+  const revisionRef = useRef(0);
   const router = useRouter(),
     params = useSearchParams();
   const [lang, setLang] = useState<Lang>("en"),
@@ -285,6 +297,7 @@ export function DraftApp() {
       const data = await res.json();
       setState(data.state);
       setRevision(data.revision);
+      revisionRef.current = data.revision;
       setError("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Connection error.");
@@ -310,13 +323,17 @@ export function DraftApp() {
       const res = await fetch("/api/draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: { type, role, input }, revision }),
+        body: JSON.stringify({
+          command: { type, role, input },
+          revision: revisionRef.current,
+        }),
       });
       const data = await res.json();
       if (!res.ok)
         throw new Error(data.error ?? "Unable to save. Please refresh.");
       setState(data.state);
       setRevision(data.revision);
+      revisionRef.current = data.revision;
       setForm(null);
       setReset(false);
       setNotice(
@@ -391,7 +408,7 @@ export function DraftApp() {
           name: "channel",
           label: t("Order source", "Sumber pesanan"),
           type: "select",
-          options: ["Shopee", "TikTok", "Luxana"].map((x) => ({
+          options: channels.map((x) => ({
             value: x,
             label: x,
           })),
@@ -548,8 +565,8 @@ export function DraftApp() {
           options: state?.cartons
             .filter(
               (c) =>
-                c.product === o.product &&
-                c.unit === product(o.product).unit &&
+                orderLines(o).some((l) => l.product === c.product) &&
+                c.unit === product(c.product).unit &&
                 available(state, c) > 0,
             )
             .map((c) => ({
@@ -574,18 +591,24 @@ export function DraftApp() {
       description:
         o.awb +
         " · " +
-        product(o.product).name +
-        " · " +
-        t("Expected", "Dijangka") +
-        ": " +
-        o.expected +
-        " " +
-        units(lang, product(o.product).unit),
+        orderLines(o)
+          .map(
+            (l) =>
+              `${product(l.product).name}: ${l.expected} ${units(lang, product(l.product).unit)}`,
+          )
+          .join(" · "),
       hidden: { id: o.id },
       fields: [
-        number(
-          "actual",
-          t("Actual quantity you packed", "Jumlah sebenar yang anda bungkus"),
+        ...orderLines(o).map((l) =>
+          number(
+            o.lines ? "actual_" + l.product : "actual",
+            product(l.product).name +
+              " · " +
+              t("Actual packed", "Jumlah dibungkus") +
+              " (" +
+              units(lang, product(l.product).unit) +
+              ")",
+          ),
         ),
         pic("pic", t("Packed by", "Dibungkus oleh")),
         pic("labelPic", t("AWB attached by", "AWB dilekatkan oleh")),
@@ -605,6 +628,19 @@ export function DraftApp() {
         ),
       hidden: { id: o.id },
       fields: [
+        ...(o.lines
+          ? [
+              {
+                name: "product",
+                label: t("Product to correct", "Produk untuk dibetulkan"),
+                type: "select" as const,
+                options: o.lines.map((l) => ({
+                  value: l.product,
+                  label: product(l.product).name,
+                })),
+              },
+            ]
+          : []),
         {
           name: "field",
           label: t("Quantity to correct", "Jumlah untuk dibetulkan"),
@@ -637,8 +673,8 @@ export function DraftApp() {
         o.awb +
         " · " +
         t(
-          "Record the physical handover to Ninja Van.",
-          "Rekod serahan fizikal kepada Ninja Van.",
+          "Record the physical courier handover.",
+          "Rekod serahan fizikal kepada kurier.",
         ),
       hidden: { id: o.id },
       fields: [
@@ -710,7 +746,15 @@ export function DraftApp() {
     state?.orders.filter(
       (o) =>
         (channel === "all" || o.channel === channel) &&
-        search(o.awb + " " + product(o.product).name + " " + o.package),
+        search(
+          o.awb +
+            " " +
+            orderLines(o)
+              .map((l) => product(l.product).name)
+              .join(" ") +
+            " " +
+            o.package,
+        ),
     ) ?? [];
   const pending = state?.orders.filter((o) => !o.dispatched) ?? [];
   const mismatches =
@@ -764,17 +808,27 @@ export function DraftApp() {
                   >
                     {o.awb}
                   </button>
-                  <small>{o.channel}</small>
+                  <small>
+                    {[o.channel, o.store, o.courier]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </small>
                 </td>
                 <td>
-                  <ProductName id={o.product} />
+                  <OrderProducts order={o} />
                   <small>{o.package}</small>
                 </td>
                 <td className="num">
-                  {o.expected}
-                  <small>{units(lang, product(o.product).unit)}</small>
+                  <OrderQuantities order={o} lang={lang} field="expected" />
                 </td>
-                <td className="num">{orderIssued(state!, o)}</td>
+                <td className="num">
+                  <OrderQuantities
+                    order={o}
+                    lang={lang}
+                    field="issued"
+                    state={state!}
+                  />
+                </td>
                 <td
                   className={
                     "num " +
@@ -783,7 +837,7 @@ export function DraftApp() {
                       : "")
                   }
                 >
-                  {o.actual ?? "—"}
+                  <OrderQuantities order={o} lang={lang} field="actual" />
                 </td>
                 <td>
                   <Status order={o} lang={lang} />
@@ -909,22 +963,24 @@ export function DraftApp() {
       ],
     ];
     state.orders.forEach((o) =>
-      rows.push([
-        o.awb,
-        o.channel,
-        o.date,
-        product(o.product).name,
-        product(o.product).unit,
-        o.package,
-        o.expected,
-        orderIssued(state, o),
-        o.actual ?? "",
-        variance(o) ?? "",
-        o.packer,
-        o.labelPic,
-        o.dispatched ? "Yes" : "No",
-        o.handoverRef,
-      ]),
+      orderLines(o).forEach((line) =>
+        rows.push([
+          o.awb,
+          o.channel,
+          o.date,
+          product(line.product).name,
+          product(line.product).unit,
+          o.package,
+          line.expected,
+          orderIssued(state, o, line.product),
+          line.actual ?? "",
+          line.actual === null ? "" : line.actual - line.expected,
+          o.packer,
+          o.labelPic,
+          o.dispatched ? "Yes" : "No",
+          o.handoverRef,
+        ]),
+      ),
     );
     const csv = rows
       .map((row) =>
@@ -1079,7 +1135,13 @@ export function DraftApp() {
                     <span>
                       <strong>{o.awb}</strong>
                       <small>
-                        {o.expected} {t("expected", "dijangka")} · {o.actual}{" "}
+                        <OrderQuantities
+                          order={o}
+                          lang={lang}
+                          field="expected"
+                        />{" "}
+                        {t("expected", "dijangka")} ·{" "}
+                        <OrderQuantities order={o} lang={lang} field="actual" />{" "}
                         {t("packed", "dibungkus")}
                       </small>
                     </span>
@@ -1087,7 +1149,9 @@ export function DraftApp() {
                   </button>
                 ))}
                 {state.orders.some(
-                  (o) => o.product === "ady" && o.actual === null,
+                  (o) =>
+                    orderLines(o).some((l) => l.product === "ady") &&
+                    o.actual === null,
                 ) && (
                   <div className="attention-item">
                     <span className="attention-icon">
@@ -1359,7 +1423,13 @@ export function DraftApp() {
       );
     if (view === "orders")
       return (
-        <>
+        <AwbIntake
+          state={state}
+          lang={lang}
+          role={role}
+          busy={busy}
+          onCommand={command}
+        >
           <div className="toolbar">
             <SearchBox
               query={query}
@@ -1379,8 +1449,8 @@ export function DraftApp() {
           <div className="inline-note">
             <MessageSquare size={17} />
             {t(
-              "WhatsApp remains your PDF handoff. This draft records order references and counts; it does not import PDFs or contact customers.",
-              "WhatsApp kekal untuk penghantaran PDF. Draf ini merekod rujukan dan jumlah pesanan; ia tidak mengimport PDF atau menghubungi pelanggan.",
+              "Send PDFs through WhatsApp as usual. Upload a batch to prepare the expected counts, or record one AWB manually.",
+              "Hantar PDF melalui WhatsApp seperti biasa. Muat naik kelompok untuk menyediakan jumlah dijangka, atau rekod satu AWB secara manual.",
             )}
           </div>
           <Panel
@@ -1393,7 +1463,7 @@ export function DraftApp() {
                 onChange={(e) => setChannel(e.target.value)}
               >
                 <option value="all">{t("All sources", "Semua sumber")}</option>
-                {["Shopee", "TikTok", "Luxana"].map((x) => (
+                {channels.map((x) => (
                   <option key={x}>{x}</option>
                 ))}
               </select>
@@ -1401,7 +1471,7 @@ export function DraftApp() {
           >
             {orderTable(true)}
           </Panel>
-        </>
+        </AwbIntake>
       );
     if (view === "outbound")
       return (
@@ -1440,7 +1510,15 @@ export function DraftApp() {
           />
           <div className="outbound-list">
             {pending
-              .filter((o) => search(o.awb + " " + product(o.product).name))
+              .filter((o) =>
+                search(
+                  o.awb +
+                    " " +
+                    orderLines(o)
+                      .map((l) => product(l.product).name)
+                      .join(" "),
+                ),
+              )
               .map((o) => (
                 <section className="outbound-card" key={o.id}>
                   <div className="outbound-summary">
@@ -1452,9 +1530,9 @@ export function DraftApp() {
                         {o.awb}
                       </button>
                       <div className="mt-2">
-                        <ProductName id={o.product} />
+                        <OrderProducts order={o} />
                         <small className="ml-2 text-muted-foreground">
-                          {o.channel}
+                          {[o.channel, o.courier].filter(Boolean).join(" · ")}
                         </small>
                       </div>
                     </div>
@@ -1463,11 +1541,24 @@ export function DraftApp() {
                   <div className="outbound-numbers">
                     <span>
                       {t("Expected", "Dijangka")}
-                      <strong>{o.expected}</strong>
+                      <strong>
+                        <OrderQuantities
+                          order={o}
+                          lang={lang}
+                          field="expected"
+                        />
+                      </strong>
                     </span>
                     <span>
                       {t("Issued", "Dikeluarkan")}
-                      <strong>{orderIssued(state, o)}</strong>
+                      <strong>
+                        <OrderQuantities
+                          order={o}
+                          lang={lang}
+                          field="issued"
+                          state={state}
+                        />
+                      </strong>
                     </span>
                     <span>
                       {t("Packed", "Dibungkus")}
@@ -1478,10 +1569,9 @@ export function DraftApp() {
                             : ""
                         }
                       >
-                        {o.actual ?? "—"}
+                        <OrderQuantities order={o} lang={lang} field="actual" />
                       </strong>
                     </span>
-                    <small>{units(lang, product(o.product).unit)}</small>
                   </div>
                   <div className="outbound-actions">
                     <Button
@@ -1585,7 +1675,7 @@ export function DraftApp() {
                     {o.awb}
                   </button>
                   <h2>
-                    <ProductName id={o.product} />
+                    <OrderProducts order={o} />
                   </h2>
                   <p className="text-sm text-muted-foreground">{o.package}</p>
                   <div className="packing-counts">
@@ -1594,8 +1684,11 @@ export function DraftApp() {
                         {t("Expected contents", "Kandungan dijangka")}
                       </small>
                       <strong>
-                        {o.expected}
-                        <span>{units(lang, product(o.product).unit)}</span>
+                        <OrderQuantities
+                          order={o}
+                          lang={lang}
+                          field="expected"
+                        />
                       </strong>
                     </div>
                     <div>
@@ -1607,7 +1700,7 @@ export function DraftApp() {
                             : ""
                         }
                       >
-                        {o.actual ?? "—"}
+                        <OrderQuantities order={o} lang={lang} field="actual" />
                       </strong>
                     </div>
                   </div>
@@ -1914,7 +2007,7 @@ export function DraftApp() {
         <div className="inline-note">
           <ShieldCheck size={18} />
           {t(
-            "This is a functional UI draft. Role switching previews permissions; it does not create separate staff identities. Catalog mappings, sachet steps and approvals still need confirmation. No live orders, messages or Fullkit sync run here.",
+            "This is a shared team test workspace. Role switching does not create separate staff identities. PDF imports use editable Fullkit starting quantities. Sachet steps and operational rules remain provisional. No order-platform, WhatsApp or Fullkit sync runs here.",
             "Ini draf UI berfungsi. Penukar peranan memaparkan akses; ia tidak mencipta identiti kakitangan berasingan. Pemetaan katalog, langkah sachet dan kelulusan masih perlu disahkan. Tiada pesanan sebenar, mesej atau penyegerakan Fullkit dijalankan.",
           )}
         </div>
@@ -2255,24 +2348,49 @@ export function DraftApp() {
           <div className="px-6 pb-8 space-y-6">
             {selectedOrder && state && (
               <>
-                <ProductName id={selectedOrder.product} />
+                <OrderProducts order={selectedOrder} />
                 <Status order={selectedOrder} lang={lang} />
                 <div className="detail-grid">
                   <Detail
                     label={t("Expected", "Dijangka")}
-                    value={selectedOrder.expected}
+                    value={
+                      <OrderQuantities
+                        order={selectedOrder}
+                        lang={lang}
+                        field="expected"
+                      />
+                    }
                   />
                   <Detail
                     label={t("Issued", "Dikeluarkan")}
-                    value={orderIssued(state, selectedOrder)}
+                    value={
+                      <OrderQuantities
+                        order={selectedOrder}
+                        lang={lang}
+                        field="issued"
+                        state={state}
+                      />
+                    }
                   />
                   <Detail
                     label={t("Packed", "Dibungkus")}
-                    value={selectedOrder.actual ?? "—"}
+                    value={
+                      <OrderQuantities
+                        order={selectedOrder}
+                        lang={lang}
+                        field="actual"
+                      />
+                    }
                   />
                   <Detail
                     label={t("Difference", "Perbezaan")}
-                    value={variance(selectedOrder) ?? "—"}
+                    value={
+                      <OrderQuantities
+                        order={selectedOrder}
+                        lang={lang}
+                        field="variance"
+                      />
+                    }
                   />
                   <Detail
                     label={t("Packer", "Pembungkus")}
@@ -2296,8 +2414,10 @@ export function DraftApp() {
                   />
                 </div>
                 {selectedOrder.actual !== null &&
-                  orderIssued(state, selectedOrder) !==
-                    selectedOrder.actual && (
+                  orderLines(selectedOrder).some(
+                    (l) =>
+                      orderIssued(state, selectedOrder, l.product) !== l.actual,
+                  ) && (
                     <div className="inline-note">
                       <AlertTriangle size={16} />
                       {t(
@@ -2324,8 +2444,12 @@ export function DraftApp() {
                           {state.cartons.find((c) => c.id === i.cartonId)?.ref}
                           <small>
                             {i.qty}{" "}
-                            {units(lang, product(selectedOrder.product).unit)} ·{" "}
-                            {i.pic}
+                            {units(
+                              lang,
+                              state.cartons.find((c) => c.id === i.cartonId)!
+                                .unit,
+                            )}{" "}
+                            · {i.pic}
                           </small>
                         </span>
                         <ChevronRight size={15} />

@@ -14,3 +14,4 @@ supabase/.branches/
 *.log
 .DS_Store
 Thumbs.db
+apps/web/public/vendor/

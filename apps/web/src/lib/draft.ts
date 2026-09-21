@@ -1,8 +1,14 @@
+import { applyImportCommand, channels, type AwbImport } from "./awb-import.ts";
 export type Lang = "en" | "ms";
 export const tr = (lang: Lang, en: string, ms: string) =>
   lang === "ms" ? ms : en;
 export type Role =
-  "production" | "intake" | "outbound" | "admin" | "packer" | "management";
+  | "production"
+  | "intake"
+  | "outbound"
+  | "admin"
+  | "packer"
+  | "management";
 export const roles: { id: Role; en: string; ms: string }[] = [
   { id: "production", en: "Production supervisor", ms: "Penyelia pengeluaran" },
   { id: "intake", en: "Stock-in supervisor", ms: "Penyelia stok masuk" },
@@ -103,6 +109,12 @@ export interface Carton {
   at: string;
 }
 export interface Order {
+  lines?: OrderLine[];
+  store?: string;
+  orderRef?: string;
+  courier?: string;
+  importId?: string;
+  importRowId?: string;
   id: string;
   awb: string;
   channel: string;
@@ -118,6 +130,12 @@ export interface Order {
   handoverRef: string;
   date: string;
   note: string;
+}
+export interface OrderLine {
+  product: string;
+  expected: number;
+  originalExpected: number;
+  actual: number | null;
 }
 export interface Issue {
   id: string;
@@ -169,6 +187,7 @@ export interface Note {
   at: string;
 }
 export interface Draft {
+  awbImports?: AwbImport[];
   version: 1;
   batches: Batch[];
   cartons: Carton[];
@@ -194,10 +213,22 @@ export const available = (s: Draft, c: Carton) =>
   s.adjustments
     .filter((i) => i.cartonId === c.id)
     .reduce((n, i) => n + i.delta, 0);
-export const orderIssued = (s: Draft, o: Order) =>
-  s.issues.filter((i) => i.orderId === o.id).reduce((n, i) => n + i.qty, 0);
-export const variance = (o: Order) =>
-  o.actual === null ? null : o.actual - o.expected;
+export const orderLines = (o: Order): OrderLine[] => o.lines ?? [o];
+export const orderIssued = (s: Draft, o: Order, productId?: string) =>
+  s.issues
+    .filter(
+      (i) =>
+        i.orderId === o.id &&
+        (!productId ||
+          s.cartons.find((c) => c.id === i.cartonId)?.product === productId),
+    )
+    .reduce((n, i) => n + i.qty, 0);
+// A mismatch on one product must not be cancelled by an excess on another.
+export const variance = (o: Order) => {
+  const lines = orderLines(o);
+  if (lines.some((l) => l.actual === null)) return null;
+  return lines.map((l) => l.actual! - l.expected).find((n) => n !== 0) ?? 0;
+};
 export const batchReceived = (s: Draft, b: Batch) =>
   s.cartons
     .filter((c) => c.batchId === b.id && c.unit === batchUnit(b))
@@ -473,6 +504,13 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       at,
     });
   switch (cmd.type) {
+    case "import-save":
+    case "import-release":
+    case "import-receive": {
+      const detail = applyImportCommand(s, cmd.type, v, cmd.role, at);
+      log(String(v.id ?? (v.batch as AwbImport)?.id), cmd.type, detail);
+      break;
+    }
     case "batch": {
       allow("production");
       const p = str("product");
@@ -636,7 +674,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (!product(p)) throw new Error("Choose a product.");
       if (s.orders.some((o) => o.awb.toLowerCase() === awb.toLowerCase()))
         throw new Error("This AWB is already recorded.");
-      if (!["Shopee", "TikTok", "Luxana"].includes(str("channel")))
+      if (!channels.includes(str("channel")))
         throw new Error("Choose an order source.");
       const o: Order = {
         id: id(),
@@ -678,7 +716,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         qty = num("qty", 1);
       if (o.dispatched)
         throw new Error("This parcel has already been handed over.");
-      if (c.product !== o.product || c.unit !== product(o.product).unit)
+      if (
+        !orderLines(o).some((l) => l.product === c.product) ||
+        c.unit !== product(c.product).unit
+      )
         throw new Error("Choose matching saleable stock for this order.");
       if (qty > available(s, c))
         throw new Error("Not enough stock in this carton.");
@@ -704,15 +745,23 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error(
           "Saved parcel quantities require a supervisor correction.",
         );
-      o.actual = num("actual");
+      if (o.lines) {
+        o.lines.forEach((l) => {
+          l.actual = num("actual_" + l.product);
+        });
+        o.actual = o.lines.reduce((n, l) => n + l.actual!, 0);
+      } else o.actual = num("actual");
       o.packer = str("pic");
       o.labelPic = str("labelPic");
       log(
         o.id,
         "Parcel quantity declared",
-        o.actual +
-          " " +
-          product(o.product).unit +
+        orderLines(o)
+          .map(
+            (l) =>
+              `${product(l.product).name}: ${l.actual} ${product(l.product).unit}`,
+          )
+          .join(" · ") +
           " · " +
           o.packer +
           " · AWB attached by " +
@@ -727,6 +776,24 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         reason = str("reason");
       if (field !== "actual" && field !== "expected")
         throw new Error("Choose the quantity to correct.");
+      if (o.lines) {
+        const line = o.lines.find((l) => l.product === str("product"));
+        if (!line) throw new Error("Choose the product to correct.");
+        if (field === "actual" && line.actual === null)
+          throw new Error("Record the packer's first count before correction.");
+        const before = line[field];
+        line[field] = num("qty");
+        o.expected = o.lines.reduce((n, l) => n + l.expected, 0);
+        o.actual = o.lines.some((l) => l.actual === null)
+          ? null
+          : o.lines.reduce((n, l) => n + l.actual!, 0);
+        log(
+          o.id,
+          "Quantity corrected",
+          `${product(line.product).name} ${field}: ${before} → ${line[field]} · ${reason}`,
+        );
+        break;
+      }
       if (field === "actual" && o.actual === null)
         throw new Error("No saved packed count exists yet.");
       const old = o[field],

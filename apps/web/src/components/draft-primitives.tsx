@@ -20,7 +20,53 @@ import {
   product,
   tr,
   variance,
+  orderLines,
+  orderIssued,
+  type Draft,
 } from "@/lib/draft";
+
+export function OrderProducts({ order }: { order: Order }) {
+  return (
+    <span className="order-line-values">
+      {orderLines(order).map((l) => (
+        <ProductName key={l.product} id={l.product} />
+      ))}
+    </span>
+  );
+}
+export function OrderQuantities({
+  order,
+  lang,
+  field,
+  state,
+}: {
+  order: Order;
+  lang: Lang;
+  field: "expected" | "actual" | "issued" | "variance";
+  state?: Draft;
+}) {
+  return (
+    <span className="order-line-values">
+      {orderLines(order).map((l) => (
+        <span key={l.product}>
+          {field === "issued"
+            ? orderIssued(state!, order, l.product)
+            : field === "variance"
+              ? l.actual === null
+                ? "—"
+                : l.actual - l.expected
+              : (l[field] ?? "—")}{" "}
+          <small>
+            {orderLines(order).length > 1
+              ? product(l.product).short + " · "
+              : ""}
+            {units(lang, product(l.product).unit)}
+          </small>
+        </span>
+      ))}
+    </span>
+  );
+}
 
 export const units = (lang: Lang, unit: Unit) =>
   tr(

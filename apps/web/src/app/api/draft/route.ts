@@ -7,6 +7,7 @@ import {
   type Command,
   type Draft,
 } from "@/lib/draft";
+import { validateImport } from "@/lib/awb-import";
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, {
     status,
@@ -49,7 +50,7 @@ export async function POST(request: NextRequest) {
   const { db, user } = await tester();
   if (!user) return json({ error: "Please sign in again." }, 401);
   const raw = await request.text();
-  if (raw.length > 15000) return json({ error: "Request too large." }, 413);
+  if (raw.length > 1000000) return json({ error: "Request too large." }, 413);
   let body;
   try {
     body = JSON.parse(raw);
@@ -83,7 +84,31 @@ export async function POST(request: NextRequest) {
     );
   let state: Draft;
   try {
+    if (body.command.type === "import-save") {
+      const batch = validateImport(body.command.input.batch);
+      for (const file of batch.files) {
+        if (
+          !new RegExp(`^${user.id}/[a-f0-9]{64}\\.pdf$`).test(file.path) ||
+          file.path !== `${user.id}/${file.id}.pdf`
+        )
+          throw new Error("Invalid source file ownership.");
+        const listed = await db.storage
+          .from("awb-draft-sources")
+          .list(user.id, { search: file.id + ".pdf", limit: 1 });
+        if (
+          listed.error ||
+          !listed.data.some((f) => f.name === file.id + ".pdf")
+        )
+          throw new Error(
+            "Source PDF was not saved. Upload it again before confirming.",
+          );
+      }
+    }
     state = applyCommand(row.state as Draft, body.command as Command);
+    if (new TextEncoder().encode(JSON.stringify(state)).length > 1800000)
+      throw new Error(
+        "The shared test workspace is full. This batch has not been saved.",
+      );
   } catch (e) {
     return json(
       { error: e instanceof Error ? e.message : "Unable to save." },
