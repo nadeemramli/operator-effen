@@ -7,7 +7,14 @@ export async function POST(request: NextRequest) {
       { error: "Request not allowed." },
       { status: 403 },
     );
-  await (await supabaseServer()).auth.signOut();
+  const { error } = await (
+    await supabaseServer()
+  ).auth.signOut({ scope: "local" });
+  if (error)
+    return NextResponse.json(
+      { error: "Unable to sign out. Please retry." },
+      { status: 503 },
+    );
   return NextResponse.json(
     { ok: true },
     { headers: { "Cache-Control": "no-store" } },

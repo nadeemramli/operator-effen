@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
     password: input.password,
   });
   if (error || data.user?.app_metadata?.ui_draft_access !== true) {
-    if (data.session) await db.auth.signOut();
+    if (data.session) await db.auth.signOut({ scope: "local" });
     return NextResponse.json(
       {
         error:
