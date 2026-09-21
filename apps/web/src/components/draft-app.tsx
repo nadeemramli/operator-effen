@@ -29,9 +29,10 @@ import {
   AlertTriangle,
   Download,
   ScanLine,
-  Users,
   LoaderCircle,
 } from "lucide-react";
+import { ProductionWorkspace } from "./production-workspace";
+import { PersonBadge } from "./person-profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -244,7 +245,6 @@ export function DraftApp() {
     [light, setLight] = useState(false),
     [reset, setReset] = useState(false),
     [query, setQuery] = useState(""),
-    [factory, setFactory] = useState("all"),
     [channel, setChannel] = useState("all"),
     [trace, setTrace] = useState<string | null>(null);
   const t = (en: string, ms: string) => tr(lang, en, ms);
@@ -325,10 +325,12 @@ export function DraftApp() {
           "Disimpan ke ruang ujian bersama.",
         ),
       );
+      return data.state as Draft;
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unable to save.";
       if (form) setFormError(message);
       else setError(message);
+      return null;
     } finally {
       setBusy(false);
     }
@@ -344,7 +346,7 @@ export function DraftApp() {
   ): Field => ({
     name,
     label,
-    type: "select",
+    type: "person",
     options: people.map((p) => ({ value: p, label: p })),
     hint: t(
       "Sample people for this draft. Real staff will be added later.",
@@ -375,29 +377,6 @@ export function DraftApp() {
     type: "textarea",
     required,
   });
-  const newBatch = () =>
-    show({
-      type: "batch",
-      title: t("Plan a production batch", "Rancang kelompok pengeluaran"),
-      description: t(
-        "One product per batch. The actual output is recorded at the final process.",
-        "Satu produk setiap kelompok. Hasil sebenar direkodkan pada proses akhir.",
-      ),
-      fields: [
-        productField,
-        { name: "code", label: t("Batch number", "Nombor kelompok") },
-        dateField,
-        number(
-          "target",
-          t(
-            "Planned units (bottles / loose sachets)",
-            "Unit dirancang (botol / sachet longgar)",
-          ),
-          undefined,
-          1,
-        ),
-      ],
-    });
   const newOrder = () =>
     show({
       type: "order",
@@ -1188,227 +1167,16 @@ export function DraftApp() {
       );
     if (view === "production")
       return (
-        <>
-          <div className="toolbar">
-            <div className="segmented">
-              {[
-                ["all", t("All factories", "Semua kilang")],
-                ["bottle", t("Bottle factory", "Kilang botol")],
-                ["sachet", t("Sachet factory", "Kilang sachet")],
-              ].map(([id, label]) => (
-                <button
-                  key={id}
-                  className={factory === id ? "selected" : ""}
-                  onClick={() => setFactory(id)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <Button className="action-primary" onClick={newBatch}>
-              <Plus size={16} />
-              {t("Plan batch", "Rancang kelompok")}
-            </Button>
-          </div>
-          {factory !== "bottle" && (
-            <div className="inline-note">
-              <AlertTriangle size={17} />
-              {t(
-                "Sachet steps are provisional until the factory form is supplied. Bottling follows the existing operator log.",
-                "Langkah sachet masih cadangan sehingga borang kilang diterima. Pembotolan mengikut log operator sedia ada.",
-              )}
-            </div>
-          )}
-          <div className="batch-grid">
-            {state.batches
-              .filter((b) => factory === "all" || batchUnit(b) === factory)
-              .map((b) => (
-                <section className="batch-card" key={b.id}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <ProductName id={b.product} />
-                      <button
-                        onClick={() => setTrace(b.id)}
-                        className="record-link mono block mt-2"
-                      >
-                        {b.code}
-                      </button>
-                    </div>
-                    <span
-                      className={
-                        "status-pill " +
-                        (b.steps.every((s) => s.done)
-                          ? "tone-success"
-                          : "tone-info")
-                      }
-                    >
-                      {b.steps.every((s) => s.done)
-                        ? t("Recorded", "Direkodkan")
-                        : t("In progress", "Dalam proses")}
-                    </span>
-                  </div>
-                  <div className="batch-stats">
-                    <span>
-                      {t("Planned", "Dirancang")}
-                      <strong>{fmt(b.target)}</strong>
-                    </span>
-                    <span>
-                      {t("Finished", "Siap")}
-                      <strong>{fmt(b.actual)}</strong>
-                    </span>
-                    <span>
-                      {t("Sent", "Dihantar")}
-                      <strong>{fmt(b.sent)}</strong>
-                    </span>
-                  </div>
-                  <div className="process-list">
-                    {b.steps.map((step, i) => (
-                      <button
-                        key={i}
-                        disabled={step.done}
-                        onClick={() =>
-                          show({
-                            type: "step",
-                            title: stepNames(b)[i][lang === "ms" ? 1 : 0],
-                            description:
-                              b.code +
-                              " · " +
-                              t(
-                                "Enter completed output and the actual performer.",
-                                "Masukkan hasil siap dan pelaksana sebenar.",
-                              ),
-                            hidden: { id: b.id, step: i },
-                            fields: [
-                              pic(),
-                              number(
-                                "qty",
-                                t("Output quantity", "Jumlah hasil") +
-                                  " (" +
-                                  units(lang, batchUnit(b)) +
-                                  ")",
-                              ),
-                              {
-                                name: "start",
-                                label: t("Start time", "Masa mula"),
-                                type: "time",
-                                required: false,
-                              },
-                              {
-                                name: "end",
-                                label: t("End time", "Masa tamat"),
-                                type: "time",
-                                required: false,
-                              },
-                              {
-                                name: "qc",
-                                label: t(
-                                  "QC result, if performed",
-                                  "Keputusan QC, jika dilakukan",
-                                ),
-                                type: "select",
-                                value: "not-recorded",
-                                options: [
-                                  {
-                                    value: "not-recorded",
-                                    label: t(
-                                      "Not recorded / not checked",
-                                      "Tidak direkod / tidak diperiksa",
-                                    ),
-                                  },
-                                  {
-                                    value: "pass",
-                                    label: t(
-                                      "Checked — passed",
-                                      "Diperiksa — lulus",
-                                    ),
-                                  },
-                                  {
-                                    value: "issue",
-                                    label: t(
-                                      "Checked — issue found",
-                                      "Diperiksa — isu ditemui",
-                                    ),
-                                  },
-                                ],
-                              },
-                            ],
-                          })
-                        }
-                      >
-                        <span
-                          className={"step-number " + (step.done ? "done" : "")}
-                        >
-                          {step.done ? <Check size={13} /> : i + 1}
-                        </span>
-                        <span>
-                          <strong>
-                            {stepNames(b)[i][lang === "ms" ? 1 : 0]}
-                          </strong>
-                          <small>
-                            {step.done
-                              ? step.pic +
-                                " · " +
-                                step.qty +
-                                " " +
-                                units(lang, batchUnit(b))
-                              : t(
-                                  "Awaiting supervisor entry",
-                                  "Menunggu rekod penyelia",
-                                )}
-                          </small>
-                        </span>
-                        {!step.done && <Plus size={15} />}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="batch-footer">
-                    <small>
-                      {b.date} · {units(lang, batchUnit(b))}
-                    </small>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={
-                        !b.steps.every((s) => s.done) || b.actual <= b.sent
-                      }
-                      onClick={() =>
-                        show({
-                          type: "transfer",
-                          title: t(
-                            "Send to fulfilment",
-                            "Hantar ke pusat pemenuhan",
-                          ),
-                          description:
-                            b.code +
-                            " · " +
-                            (b.actual - b.sent) +
-                            " " +
-                            t("available at factory", "tersedia di kilang"),
-                          hidden: { id: b.id },
-                          fields: [
-                            number(
-                              "qty",
-                              t("Units sent", "Unit dihantar"),
-                              undefined,
-                              1,
-                            ),
-                            pic(),
-                          ],
-                        })
-                      }
-                    >
-                      {t("Record transfer", "Rekod pindahan")}
-                      <ArrowRight size={14} />
-                    </Button>
-                  </div>
-                </section>
-              ))}
-          </div>
-          <Button variant="outline" onClick={closeDay}>
-            <ClipboardList size={16} />
-            {t("End-of-day review", "Semakan akhir hari")}
-          </Button>
-        </>
+        <ProductionWorkspace
+          state={state}
+          lang={lang}
+          busy={busy}
+          command={command}
+          show={show}
+          pic={pic}
+          number={number}
+          closeDay={closeDay}
+        />
       );
     if (view === "warehouse")
       return (
@@ -1520,7 +1288,13 @@ export function DraftApp() {
                         >
                           {c.actual}
                         </td>
-                        <td>{c.pic}</td>
+                        <td>
+                          <PersonBadge
+                            name={c.pic}
+                            lang={lang}
+                            caption={t("Received by", "Diterima oleh")}
+                          />
+                        </td>
                         <td>
                           {c.adjusted ? (
                             <span className="status-pill tone-success">
@@ -1998,12 +1772,7 @@ export function DraftApp() {
                   {people.map((p) => (
                     <tr key={p}>
                       <td>
-                        <span className="person">
-                          <span>
-                            <Users size={14} />
-                          </span>
-                          {p}
-                        </span>
+                        <PersonBadge name={p} lang={lang} />
                       </td>
                       <td className="num">
                         {
@@ -2507,11 +2276,23 @@ export function DraftApp() {
                   />
                   <Detail
                     label={t("Packer", "Pembungkus")}
-                    value={selectedOrder.packer || "—"}
+                    value={
+                      <PersonBadge
+                        name={selectedOrder.packer}
+                        lang={lang}
+                        caption={t("Packed by", "Dibungkus oleh")}
+                      />
+                    }
                   />
                   <Detail
                     label={t("AWB attached by", "AWB dilekatkan oleh")}
-                    value={selectedOrder.labelPic || "—"}
+                    value={
+                      <PersonBadge
+                        name={selectedOrder.labelPic}
+                        lang={lang}
+                        caption={t("AWB attached by", "AWB dilekatkan oleh")}
+                      />
+                    }
                   />
                 </div>
                 {selectedOrder.actual !== null &&
@@ -2581,7 +2362,13 @@ export function DraftApp() {
                   />
                   <Detail
                     label={t("Received by", "Diterima oleh")}
-                    value={selectedCarton.pic}
+                    value={
+                      <PersonBadge
+                        name={selectedCarton.pic}
+                        lang={lang}
+                        caption={t("Received by", "Diterima oleh")}
+                      />
+                    }
                   />
                 </div>
               </>
@@ -2605,7 +2392,14 @@ export function DraftApp() {
                           {stepNames(linkedBatch)[i][lang === "ms" ? 1 : 0]}
                         </strong>
                         <p>
-                          {st.pic || t("Not assigned", "Belum ditugaskan")} ·{" "}
+                          <PersonBadge
+                            name={st.pic}
+                            lang={lang}
+                            caption={t(
+                              "Recorded performer",
+                              "Pelaksana direkodkan",
+                            )}
+                          />
                           {st.qty ?? "—"} {units(lang, batchUnit(linkedBatch))}
                         </p>
                         <small>

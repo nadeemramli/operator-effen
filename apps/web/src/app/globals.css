@@ -936,6 +936,380 @@ td small {
   font-size: 13px;
   min-height: 38px;
 }
+
+/* Batch planning uses the same sheet-like panels as production records. */
+.production-nav {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.production-nav a {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 7px;
+  color: var(--muted-foreground);
+}
+.production-nav a[aria-current="page"] {
+  border-color: color-mix(in srgb, var(--success) 60%, var(--border));
+  background: color-mix(in srgb, var(--success) 8%, var(--card));
+  color: var(--success);
+}
+.production-nav a:hover {
+  border-color: var(--muted-foreground);
+}
+.production-nav strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 550;
+}
+.production-nav small {
+  display: block;
+  font-size: 10px;
+  color: var(--muted-foreground);
+  margin-top: 4px;
+}
+.production-nav a:focus-visible,
+.record-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.batch-context {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.batch-plan-fields {
+  padding: 28px;
+  display: grid;
+  gap: 25px;
+  min-width: 0;
+}
+.plan-section-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+}
+.plan-section-title > span {
+  font-family: var(--font-geist-mono);
+  font-size: 12px;
+  color: var(--success);
+  padding-top: 2px;
+}
+.plan-section-title h3 {
+  font-size: 14px;
+  font-weight: 550;
+}
+.plan-section-title p {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin-top: 6px;
+  line-height: 1.7;
+}
+.plan-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+}
+.plan-field-grid > div {
+  display: grid;
+  gap: 9px;
+}
+.plan-field-grid input,
+.plan-field-grid select {
+  min-height: 44px;
+  font-size: 14px;
+}
+.plan-field-grid label {
+  line-height: 1.5;
+}
+.plan-route {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.plan-route > div {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.plan-route > div:last-child {
+  border-bottom: 0;
+}
+.plan-route strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.plan-route small {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.plan-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 20px 28px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--background) 35%, var(--card));
+}
+.plan-actions button,
+.plan-actions a {
+  min-height: 40px;
+}
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 20px 23px;
+  border-bottom: 1px solid var(--border);
+}
+.history-filters select {
+  min-height: 39px;
+}
+.batch-history td {
+  vertical-align: top;
+  padding-block: 20px;
+}
+.history-people {
+  display: grid;
+  gap: 12px;
+}
+.batch-record-heading {
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+  align-items: center;
+  padding: 23px;
+}
+.batch-record-heading > span:last-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.batch-record-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-block: 1px solid var(--border);
+}
+.batch-record-summary > div {
+  padding: 23px;
+  border-right: 1px solid var(--border);
+}
+.batch-record-summary > div:last-child {
+  border: 0;
+}
+.batch-record-summary dt {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.batch-record-summary dd {
+  font-size: 23px;
+  font-weight: 500;
+  margin-top: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.batch-record-summary small {
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+.record-process-name {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.record-footnote {
+  padding: 20px 23px;
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--muted-foreground);
+}
+.transfer-help {
+  font-size: 10px;
+  color: var(--muted-foreground);
+  line-height: 1.7;
+  margin-top: 13px;
+}
+
+/* Stable illustrated sample identities: keep names and responsibilities readable. */
+.pic-profile {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  text-align: left;
+  white-space: normal;
+  vertical-align: middle;
+}
+.pic-avatar {
+  position: relative;
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+.pic-avatar > svg {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+.pic-avatar-mark {
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  font: 9px var(--font-geist-mono);
+}
+.pic-identity {
+  display: block;
+  min-width: 0;
+}
+.pic-identity > strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.pic-identity > small {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  margin-top: 3px;
+}
+.process-list .pic-profile {
+  margin-top: 10px;
+}
+.process-list .pic-identity > strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.process-list > button {
+  align-items: flex-start;
+  padding-block: 14px;
+}
+.process-list > button > .step-number {
+  margin-top: 2px;
+}
+.pic-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+.pic-option {
+  position: relative;
+  padding: 13px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.pic-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.pic-option:has(input:checked) {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+}
+.pic-option:has(input:focus-visible) {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.pic-option .pic-avatar {
+  width: 34px;
+  height: 34px;
+}
+.pic-option .pic-identity > strong {
+  font-size: 12px;
+}
+.pic-option .pic-identity > small {
+  font-size: 9px;
+}
+@media (max-width: 600px) {
+  .production-nav {
+    gap: 6px;
+  }
+  .production-nav a {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 9px;
+    padding: 12px 10px;
+  }
+  .production-nav strong {
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .production-nav small {
+    display: none;
+  }
+  .batch-plan-fields {
+    padding: 20px 17px;
+    gap: 22px;
+  }
+  .plan-field-grid {
+    grid-template-columns: 1fr;
+    gap: 19px;
+  }
+  .plan-route > div {
+    flex-wrap: wrap;
+    gap: 9px;
+    padding: 13px;
+  }
+  .plan-route strong {
+    max-width: calc(100% - 34px);
+  }
+  .plan-route small {
+    width: 100%;
+    margin-left: 33px;
+  }
+  .plan-actions {
+    padding: 17px;
+  }
+  .history-filters {
+    padding: 17px;
+  }
+  .history-filters .search-box {
+    max-width: none;
+  }
+  .batch-record-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+  .batch-record-summary > div {
+    padding: 17px;
+  }
+  .batch-record-summary dd {
+    font-size: 20px;
+  }
+  .batch-record-heading {
+    flex-wrap: wrap;
+    padding: 17px;
+  }
+  .pic-picker {
+    grid-template-columns: 1fr;
+  }
+  .batch-context {
+    flex-wrap: wrap;
+  }
+}
 .field-hint {
   font-size: 11px;
   line-height: 1.6;
@@ -1710,5 +2084,64 @@ td small {
   }
   .language-button {
     top: 18px;
+  }
+}
+
+@media (max-width: 600px) {
+  .batch-history,
+  .batch-process-record {
+    display: block;
+    white-space: normal;
+  }
+  .batch-history thead,
+  .batch-process-record thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .batch-history tbody,
+  .batch-process-record tbody {
+    display: block;
+  }
+  .batch-history tbody tr,
+  .batch-process-record tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    padding: 20px 17px;
+    border-bottom: 1px solid var(--border);
+  }
+  .batch-history td,
+  .batch-process-record td {
+    display: block;
+    padding: 0;
+    border: 0;
+    overflow-wrap: anywhere;
+  }
+  .batch-history td::before,
+  .batch-process-record td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 10px;
+    color: var(--muted-foreground);
+    margin-bottom: 8px;
+  }
+  .batch-history td:first-child,
+  .batch-history td:nth-child(4),
+  .batch-process-record td:first-child,
+  .batch-process-record td:nth-child(2),
+  .batch-process-record td:last-child {
+    grid-column: 1 / -1;
+  }
+  .batch-history td:first-child::before,
+  .batch-history td:last-child::before,
+  .batch-process-record td:first-child::before {
+    display: none;
+  }
+  .batch-history td:last-child {
+    align-self: end;
+    justify-self: end;
   }
 }

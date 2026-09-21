@@ -1,4 +1,5 @@
 "use client";
+import { PersonPicker } from "./person-profile";
 import type { ReactNode } from "react";
 import { ArrowUpRight, Inbox } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -132,7 +133,7 @@ export function Empty({ children }: { children: ReactNode }) {
 export type Field = {
   name: string;
   label: string;
-  type?: "text" | "number" | "date" | "time" | "textarea" | "select";
+  type?: "text" | "number" | "date" | "time" | "textarea" | "select" | "person";
   options?: { value: string; label: string }[];
   value?: string | number;
   required?: boolean;
@@ -160,7 +161,7 @@ export function ActionForm({
   busy: boolean;
   error: string;
   onClose: () => void;
-  onSubmit: (type: string, values: Record<string, unknown>) => Promise<void>;
+  onSubmit: (type: string, values: Record<string, unknown>) => Promise<unknown>;
 }) {
   return (
     <Dialog
@@ -196,7 +197,16 @@ export function ActionForm({
                     </small>
                   ) : null}
                 </Label>
-                {field.type === "select" ? (
+                {field.type === "person" ? (
+                  <PersonPicker
+                    name={field.name}
+                    label={field.label}
+                    options={field.options ?? []}
+                    value={field.value}
+                    required={field.required !== false}
+                    lang={lang}
+                  />
+                ) : field.type === "select" ? (
                   <select
                     id={"field-" + field.name}
                     name={field.name}
