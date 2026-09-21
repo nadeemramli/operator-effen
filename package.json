@@ -11,6 +11,10 @@
     "start": "pnpm --filter @operator/web start",
     "lint": "pnpm --filter @operator/web lint",
     "typecheck": "pnpm --filter @operator/web typecheck",
-    "check:env": "node scripts/check-env.mjs"
+    "check:env": "node scripts/check-env.mjs",
+    "check:connection": "node scripts/check-connection.mjs"
+  },
+  "devDependencies": {
+    "supabase": "2.117.0"
   }
 }
