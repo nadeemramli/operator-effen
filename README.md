@@ -62,4 +62,3 @@ No database migrations, catalog imports, production records or user accounts are
 ## Repository boundary
 
 Keep credentials, AWB/customer documents, staff rosters and private business documentation outside this repository. The requirements remain in the private Operator knowledge folder.
-
