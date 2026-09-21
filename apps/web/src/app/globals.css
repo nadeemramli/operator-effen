@@ -839,6 +839,7 @@ td small {
 .batch-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 20px;
 }
 .batch-card {
@@ -860,7 +861,7 @@ td small {
 .batch-stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  margin: 21px 0;
+  margin: 18px 0 4px;
   padding: 15px 0;
   border-block: 1px solid var(--border);
   gap: 12px;
@@ -872,21 +873,80 @@ td small {
 .batch-stats strong {
   display: block;
   color: var(--foreground);
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 500;
   margin-top: 5px;
   font-variant-numeric: tabular-nums;
 }
 .process-list > button {
-  display: flex;
-  align-items: center;
-  gap: 11px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 12px;
   width: 100%;
   text-align: left;
-  padding: 11px 0;
+  min-height: 80px;
+  padding: 16px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
 }
-.process-list > button > svg {
-  margin-left: auto;
+.process-list > button:last-child {
+  border-bottom: 0;
+}
+.process-list > button:not(:disabled):hover .process-copy > strong {
+  color: var(--success);
+}
+.process-list > button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.process-list > button > .step-number {
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  font-size: 9px;
+}
+.process-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  gap: 8px;
+}
+.process-copy > strong {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.process-pending {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
+.process-output {
+  align-self: center;
+  padding-left: 8px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.process-output > span {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+}
+.process-output > small {
+  display: block;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  max-width: 70px;
+}
+.process-add {
+  align-self: center;
   color: var(--muted-foreground);
 }
 .step-number {
@@ -904,24 +964,14 @@ td small {
   color: var(--success);
   background: color-mix(in srgb, var(--success) 12%, transparent);
 }
-.process-list strong {
-  font-size: 11px;
-  font-weight: 500;
-}
-.process-list small {
-  display: block;
-  margin-top: 3px;
-  color: var(--muted-foreground);
-  font-size: 10px;
-}
 .batch-footer {
   display: flex;
   gap: 10px;
   justify-content: space-between;
   align-items: center;
-  margin-top: 18px;
+  margin-top: 10px;
   border-top: 1px solid var(--border);
-  padding-top: 18px;
+  padding-top: 16px;
 }
 .batch-footer small {
   font-size: 9px;
@@ -1133,10 +1183,10 @@ td small {
   color: var(--muted-foreground);
 }
 .transfer-help {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted-foreground);
   line-height: 1.7;
-  margin-top: 13px;
+  margin-top: -6px;
 }
 
 /* Stable illustrated sample identities: keep names and responsibilities readable. */
@@ -1194,19 +1244,21 @@ td small {
   color: var(--muted-foreground);
   margin-top: 3px;
 }
-.process-list .pic-profile {
-  margin-top: 10px;
+.pic-profile-compact {
+  gap: 7px;
 }
-.process-list .pic-identity > strong {
-  font-size: 13px;
-  font-weight: 600;
+.pic-profile-compact .pic-avatar {
+  width: 24px;
+  height: 24px;
 }
-.process-list > button {
-  align-items: flex-start;
-  padding-block: 14px;
+.pic-profile-compact .pic-avatar-mark {
+  display: none;
 }
-.process-list > button > .step-number {
-  margin-top: 2px;
+.pic-profile-compact .pic-identity > strong {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--muted-foreground);
 }
 .pic-picker {
   display: grid;

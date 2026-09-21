@@ -301,24 +301,20 @@ export function ProductionWorkspace({
                     >
                       {step.done ? <Check size={13} /> : i + 1}
                     </span>
-                    <span>
+                    <span className="process-copy">
                       <strong>{stepNames(b)[i][lang === "ms" ? 1 : 0]}</strong>
                       {step.done ? (
-                        <>
-                          <PersonBadge
-                            name={step.pic}
-                            lang={lang}
-                            caption={t(
-                              "Recorded performer",
-                              "Pelaksana direkodkan",
-                            )}
-                          />
-                          <small>
-                            {fmt(step.qty ?? 0)} {units(lang, batchUnit(b))}
-                          </small>
-                        </>
+                        <PersonBadge
+                          name={step.pic}
+                          lang={lang}
+                          compact
+                          caption={t(
+                            "Recorded performer",
+                            "Pelaksana direkodkan",
+                          )}
+                        />
                       ) : (
-                        <small>
+                        <small className="process-pending">
                           {t(
                             "Awaiting supervisor entry",
                             "Menunggu rekod penyelia",
@@ -326,7 +322,14 @@ export function ProductionWorkspace({
                         </small>
                       )}
                     </span>
-                    {!step.done && <Plus size={15} />}
+                    {step.done ? (
+                      <span className="process-output">
+                        <span>{fmt(step.qty ?? 0)}</span>
+                        <small>{units(lang, batchUnit(b))}</small>
+                      </span>
+                    ) : (
+                      <Plus size={14} className="process-add" />
+                    )}
                   </button>
                 ))}
               </div>
@@ -368,15 +371,15 @@ export function ProductionWorkspace({
                   <ArrowRight size={14} />
                 </Button>
               </div>
-              <p className="transfer-help">
-                {t(
-                  "Record finished stock leaving the factory. The stock-in supervisor records its arrival separately.",
-                  "Rekod stok siap yang meninggalkan kilang. Penyelia stok masuk merekod penerimaannya secara berasingan.",
-                )}
-              </p>
             </section>
           ))}
       </div>
+      <p className="transfer-help">
+        {t(
+          "Send to fulfilment records finished stock leaving the factory. The stock-in supervisor records its arrival separately.",
+          "Hantar ke pemenuhan merekod stok siap yang meninggalkan kilang. Penyelia stok masuk merekod penerimaannya secara berasingan.",
+        )}
+      </p>
       <Button variant="outline" onClick={closeDay}>
         <ClipboardList size={16} />
         {t("End-of-day review", "Semakan akhir hari")}

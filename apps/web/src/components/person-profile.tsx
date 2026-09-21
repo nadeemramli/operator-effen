@@ -56,10 +56,12 @@ export function PersonBadge({
   name,
   lang,
   caption,
+  compact = false,
 }: {
   name: string;
   lang: Lang;
   caption?: string;
+  compact?: boolean;
 }) {
   if (!name)
     return (
@@ -69,11 +71,11 @@ export function PersonBadge({
     );
   const sample = people.includes(name);
   return (
-    <span className="pic-profile">
+    <span className={"pic-profile" + (compact ? " pic-profile-compact" : "")}>
       <PersonAvatar name={name} />
       <span className="pic-identity">
         <strong>{name}</strong>
-        <small>
+        <small className={compact ? "sr-only" : undefined}>
           {caption ?? tr(lang, "Person responsible", "Orang bertanggungjawab")}
           {sample ? tr(lang, " · Sample profile", " · Profil contoh") : ""}
         </small>
