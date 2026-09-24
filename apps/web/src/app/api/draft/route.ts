@@ -4,6 +4,7 @@ import { tester } from "@/lib/supabase/server";
 import {
   applyCommand,
   createDraft,
+  withBatchReferences,
   type Command,
   type Draft,
 } from "@/lib/draft";
@@ -43,7 +44,7 @@ export async function GET() {
   }
   if (error || !data)
     return json({ error: "Unable to prepare the test workspace." }, 503);
-  return json(data);
+  return json({ ...data, state: withBatchReferences(data.state as Draft) });
 }
 export async function POST(request: NextRequest) {
   if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);

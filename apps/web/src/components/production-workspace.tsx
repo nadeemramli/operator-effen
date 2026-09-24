@@ -36,6 +36,8 @@ import {
   product,
   stepNames,
   sachetProcesses,
+  isSachet,
+  type Step,
   today,
   tr,
   type Batch,
@@ -106,12 +108,18 @@ export function ProductionWorkspace({
     rawFactory === "bottle" || rawFactory === "sachet" ? rawFactory : "all";
   const selectedId = params.get("batch");
   const selected = state.batches.find((b) => b.id === selectedId);
+  const workDate = selected?.date ?? params.get("date") ?? today();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
-  function href(next: ProductionView, batch?: string) {
+  function href(next: ProductionView, batch?: string, date?: string) {
     const q = new URLSearchParams({ view: "production", production: next });
     if (factory !== "all") q.set("factory", factory);
     if (batch) q.set("batch", batch);
+    if (next === "log")
+      q.set(
+        "date",
+        date ?? state.batches.find((b) => b.id === batch)?.date ?? workDate,
+      );
     return "/?" + q.toString();
   }
   function setFactory(next: string) {
@@ -125,6 +133,7 @@ export function ProductionWorkspace({
   const visibleBatches = state.batches.filter(
     (b) =>
       (factory === "all" || batchFactory(b) === factory) &&
+      b.date === workDate &&
       (!selectedId || b.id === selectedId),
   );
   const historyBatches = state.batches
@@ -140,12 +149,42 @@ export function ProductionWorkspace({
     .sort((a, b) => b.date.localeCompare(a.date));
   const productionLog = (
     <>
+      <section className="production-date-banner">
+        <div>
+          <span>{t("PRODUCTION WORK DATE", "TARIKH KERJA PENGELUARAN")}</span>
+          <strong>
+            {new Date(workDate + "T12:00:00+08:00").toLocaleDateString(
+              lang === "ms" ? "ms-MY" : "en-MY",
+              {
+                weekday: "long",
+                day: "numeric",
+                month: "long",
+                year: "numeric",
+                timeZone: "Asia/Kuala_Lumpur",
+              },
+            )}
+          </strong>
+        </div>
+        <label>
+          {t("Change date", "Tukar tarikh")}
+          <Input
+            type="date"
+            value={workDate}
+            onChange={(e) => {
+              if (e.target.value)
+                router.replace(href("log", undefined, e.target.value), {
+                  scroll: false,
+                });
+            }}
+          />
+        </label>
+      </section>
       {selectedId && (
         <div className="batch-context">
           <Button asChild variant="outline">
             <Link href={href("log")}>
               <ArrowLeft size={15} />
-              {t("All production batches", "Semua kelompok pengeluaran")}
+              {t("All batches for this day", "Semua kelompok hari ini")}
             </Link>
           </Button>
           <span>{selected?.code}</span>
@@ -176,8 +215,8 @@ export function ProductionWorkspace({
         <div className="inline-note">
           <AlertTriangle size={17} />
           {t(
-            "Adypocide production records each machine and its PIC. The warehouse confirms finished boxes during stock-in.",
-            "Pengeluaran Adypocide merekod setiap mesin dan PIC. Gudang mengesahkan kotak siap semasa stok masuk.",
+            "Sachet production records each machine and its PIC. The warehouse confirms finished boxes during stock-in.",
+            "Pengeluaran sachet merekod setiap mesin dan PIC. Gudang mengesahkan kotak siap semasa stok masuk.",
           )}
         </div>
       )}
@@ -190,54 +229,48 @@ export function ProductionWorkspace({
         </Empty>
       )}
       <div className="batch-grid">
-        {state.batches
-          .filter(
-            (b) =>
-              (factory === "all" || batchFactory(b) === factory) &&
-              (!selectedId || b.id === selectedId),
-          )
-          .map((b) =>
-            b.product === "ady" ? (
-              <AdypocideProductionCard
-                key={b.id}
-                batch={b}
-                lang={lang}
-                show={show}
-                pic={pic}
-                onOpenRecord={() => router.push(href("history", b.id))}
-              />
-            ) : (
-              <section className="batch-card" key={b.id}>
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <ProductName id={b.product} />
-                    <button
-                      onClick={() => router.push(href("history", b.id))}
-                      className="record-link mono block mt-2"
-                    >
-                      {b.code}
-                    </button>
-                  </div>
-                  <BatchStatus batch={b} lang={lang} />
+        {visibleBatches.map((b) =>
+          isSachet(b.product) ? (
+            <AdypocideProductionCard
+              key={b.id}
+              batch={b}
+              lang={lang}
+              show={show}
+              pic={pic}
+              onOpenRecord={() => router.push(href("history", b.id))}
+            />
+          ) : (
+            <section className="batch-card" key={b.id}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <ProductName id={b.product} />
+                  <button
+                    onClick={() => router.push(href("history", b.id))}
+                    className="record-link mono block mt-2"
+                  >
+                    {b.code}
+                  </button>
                 </div>
-                <div className="batch-stats">
-                  <span>
-                    {t("Planned", "Dirancang")}
-                    <strong>{fmt(b.target)}</strong>
-                  </span>
-                  <span>
-                    {t("Finished", "Siap")}
-                    <strong>{fmt(b.actual)}</strong>
-                  </span>
-                  <span>
-                    {t("Sent to fulfilment", "Dihantar ke pemenuhan")}
-                    <strong>{fmt(b.sent)}</strong>
-                  </span>
-                </div>
-                <div className="process-list">
-                  {b.steps.map((step, i) => (
+                <BatchStatus batch={b} lang={lang} />
+              </div>
+              <div className="batch-stats">
+                <span>
+                  {t("Planned", "Dirancang")}
+                  <strong>{fmt(b.target)}</strong>
+                </span>
+                <span>
+                  {t("Finished", "Siap")}
+                  <strong>{fmt(b.actual)}</strong>
+                </span>
+                <span>
+                  {t("Sent to fulfilment", "Dihantar ke pemenuhan")}
+                  <strong>{fmt(b.sent)}</strong>
+                </span>
+              </div>
+              <div className="process-list">
+                {b.steps.map((step, i) => (
+                  <div className="process-row" key={i}>
                     <button
-                      key={i}
                       disabled={step.done}
                       onClick={() =>
                         show({
@@ -252,7 +285,7 @@ export function ProductionWorkspace({
                             ),
                           hidden: { id: b.id, step: i },
                           fields: [
-                            pic(),
+                            { ...pic(), value: step.pic || undefined },
                             number(
                               "qty",
                               t("Output quantity", "Jumlah hasil") +
@@ -317,14 +350,18 @@ export function ProductionWorkspace({
                         <strong>
                           {stepNames(b)[i][lang === "ms" ? 1 : 0]}
                         </strong>
-                        {step.done ? (
+                        {step.pic ? (
                           <PersonBadge
                             name={step.pic}
                             lang={lang}
                             compact
                             caption={t(
-                              "Recorded performer",
-                              "Pelaksana direkodkan",
+                              step.done
+                                ? "Current / latest PIC"
+                                : "Planned PIC",
+                              step.done
+                                ? "PIC semasa / terkini"
+                                : "PIC dirancang",
                             )}
                           />
                         ) : (
@@ -345,53 +382,61 @@ export function ProductionWorkspace({
                         <Plus size={14} className="process-add" />
                       )}
                     </button>
-                  ))}
-                </div>
-                <div className="batch-footer">
-                  <small>
-                    {b.date} · {units(lang, batchUnit(b))}
-                  </small>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!batchComplete(b) || b.actual <= b.sent}
-                    onClick={() =>
-                      show({
-                        type: "transfer",
-                        title: t(
-                          "Send to fulfilment",
-                          "Hantar ke pusat pemenuhan",
+                    <ProcessPicTools
+                      batch={b}
+                      index={i}
+                      lang={lang}
+                      show={show}
+                      pic={pic}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="batch-footer">
+                <small>
+                  {b.date} · {units(lang, batchUnit(b))}
+                </small>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!batchComplete(b) || b.actual <= b.sent}
+                  onClick={() =>
+                    show({
+                      type: "transfer",
+                      title: t(
+                        "Send to fulfilment",
+                        "Hantar ke pusat pemenuhan",
+                      ),
+                      description:
+                        b.code +
+                        " · " +
+                        (b.actual - b.sent) +
+                        " " +
+                        t("available at factory", "tersedia di kilang"),
+                      hidden: { id: b.id },
+                      fields: [
+                        number(
+                          "qty",
+                          t("Units sent", "Unit dihantar"),
+                          undefined,
+                          1,
                         ),
-                        description:
-                          b.code +
-                          " · " +
-                          (b.actual - b.sent) +
-                          " " +
-                          t("available at factory", "tersedia di kilang"),
-                        hidden: { id: b.id },
-                        fields: [
-                          number(
-                            "qty",
-                            t("Units sent", "Unit dihantar"),
-                            undefined,
-                            1,
-                          ),
-                          pic(),
-                        ],
-                      })
-                    }
-                  >
-                    {t("Send to fulfilment", "Hantar ke pemenuhan")}
-                    <ArrowRight size={14} />
-                  </Button>
-                </div>
-              </section>
-            ),
-          )}
+                        pic(),
+                      ],
+                    })
+                  }
+                >
+                  {t("Send to fulfilment", "Hantar ke pemenuhan")}
+                  <ArrowRight size={14} />
+                </Button>
+              </div>
+            </section>
+          ),
+        )}
       </div>
       <p className="transfer-help">
         {t(
-          "Send to fulfilment records the factory handoff. Adypocide quantities are finalized by stock-in after warehouse boxing.",
+          "Send to fulfilment records the factory handoff. Sachet quantities are finalized by stock-in after warehouse boxing.",
           "Hantar ke pemenuhan merekod serahan kilang. Kuantiti Adypocide dimuktamadkan oleh stok masuk selepas pengkotakan di gudang.",
         )}
       </p>
@@ -449,11 +494,17 @@ export function ProductionWorkspace({
           busy={busy}
           defaultProduct={factory === "sachet" ? "ady" : "cav"}
           backHref={href("log")}
+          defaultDate={workDate}
+          peopleOptions={pic().options ?? []}
           onSave={async (input) => {
             const result = await command("batch", input);
             if (result)
               router.push(
-                href("log", result.batches[0].id).replace(/&factory=[^&]+/, ""),
+                href(
+                  "log",
+                  result.batches[0].id,
+                  result.batches[0].date,
+                ).replace(/&factory=[^&]+/, ""),
               );
           }}
         />
@@ -587,7 +638,7 @@ export function ProductionWorkspace({
                             "Dirancang / siap",
                           )}
                         >
-                          {b.product === "ady" ? (
+                          {isSachet(b.product) ? (
                             t("Machine / PIC records", "Rekod mesin / PIC")
                           ) : (
                             <>
@@ -663,6 +714,119 @@ export function ProductionWorkspace({
   );
 }
 
+export function ProcessPicHistory({ step, lang }: { step: Step; lang: Lang }) {
+  const changes = step.picHistory ?? [];
+  if (!changes.length) return null;
+  return (
+    <details className="pic-history">
+      <summary>
+        {tr(lang, "PIC history", "Sejarah PIC")} ({changes.length})
+      </summary>
+      {changes.map((change, index) => (
+        <p key={index}>
+          <strong>
+            {tr(
+              lang,
+              change.kind === "handover"
+                ? "Shift handover"
+                : change.kind === "correction"
+                  ? "Selection corrected"
+                  : "Planned assignment",
+              change.kind === "handover"
+                ? "Serahan syif"
+                : change.kind === "correction"
+                  ? "Pilihan dibetulkan"
+                  : "Tugasan dirancang",
+            )}
+          </strong>
+          <br />
+          {change.from || "—"} → {change.to}
+          <br />
+          {new Date(change.effectiveAt ?? change.at).toLocaleString(
+            lang === "ms" ? "ms-MY" : "en-MY",
+            { timeZone: "Asia/Kuala_Lumpur" },
+          )}{" "}
+          MYT
+          <br />
+          {change.reason}
+        </p>
+      ))}
+    </details>
+  );
+}
+function ProcessPicTools({
+  batch: b,
+  index,
+  lang,
+  show,
+  pic,
+}: {
+  batch: Batch;
+  index: number;
+  lang: Lang;
+  show: (spec: FormSpec) => void;
+  pic: (name?: string, label?: string) => Field;
+}) {
+  const t = (en: string, ms: string) => tr(lang, en, ms),
+    step = b.steps[index];
+  function change(kind: "correction" | "handover") {
+    show({
+      type: "change-step-pic",
+      title:
+        kind === "handover"
+          ? t("Record shift handover", "Rekod serahan syif")
+          : t("Edit PIC selection", "Sunting pilihan PIC"),
+      description: `${b.code} · ${stepNames(b)[index][lang === "ms" ? 1 : 0]} · ${step.pic || t("Unassigned", "Belum ditugaskan")}`,
+      hidden: { id: b.id, step: index, kind },
+      fields: [
+        { ...pic(), value: step.pic || undefined },
+        ...(kind === "handover"
+          ? [
+              {
+                name: "effectiveAt",
+                label: t(
+                  "Takeover date and time (Malaysia)",
+                  "Tarikh dan masa pengambilalihan (Malaysia)",
+                ),
+                type: "datetime-local" as const,
+              },
+            ]
+          : []),
+        {
+          name: "reason",
+          label:
+            kind === "handover"
+              ? t("Handover reason", "Sebab serahan")
+              : t("Correction reason", "Sebab pembetulan"),
+          type: "textarea",
+        },
+      ],
+    });
+  }
+  return (
+    <div className="process-pic-tools">
+      <Button size="sm" variant="ghost" onClick={() => change("correction")}>
+        {step.pic
+          ? t("Edit PIC", "Sunting PIC")
+          : t("Assign PIC", "Tetapkan PIC")}
+      </Button>
+      {step.pic && !batchTransferred(b) && (
+        <details className="pic-more">
+          <summary>{t("More", "Lagi")}</summary>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => change("handover")}
+          >
+            {t("Shift handover", "Serahan syif")}
+          </Button>
+        </details>
+      )}
+      <ProcessPicHistory step={step} lang={lang} />
+    </div>
+  );
+}
+
 function AdypocideProductionCard({
   batch: b,
   lang,
@@ -707,6 +871,8 @@ function AdypocideProductionCard({
       <MachineRecords
         batch={b}
         lang={lang}
+        show={show}
+        pic={pic}
         onRecord={
           sent
             ? undefined
@@ -716,7 +882,14 @@ function AdypocideProductionCard({
                   title: t("Record process PIC", "Rekod PIC proses"),
                   description: `${b.code} · ${t(stage.en, stage.ms)}`,
                   hidden: { id: b.id, stage: stage.id },
-                  fields: [pic()],
+                  fields: [
+                    {
+                      ...pic(),
+                      value:
+                        b.steps.find((step) => step.sachetStage === stage.id)
+                          ?.pic || undefined,
+                    },
+                  ],
                 })
         }
       />
@@ -751,10 +924,14 @@ function MachineRecords({
   batch: b,
   lang,
   onRecord,
+  show,
+  pic,
 }: {
   batch: Batch;
   lang: Lang;
   onRecord?: (stage: (typeof sachetProcesses)[number]) => void;
+  show?: (spec: FormSpec) => void;
+  pic?: (name?: string, label?: string) => Field;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const showFixed =
@@ -785,27 +962,43 @@ function MachineRecords({
                     {index + 1}. {t(stage.en, stage.ms)}
                   </td>
                   <td data-label="PIC">
-                    {step?.done ? (
+                    {step?.pic && (
                       <PersonBadge
                         name={step.pic}
                         lang={lang}
-                        caption={t(
-                          "Recorded performer",
-                          "Pelaksana direkodkan",
-                        )}
+                        caption={
+                          step.done
+                            ? t("Current / latest PIC", "PIC semasa / terkini")
+                            : t("Planned PIC", "PIC dirancang")
+                        }
                       />
-                    ) : onRecord ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => onRecord(stage)}
-                      >
-                        {t("Record PIC", "Rekod PIC")}
-                      </Button>
+                    )}
+                    {!step?.done &&
+                      (onRecord ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => onRecord(stage)}
+                        >
+                          {step?.pic
+                            ? t("Confirm process", "Sahkan proses")
+                            : t("Record PIC", "Rekod PIC")}
+                        </Button>
+                      ) : (
+                        <span className="text-muted-foreground">
+                          {t("Not completed", "Belum selesai")}
+                        </span>
+                      ))}
+                    {step && show && pic ? (
+                      <ProcessPicTools
+                        batch={b}
+                        index={b.steps.indexOf(step)}
+                        lang={lang}
+                        show={show}
+                        pic={pic}
+                      />
                     ) : (
-                      <span className="text-muted-foreground">
-                        {t("Not recorded", "Belum direkod")}
-                      </span>
+                      step && <ProcessPicHistory step={step} lang={lang} />
                     )}
                   </td>
                 </tr>
@@ -825,6 +1018,17 @@ function MachineRecords({
                   lang={lang}
                   caption={t("Recorded performer", "Pelaksana direkodkan")}
                 />
+                {show && pic ? (
+                  <ProcessPicTools
+                    batch={b}
+                    index={index}
+                    lang={lang}
+                    show={show}
+                    pic={pic}
+                  />
+                ) : (
+                  <ProcessPicHistory step={step} lang={lang} />
+                )}
               </td>
             </tr>
           ))}
@@ -838,21 +1042,24 @@ function BatchPlanForm({
   lang,
   busy,
   defaultProduct,
+  defaultDate,
+  peopleOptions,
   backHref,
   onSave,
 }: {
   lang: Lang;
   busy: boolean;
   defaultProduct: string;
+  defaultDate: string;
+  peopleOptions: { value: string; label: string }[];
   backHref: string;
   onSave: (input: Record<string, unknown>) => Promise<void>;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [productId, setProductId] = useState(defaultProduct);
-  const route =
-    productId === "ady"
-      ? sachetProcesses.map((stage) => [stage.en, stage.ms])
-      : stepNames({ product: productId } as Batch);
+  const route = isSachet(productId)
+    ? sachetProcesses.map((stage) => [stage.en, stage.ms])
+    : stepNames({ product: productId } as Batch);
   return (
     <Panel
       className="batch-plan"
@@ -925,10 +1132,10 @@ function BatchPlanForm({
                 name="date"
                 type="date"
                 required
-                defaultValue={today()}
+                defaultValue={defaultDate}
               />
             </div>
-            {productId !== "ady" && (
+            {!isSachet(productId) && (
               <div>
                 <Label htmlFor="plan-target">
                   {t("Planned quantity", "Kuantiti dirancang")} ·{" "}
@@ -952,13 +1159,13 @@ function BatchPlanForm({
             <div>
               <h3>{t("Production process", "Proses pengeluaran")}</h3>
               <p>
-                {productId === "ady"
+                {isSachet(productId)
                   ? t(
-                      "The four processes below are fixed. Record only the PIC for each process under this batch number. No output quantity is required.",
+                      "Assign PICs now or later. Planning does not mark a process complete; confirm the work in the production log. No sachet quantity is required.",
                       "Empat proses di bawah adalah tetap. Rekod PIC sahaja untuk setiap proses di bawah nombor kelompok ini. Kuantiti hasil tidak diperlukan.",
                     )
                   : t(
-                      "Assign the actual PIC and enter output when each process is recorded in the production log.",
+                      "Assign PICs now or later. Record completed output in the production log when the work takes place.",
                       "Pilih PIC sebenar dan masukkan hasil apabila setiap proses direkodkan dalam log pengeluaran.",
                     )}
               </p>
@@ -966,19 +1173,33 @@ function BatchPlanForm({
           </div>
           <div className="plan-route">
             {route.map(([en, ms], i) => (
-              <div key={en}>
+              <div key={productId + en}>
                 <span className="step-number">{i + 1}</span>
                 <strong>{t(en, ms)}</strong>
-                <small>
-                  {t(
-                    "PIC recorded during production",
-                    "PIC direkod semasa pengeluaran",
-                  )}
-                </small>
+                <label className="plan-pic-field">
+                  {t("Planned PIC", "PIC dirancang")}
+                  <select
+                    name={"pic_" + i}
+                    className="form-select"
+                    defaultValue=""
+                  >
+                    <option value="">
+                      {t(
+                        "Assign now or later",
+                        "Tetapkan sekarang atau kemudian",
+                      )}
+                    </option>
+                    {peopleOptions.map((p) => (
+                      <option key={p.value} value={p.value}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
             ))}
           </div>
-          {productId === "ady" && (
+          {isSachet(productId) && (
             <p className="inline-note">
               <AlertTriangle size={16} />
               {t(
@@ -988,7 +1209,7 @@ function BatchPlanForm({
             </p>
           )}
           <p className="field-hint">
-            {productId === "ady"
+            {isSachet(productId)
               ? t(
                   "Save the batch, record every machine and PIC involved, then send the batch to the warehouse for boxing.",
                   "Simpan kelompok, rekod setiap mesin dan PIC terlibat, kemudian hantar kelompok ke gudang untuk pengkotakan.",
@@ -1017,7 +1238,7 @@ function BatchPlanForm({
 
 function BatchRecord({ batch: b, lang }: { batch: Batch; lang: Lang }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
-  if (b.product === "ady")
+  if (isSachet(b.product))
     return (
       <Panel
         className="batch-record"
@@ -1059,7 +1280,7 @@ function BatchRecord({ batch: b, lang }: { batch: Batch; lang: Lang }) {
         <ProductName id={b.product} />
         <span>
           <Factory size={15} />
-          {b.product === "ady"
+          {isSachet(b.product)
             ? t("Sachet factory", "Kilang sachet")
             : t("Bottle factory", "Kilang botol")}
         </span>
@@ -1116,7 +1337,7 @@ function BatchRecord({ batch: b, lang }: { batch: Batch; lang: Lang }) {
                     "Orang bertanggungjawab (PIC)",
                   )}
                 >
-                  {s.done ? (
+                  {s.pic ? (
                     <PersonBadge
                       name={s.pic}
                       lang={lang}
@@ -1125,6 +1346,7 @@ function BatchRecord({ batch: b, lang }: { batch: Batch; lang: Lang }) {
                   ) : (
                     t("Awaiting supervisor entry", "Menunggu rekod penyelia")
                   )}
+                  <ProcessPicHistory step={s} lang={lang} />
                 </td>
                 <td data-label={t("Output", "Hasil")}>
                   {s.qty ?? "—"}

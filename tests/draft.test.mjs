@@ -172,7 +172,7 @@ test("Adypocide records machines and PICs, then creates stock only from warehous
         ref: "ady-in",
         pic: "Receiver",
       }),
-    /unique/,
+    /awaiting boxing/,
   );
   const input = {
     receiptId,
@@ -321,11 +321,11 @@ test("legacy sachet receipts need a fresh box count without converting or replac
   });
   assert.deepEqual(
     s.cartons.find((c) => c.id === source.id),
-    source,
+    { ...source, ref: batch.code, legacyRef: source.ref },
   );
   assert.deepEqual(
     s.cartons.find((c) => c.id === existing.id),
-    existing,
+    { ...existing, ref: batch.code, legacyRef: existing.ref },
   );
   assert.equal(batchReceived(s, batch), 22);
   assert.equal(adypocideReceipts(s).filter((r) => !r.stockedAt).length, 0);

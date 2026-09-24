@@ -187,7 +187,15 @@ export function Empty({ children }: { children: ReactNode }) {
 export type Field = {
   name: string;
   label: string;
-  type?: "text" | "number" | "date" | "time" | "textarea" | "select" | "person";
+  type?:
+    | "text"
+    | "number"
+    | "date"
+    | "datetime-local"
+    | "time"
+    | "textarea"
+    | "select"
+    | "person";
   options?: { value: string; label: string }[];
   value?: string | number;
   required?: boolean;
