@@ -1,4 +1,9 @@
-import { applyImportCommand, channels, type AwbImport } from "./awb-import.ts";
+import {
+  applyImportCommand,
+  channels,
+  normalizeAwb,
+  type AwbImport,
+} from "./awb-import.ts";
 export type Lang = "en" | "ms";
 export const tr = (lang: Lang, en: string, ms: string) =>
   lang === "ms" ? ms : en;
@@ -122,6 +127,10 @@ export interface AdypocideReceipt {
   legacySourceId?: string;
 }
 export interface Order {
+  reviewState?: "pending" | "confirmed";
+  reviewedBy?: string;
+  assignedPacker?: string;
+  assignedAt?: string;
   lines?: OrderLine[];
   store?: string;
   orderRef?: string;
@@ -199,7 +208,25 @@ export interface Note {
   role: Role;
   at: string;
 }
+export interface SortCount {
+  id: string;
+  date: string;
+  product: string;
+  expected: number;
+  counted: number;
+  fingerprint: string;
+  pic: string;
+  note: string;
+  at: string;
+}
+export interface StaffProfile {
+  id: string;
+  name: string;
+  role: Role;
+}
 export interface Draft {
+  staffProfiles?: StaffProfile[];
+  sortCounts?: SortCount[];
   adypocideReceipts?: AdypocideReceipt[];
   awbImports?: AwbImport[];
   version: 1;
@@ -277,6 +304,46 @@ export const variance = (o: Order) => {
   if (lines.some((l) => l.actual === null)) return null;
   return lines.map((l) => l.actual! - l.expected).find((n) => n !== 0) ?? 0;
 };
+export const orderReady = (o: Order) => o.reviewState !== "pending";
+export const dailyOrders = (s: Draft, date: string) =>
+  s.orders.filter((o) => o.date === date && orderReady(o));
+export const demandFingerprint = (s: Draft, date: string, productId: string) =>
+  JSON.stringify(
+    dailyOrders(s, date)
+      .filter((o) => orderLines(o).some((l) => l.product === productId))
+      .map((o) => [
+        o.id,
+        orderLines(o)
+          .filter((l) => l.product === productId)
+          .reduce((n, l) => n + l.expected, 0),
+      ])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+  );
+export const dailyTally = (s: Draft, date: string) =>
+  products.map((p) => {
+    const orders = dailyOrders(s, date).filter((o) =>
+      orderLines(o).some((l) => l.product === p.id),
+    );
+    const lines = orders.flatMap((o) =>
+      orderLines(o).filter((l) => l.product === p.id),
+    );
+    const count = s.sortCounts?.find(
+      (c) => c.date === date && c.product === p.id,
+    );
+    return {
+      product: p.id,
+      awbs: orders.length,
+      expected: lines.reduce((n, l) => n + l.expected, 0),
+      issued: orders.reduce((n, o) => n + orderIssued(s, o, p.id), 0),
+      packed: lines.reduce((n, l) => n + (l.actual ?? 0), 0),
+      missing: lines.filter((l) => l.actual === null).length,
+      mismatched: lines.filter(
+        (l) => l.actual !== null && l.actual !== l.expected,
+      ).length,
+      count,
+      stale: !!count && count.fingerprint !== demandFingerprint(s, date, p.id),
+    };
+  });
 export const batchReceived = (s: Draft, b: Batch) =>
   s.cartons
     .filter((c) => c.batchId === b.id && c.unit === batchUnit(b))
@@ -806,18 +873,19 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
     }
     case "order": {
-      allow("admin");
+      allow("admin", "outbound");
       const p = str("product"),
-        awb = str("awb"),
+        awb = normalizeAwb(str("awb")),
         expected = num("expected", 1);
       if (!product(p)) throw new Error("Choose a product.");
-      if (s.orders.some((o) => o.awb.toLowerCase() === awb.toLowerCase()))
+      if (s.orders.some((o) => normalizeAwb(o.awb) === awb))
         throw new Error("This AWB is already recorded.");
       if (!channels.includes(str("channel")))
         throw new Error("Choose an order source.");
       const o: Order = {
         id: id(),
         awb,
+        reviewState: "pending",
         product: p,
         channel: str("channel"),
         package: str("package"),
@@ -840,9 +908,210 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
       break;
     }
+    case "edit-order": {
+      allow("admin", "outbound");
+      const o = find(s.orders);
+      if (orderReady(o))
+        throw new Error("Reviewed orders require a supervisor correction.");
+      const p = str("product"),
+        awb = normalizeAwb(str("awb")),
+        channel = str("channel");
+      if (!product(p) || !channels.includes(channel))
+        throw new Error("Choose a product and source.");
+      if (
+        s.orders.some(
+          (other) => other.id !== o.id && normalizeAwb(other.awb) === awb,
+        )
+      )
+        throw new Error("This AWB is already recorded.");
+      const before = `${o.awb} · ${o.package} · ${o.expected}`;
+      o.awb = awb;
+      o.product = p;
+      o.channel = channel;
+      o.package = str("package");
+      o.expected = num("expected", 1);
+      o.originalExpected = o.expected;
+      o.date = str("date");
+      log(
+        o.id,
+        "Pending order edited",
+        `${before} → ${o.awb} · ${o.package} · ${o.expected}`,
+      );
+      break;
+    }
+    case "review-order": {
+      allow("admin", "outbound");
+      const o = find(s.orders);
+      if (orderReady(o)) throw new Error("This order is already reviewed.");
+      o.reviewState = "confirmed";
+      o.reviewedBy = str("pic");
+      log(o.id, "Order reviewed", o.awb + " · " + o.reviewedBy);
+      break;
+    }
+    case "sort-count": {
+      allow("outbound");
+      const date = str("date"),
+        p = str("product"),
+        counted = num("counted");
+      const tally = dailyTally(s, date).find((t) => t.product === p);
+      if (!tally?.awbs)
+        throw new Error("No reviewed orders for this product and day.");
+      if (
+        dailyOrders(s, date).some(
+          (o) => orderLines(o).some((l) => l.product === p) && !o.printed,
+        )
+      )
+        throw new Error(
+          "Record the printed labels for this product before counting.",
+        );
+      const note = str("note", !!tally.count || counted !== tally.expected);
+      const count: SortCount = {
+        id: id(),
+        date,
+        product: p,
+        counted,
+        expected: tally.expected,
+        fingerprint: demandFingerprint(s, date, p),
+        pic: str("pic"),
+        note,
+        at,
+      };
+      s.sortCounts ??= [];
+      s.sortCounts.unshift(count);
+      log(
+        date,
+        "Printed-label count recorded",
+        `${product(p).name}: system ${tally.expected}, supervisor ${counted} · ${count.pic} · ${note}`,
+      );
+      break;
+    }
+    case "assign-orders":
+    case "print-orders":
+    case "move-orders":
+    case "issue-orders": {
+      allow("outbound");
+      if (
+        !Array.isArray(v.ids) ||
+        !v.ids.length ||
+        v.ids.length > 500 ||
+        new Set(v.ids).size !== v.ids.length
+      )
+        throw new Error("Select distinct AWBs first.");
+      const orders = v.ids.map((key) => {
+        const o = s.orders.find((o) => o.id === key);
+        if (!o || !orderReady(o) || o.dispatched)
+          throw new Error("Select reviewed AWBs awaiting handover.");
+        return o;
+      });
+      const pic = str("pic");
+      if (cmd.type === "assign-orders" || cmd.type === "issue-orders") {
+        for (const o of orders) {
+          if (!o.printed) throw new Error("Record the printed labels first.");
+          for (const line of orderLines(o)) {
+            const tally = dailyTally(s, o.date).find(
+              (t) => t.product === line.product,
+            )!;
+            if (!tally.count || tally.stale)
+              throw new Error(
+                "Record a current supervisor count before issuing stock or assigning packers.",
+              );
+          }
+        }
+      }
+      if (cmd.type === "move-orders") {
+        const date = str("date"),
+          reason = str("reason");
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
+          throw new Error("Choose a valid fulfilment date.");
+        for (const o of orders) {
+          if (o.actual !== null)
+            throw new Error(
+              "Only unpacked AWBs can move days. Existing stock allocations and assignments follow the AWB.",
+            );
+          log(
+            o.id,
+            "Fulfilment date changed",
+            `${o.date} → ${date} · ${pic} · ${reason}`,
+          );
+          o.date = date;
+        }
+      } else if (cmd.type === "print-orders") {
+        for (const o of orders) {
+          if (o.printed) continue;
+          o.printed = true;
+          log(o.id, "AWB print recorded", o.awb + " · " + pic);
+        }
+      } else if (cmd.type === "assign-orders") {
+        const packer = str("packer");
+        if (
+          !(s.staffProfiles
+            ? s.staffProfiles.some(
+                (p) => p.id === packer && p.role === "packer",
+              )
+            : people.includes(packer))
+        )
+          throw new Error("Choose a packer profile.");
+        for (const o of orders) {
+          if (!o.printed || o.actual !== null)
+            throw new Error("Only printed, unpacked AWBs can be assigned.");
+          if (o.assignedPacker && o.assignedPacker !== packer) str("reason");
+          const previous = o.assignedPacker ?? "Unassigned";
+          o.assignedPacker = packer;
+          o.assignedAt = at;
+          log(
+            o.id,
+            "Packer assigned",
+            `${previous} → ${packer} · by ${pic} · ${str("reason", false)}`,
+          );
+        }
+      } else {
+        const c = find(s.cartons, "cartonId"),
+          qty = num("qty", 1);
+        if (c.unit !== product(c.product).unit)
+          throw new Error("Choose finished stock.");
+        const matching = orders.filter((o) =>
+          orderLines(o).some((l) => l.product === c.product),
+        );
+        const remaining = (o: Order) =>
+          Math.max(
+            0,
+            orderLines(o)
+              .filter((l) => l.product === c.product)
+              .reduce((n, l) => n + l.expected, 0) -
+              orderIssued(s, o, c.product),
+          );
+        if (qty > available(s, c))
+          throw new Error("Not enough stock in this carton.");
+        if (qty > matching.reduce((n, o) => n + remaining(o), 0))
+          throw new Error(
+            "Quantity exceeds the remaining demand for selected AWBs.",
+          );
+        let left = qty;
+        for (const o of matching) {
+          const allocated = Math.min(left, remaining(o));
+          if (!allocated) continue;
+          s.issues.unshift({
+            id: id(),
+            cartonId: c.id,
+            orderId: o.id,
+            qty: allocated,
+            pic,
+            at,
+          });
+          log(
+            o.id,
+            "Stock issued to packing",
+            `${c.ref} · ${allocated} ${c.unit} · ${pic}`,
+          );
+          left -= allocated;
+        }
+      }
+      break;
+    }
     case "print": {
       allow("outbound");
       const o = find(s.orders);
+      if (!orderReady(o)) throw new Error("Review this order first.");
       if (o.printed) throw new Error("Already recorded as printed.");
       o.printed = true;
       log(o.id, "AWB print recorded", o.awb + " · " + str("pic"));
@@ -853,6 +1122,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const c = find(s.cartons, "cartonId"),
         o = find(s.orders, "orderId"),
         qty = num("qty", 1);
+      if (!orderReady(o)) throw new Error("Review this order first.");
       if (o.dispatched)
         throw new Error("This parcel has already been handed over.");
       if (
@@ -883,6 +1153,14 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (o.actual !== null)
         throw new Error(
           "Saved parcel quantities require a supervisor correction.",
+        );
+      if (
+        !orderReady(o) ||
+        !o.assignedPacker ||
+        o.assignedPacker !== str("pic")
+      )
+        throw new Error(
+          "Only the assigned packer can record this AWB. Ask the supervisor to assign it first.",
         );
       if (o.lines) {
         o.lines.forEach((l) => {
@@ -1068,6 +1346,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     s.batches.length > 200 ||
     s.cartons.length > 500 ||
     (s.adypocideReceipts?.length ?? 0) > 500 ||
+    (s.sortCounts?.length ?? 0) > 1000 ||
     s.notes.length > 200
   )
     throw new Error(

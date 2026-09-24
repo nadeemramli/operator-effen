@@ -1,6 +1,6 @@
 # Operator EFFEN
 
-Environment foundation for the EFFEN operations application. The current page is a placeholder; operational workflows and authentication are not implemented yet.
+Operator EFFEN is an authenticated operations test workspace. The workflow previews use fictional data; individual staff authentication is a later rollout step.
 
 ## Stack
 
@@ -107,3 +107,47 @@ Bottle production continues to use its existing quantity-based process.
 Existing loose-sachet records remain historical data. Any remaining unboxed
 contents appear as receipts awaiting a fresh finished-box count; old quantities
 are never converted into box inventory. Previously counted boxes remain stock.
+
+### Daily order fulfilment (test workspace)
+
+- **Input orders:** Admin uploads and reviews bulk AWB PDFs. Admin or stock-out can
+  manually enter an AWB, including keyboard-style barcode input, without a PDF.
+  Manual entries must be reviewed before joining demand; pending records can be edited.
+  Scanning a barcode supplies only the reference, not the parcel contents.
+- **Order management:** Filter by Malaysia fulfilment day, product/brand, package,
+  or AWB/order/channel text. Package summaries show AWBs and required bottle/box units.
+- **Incoming orders:** Record already-printed labels, then save the supervisor's
+  independent unit count by product. Differences and recounts require a note.
+  Issue stock from a rack carton to selected AWBs, then assign them to a packer.
+  Each issue retains carton/batch traceability. Bulk issues fill remaining AWB demand
+  in displayed order; they cannot overdraw stock or silently allocate excess units.
+- **Packing station:** Select a test packer profile to see only assigned AWBs.
+  The command handler rejects unassigned AWBs or a different declared packer.
+  Saved counts require supervisor correction; this is workflow validation, not
+  authenticated identity enforcement in the shared test account.
+- **Daily tally:** Compare required units, supervisor count, issued stock and actual
+  packed units per product and per assigned packer. Missing entries and mismatched
+  AWBs remain visible even if opposite errors cancel in the aggregate. Each count
+  preserves the demand snapshot, PIC, timestamp and reason. New/changed orders mark
+  the earlier count stale and require a fresh count before more allocation/assignment.
+- The day changes at midnight in Asia/Kuala_Lumpur. Supervisors can manually carry
+  unpacked AWBs forward; stock allocations and assignments follow the AWB, and the
+  old day's checkpoint is flagged because its order set changed.
+
+TikTok printing does not sync orders into Operator. No TikTok API, printer listener,
+camera scanner or automatic ingestion integration has been added. Refresh retrieves
+other users' changes; optimistic revision checks prevent concurrent overwrites.
+
+#### Prepared boundary for staff accounts
+
+Assignments have a separate `assignedPacker` reference and assignment timestamp;
+`packer` remains the person who declared the actual contents. Optional staff profiles
+separate a stable profile ID from display name and role. The test UI supports those
+IDs without depending on display-name matching. No real roster is committed.
+
+Before activating individual logins: create workspace memberships with protected
+roles, link stable staff IDs to Auth users, derive role/PIC from the authenticated
+server session, and apply assignment restrictions to API responses and database RLS
+(including PDF sources). The current JSON workspace and role/profile selectors are
+still a shared demo and do not provide private employee access. Keep staff login
+rollout separate until the owner supplies the roster and access administrator.

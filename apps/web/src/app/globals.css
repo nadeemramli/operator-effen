@@ -2528,3 +2528,14 @@ td small {
     overflow-wrap: anywhere;
   }
 }
+
+/* Daily fulfilment: keep controls and independent checkpoints readable. */
+.order-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.order-filters label, .order-profile { display: grid; gap: 8px; font-size: 13px; color: var(--muted-foreground); }
+.order-bulk, .order-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.order-row-actions { min-width: 160px; }
+.daily-tally td { vertical-align: top; min-width: 120px; }
+.daily-tally td small { display: block; max-width: 240px; white-space: normal; line-height: 1.65; margin: 6px 0; }
+.order-profile { max-width: 540px; }
+@media (max-width: 900px) { .order-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .order-filters { grid-template-columns: 1fr; } .order-bulk > button { flex: 1 1 45%; height: auto; min-height: 38px; white-space: normal; } }
