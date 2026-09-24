@@ -7,6 +7,8 @@ import {
   orderIssued,
   batchReceived,
   batchComplete,
+  sachetProcesses,
+  stepNames,
   adypocideReceipts,
   stockCartons,
 } from "../apps/web/src/lib/draft.ts";
@@ -105,21 +107,28 @@ test("Adypocide records machines and PICs, then creates stock only from warehous
       }),
     /sent to the warehouse/,
   );
-  s = run(s, "production", "machine", {
-    id: batchId,
-    machine: "Machine 1",
-    pic: "Operator A",
-  });
-  s = run(s, "production", "machine", {
-    id: batchId,
-    machine: "Machine 2",
-    pic: "Operator B",
-  });
+  assert.equal(s.batches[0].steps.length, 4);
+  for (const [index, stage] of sachetProcesses.entries()) {
+    s = run(s, "production", "machine", {
+      id: batchId,
+      stage: stage.id,
+      pic: "Operator " + String.fromCharCode(65 + index),
+    });
+    assert.equal(batchComplete(s.batches[0]), index === 3);
+    if (index < 3)
+      assert.throws(
+        () =>
+          run(s, "production", "transfer", { id: batchId, pic: "Factory PIC" }),
+        /all four/,
+      );
+  }
   assert.deepEqual(
     s.batches[0].steps.map((step) => [step.machine, step.pic, step.qty]),
     [
-      ["Machine 1", "Operator A", null],
-      ["Machine 2", "Operator B", null],
+      ["Mixer machine", "Operator A", null],
+      ["Sachet filling machine", "Operator B", null],
+      ["Inkjet printer", "Operator C", null],
+      ["Shrink machine", "Operator D", null],
     ],
   );
   assert.equal(s.batches[0].target, 0);
@@ -500,4 +509,72 @@ test("unfinished batches cannot be transferred and QC is never inferred", () => 
       .batches[0].steps[3].qc,
     "not-recorded",
   );
+});
+
+test("sachet route rejects arbitrary or duplicate stages and preserves legacy machine records", () => {
+  let s = run(createDraft(), "production", "batch", {
+    product: "ady",
+    code: "FIXED-ADY",
+    date: "2026-09-24",
+  });
+  const batch = s.batches[0];
+  assert.throws(
+    () =>
+      run(s, "production", "machine", {
+        id: batch.id,
+        stage: "custom",
+        pic: "X",
+      }),
+    /four fixed/,
+  );
+  assert.throws(
+    () =>
+      run(s, "production", "machine", {
+        id: batch.id,
+        stage: "mixing",
+        pic: "",
+      }),
+    /pic/,
+  );
+  assert.throws(
+    () =>
+      run(s, "packer", "machine", { id: batch.id, stage: "mixing", pic: "X" }),
+    /supervisor/,
+  );
+  s = run(s, "production", "machine", {
+    id: batch.id,
+    stage: "mixing",
+    pic: "Operator A",
+  });
+  assert.throws(
+    () =>
+      run(s, "production", "machine", {
+        id: batch.id,
+        stage: "mixing",
+        pic: "Operator B",
+      }),
+    /already/,
+  );
+  // A pre-standardization machine record must not be mistaken for a fixed stage.
+  s.batches[0].steps = [
+    {
+      machine: "Historical filling machine",
+      pic: "Original PIC",
+      qty: null,
+      start: "",
+      end: "",
+      done: true,
+      qc: "not-recorded",
+    },
+  ];
+  assert.equal(batchComplete(s.batches[0]), false);
+  s = run(s, "production", "machine", {
+    id: batch.id,
+    stage: "mixing",
+    pic: "New PIC",
+  });
+  assert.equal(s.batches[0].steps[0].pic, "Original PIC");
+  assert.equal(stepNames(s.batches[0])[0][0], "Historical filling machine");
+  assert.equal(stepNames(s.batches[0])[1][0], "Mixer machine (mixing)");
+  assert.equal(batchComplete(s.batches[0]), false);
 });
