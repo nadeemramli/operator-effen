@@ -83,14 +83,27 @@ Run `pnpm test` for the stock conservation, traceability, role-action and correc
 invariants. Run `pnpm lint`, `pnpm typecheck` and `pnpm build` before publishing.
 
 The draft supports batch steps, factory transfers, carton receipt, explicit
-sachet-to-box conversion, monthly carton counts and reasoned adjustments, manual
+Adypocide box-count stock-in, monthly carton counts and reasoned adjustments, manual
 AWBs, stock issue, packer declarations, supervisor quantity corrections, separate
 courier handover, trace lookup, management review notes, CSV export and shared feedback.
 The test reset is destructive only to this sandbox and requires UI confirmation.
 
 Known boundaries: sample packages and staff; one product per AWB and one batch per
-carton; provisional sachet steps; aggregate workspace reports; no PDF parsing or
+carton; aggregate workspace reports; no PDF parsing or
 external integrations. Process-record correction and real approval permissions
 need the remaining operational decisions before live use. A recorded QC grouping
 does not imply QC was performed or passed. Parcel declarations and allocation logs
 are evidence of recorded work, not a physical guarantee of parcel contents.
+
+### Adypocide production and stock-in
+
+Production records the batch, each machine, and its PIC without planned or actual
+sachet quantities. A factory handoff and warehouse receipt do not create stock.
+After warehouse boxing, the stock-in supervisor finalizes the receipt with the
+actual finished box count (one box is one inventory unit), stock carton reference,
+and rack. The box carton retains its receipt and batch links for machine/PIC tracing.
+Bottle production continues to use its existing quantity-based process.
+
+Existing loose-sachet records remain historical data. Any remaining unboxed
+contents appear as receipts awaiting a fresh finished-box count; old quantities
+are never converted into box inventory. Previously counted boxes remain stock.

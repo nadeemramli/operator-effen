@@ -77,6 +77,11 @@ import {
 import {
   available,
   batchReceived,
+  batchComplete,
+  batchTransferred,
+  adypocideReceipts,
+  stockCartons,
+  type AdypocideReceipt,
   batchUnit,
   orderIssued,
   orderLines,
@@ -193,8 +198,8 @@ const copy: Record<View, [string, string, string, string]> = {
   production: [
     "From plan to finished batch",
     "Dari pelan ke kelompok siap",
-    "Record each process, its output and the person responsible.",
-    "Rekod setiap proses, hasil dan orang yang bertanggungjawab.",
+    "Record batches, machine responsibilities and bottle output.",
+    "Rekod kelompok, tanggungjawab mesin dan hasil botol.",
   ],
   warehouse: [
     "A place for every unit",
@@ -452,7 +457,9 @@ export function DraftApp() {
           ),
           type: "select",
           options: state?.batches
-            .filter((b) => b.sent > batchReceived(state, b))
+            .filter(
+              (b) => b.product !== "ady" && b.sent > batchReceived(state, b),
+            )
             .map((b) => ({
               value: b.id,
               label:
@@ -474,53 +481,67 @@ export function DraftApp() {
         pic(),
       ],
     });
-  const boxing = () =>
+  const receiveAdypocide = () =>
     show({
-      type: "box",
-      title: t("Box loose sachets", "Kotakkan sachet longgar"),
+      type: "receive-ady",
+      title: t(
+        "Receive Adypocide for boxing",
+        "Terima Adypocide untuk pengkotakan",
+      ),
       description: t(
-        "Enter the actual sachets per retail box. No conversion is assumed.",
-        "Masukkan jumlah sebenar sachet setiap kotak jualan. Tiada nisbah diandaikan.",
+        "Record the arriving carton and its batch. Finished boxes will be counted after boxing.",
+        "Rekod karton yang tiba dan kelompoknya. Kotak siap akan dikira selepas pengkotakan.",
       ),
       fields: [
         {
-          name: "cartonId",
-          label: t("Source carton", "Karton sumber"),
+          name: "batchId",
+          label: t("Factory batch", "Kelompok kilang"),
           type: "select",
-          options: state?.cartons
-            .filter((c) => c.unit === "sachet" && available(state, c) > 0)
-            .map((c) => ({
-              value: c.id,
-              label: c.ref + " · " + available(state, c) + " sachets",
-            })),
+          options: state?.batches
+            .filter((b) => b.product === "ady" && batchTransferred(b))
+            .map((b) => ({ value: b.id, label: b.code })),
         },
-        number(
-          "ratio",
-          t("Sachets per retail box", "Sachet setiap kotak jualan"),
-          undefined,
-          1,
+        {
+          name: "ref",
+          label: t(
+            "Unique receipt carton number",
+            "Nombor karton penerimaan unik",
+          ),
+        },
+        pic(),
+      ],
+    });
+  const finalizeAdypocide = (receipt: AdypocideReceipt) =>
+    show({
+      type: "stock-in-ady",
+      title: t(
+        "Finalize Adypocide stock-in",
+        "Muktamadkan stok masuk Adypocide",
+      ),
+      description:
+        receipt.ref +
+        " · " +
+        t(
+          "Finish boxing this receipt, then confirm the actual finished box count. Count only boxes not already stocked in. One box is one stock unit.",
+          "Selesaikan pengkotakan penerimaan ini, kemudian sahkan jumlah kotak siap sebenar. Kira hanya kotak yang belum direkod sebagai stok. Satu kotak ialah satu unit stok.",
         ),
+      hidden: { receiptId: receipt.id },
+      fields: [
         number(
           "boxes",
-          t("Retail boxes produced", "Kotak jualan dihasilkan"),
+          t("Finished boxes counted", "Kotak siap dikira"),
           undefined,
-          1,
-        ),
-        number(
-          "loss",
-          t("Loose sachets lost / damaged", "Sachet rosak / hilang"),
           0,
         ),
         {
           name: "ref",
-          label: t(
-            "New carton reference for boxes",
-            "Rujukan karton baharu untuk kotak",
-          ),
+          label: t("Stock carton reference", "Rujukan karton stok"),
+          value: receipt.ref + "-BOX",
         },
         { name: "rack", label: t("Rack / location", "Rak / lokasi") },
-        pic(),
+        pic("pic", t("Stock-in supervisor", "Penyelia stok masuk")),
       ],
+      submit: t("Confirm box stock-in", "Sahkan stok masuk kotak"),
     });
   const count = (c: Carton) =>
     show({
@@ -756,6 +777,13 @@ export function DraftApp() {
             o.package,
         ),
     ) ?? [];
+  const receipts = state ? adypocideReceipts(state) : [];
+  const pendingBoxing = receipts.filter((r) => !r.stockedAt);
+  const inventoryCartons = state ? stockCartons(state) : [];
+  const stockCounts =
+    state?.counts.filter((count) =>
+      inventoryCartons.some((c) => c.id === count.cartonId),
+    ) ?? [];
   const pending = state?.orders.filter((o) => !o.dispatched) ?? [];
   const mismatches =
     state?.orders.filter((o) => variance(o) !== null && variance(o) !== 0) ??
@@ -879,9 +907,7 @@ export function DraftApp() {
           <thead>
             <tr>
               <th>{t("Product", "Produk")}</th>
-              <th className="num">
-                {t("Factory received", "Diterima dari kilang")}
-              </th>
+              <th className="num">{t("Stocked in", "Stok masuk")}</th>
               <th className="num">
                 {t("Available on rack", "Tersedia di rak")}
               </th>
@@ -893,24 +919,17 @@ export function DraftApp() {
           </thead>
           <tbody>
             {products.flatMap((p) =>
-              (p.id === "ady"
-                ? (["sachet", "box"] as const)
-                : (["bottle"] as const)
-              ).map((unit) => (
+              [p.unit].map((unit) => (
                 <tr key={p.id + unit}>
                   <td>
                     <ProductName id={p.id} />
                   </td>
                   <td className="num">
-                    {unit === "box"
-                      ? "—"
-                      : fmt(
-                          state!.cartons
-                            .filter(
-                              (c) => c.product === p.id && c.unit === unit,
-                            )
-                            .reduce((n, c) => n + c.qty, 0),
-                        )}
+                    {fmt(
+                      inventoryCartons
+                        .filter((c) => c.product === p.id)
+                        .reduce((n, c) => n + c.qty, 0),
+                    )}
                   </td>
                   <td className="num font-medium">
                     {fmt(
@@ -1018,8 +1037,7 @@ export function DraftApp() {
               label={t("Production batches", "Kelompok pengeluaran")}
               value={state.batches.length}
               detail={
-                state.batches.filter((b) => !b.steps.every((s) => s.done))
-                  .length +
+                state.batches.filter((b) => !batchComplete(b)).length +
                 " " +
                 t("in progress", "sedang diproses")
               }
@@ -1068,16 +1086,14 @@ export function DraftApp() {
                   {
                     icon: Factory,
                     title: t("Production", "Pengeluaran"),
-                    count: state.batches.filter((b) =>
-                      b.steps.every((s) => s.done),
-                    ).length,
+                    count: state.batches.filter((b) => batchComplete(b)).length,
                     unit: t("finished batches", "kelompok siap"),
                     color: "var(--info)",
                   },
                   {
                     icon: ArrowDownToLine,
                     title: t("Stock in", "Stok masuk"),
-                    count: state.cartons.length,
+                    count: inventoryCartons.length,
                     unit: t("cartons recorded", "karton direkodkan"),
                     color: "var(--ai)",
                   },
@@ -1132,7 +1148,7 @@ export function DraftApp() {
                     <span className="attention-icon">
                       <AlertTriangle size={17} />
                     </span>
-                    <span>
+                    <span className="attention-copy">
                       <strong>{o.awb}</strong>
                       <small>
                         <OrderQuantities
@@ -1148,23 +1164,19 @@ export function DraftApp() {
                     <ChevronRight size={15} />
                   </button>
                 ))}
-                {state.orders.some(
-                  (o) =>
-                    orderLines(o).some((l) => l.product === "ady") &&
-                    o.actual === null,
-                ) && (
+                {pendingBoxing.length > 0 && (
                   <div className="attention-item">
                     <span className="attention-icon">
                       <Boxes size={17} />
                     </span>
-                    <span>
+                    <span className="attention-copy">
                       <strong>
                         {t("Adypocide boxing", "Pengkotakan Adypocide")}
                       </strong>
                       <small>
                         {t(
-                          "Confirm sachets per retail box.",
-                          "Sahkan sachet setiap kotak jualan.",
+                          "Finalize finished box counts in stock-in.",
+                          "Muktamadkan jumlah kotak siap di stok masuk.",
                         )}
                       </small>
                     </span>
@@ -1184,8 +1196,8 @@ export function DraftApp() {
           <Panel
             title={t("Inventory position", "Kedudukan inventori")}
             detail={t(
-              "Bottles, loose sachets and retail boxes stay separate.",
-              "Botol, sachet longgar dan kotak jualan dikira berasingan.",
+              "Bottles and finished Adypocide boxes are counted separately.",
+              "Botol dan kotak siap Adypocide dikira berasingan.",
             )}
             action={
               <span className="status-pill tone-muted">
@@ -1251,16 +1263,129 @@ export function DraftApp() {
               {t("Carton-level balances", "Baki setiap karton")}
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={boxing}>
+              <Button variant="outline" onClick={receiveAdypocide}>
                 <Boxes size={16} />
-                {t("Box sachets", "Kotakkan sachet")}
+                {t(
+                  "Receive Adypocide for boxing",
+                  "Terima Adypocide untuk pengkotakan",
+                )}
               </Button>
               <Button className="action-primary" onClick={receive}>
                 <Plus size={16} />
-                {t("Receive carton", "Terima karton")}
+                {t("Receive bottle carton", "Terima karton botol")}
               </Button>
             </div>
           </div>
+          <Panel
+            title={t(
+              "Adypocide · warehouse boxing",
+              "Adypocide · pengkotakan gudang",
+            )}
+            detail={t(
+              "Received cartons await boxing. The stock-in supervisor confirms finished boxes before they become inventory.",
+              "Karton diterima menunggu pengkotakan. Penyelia stok masuk mengesahkan kotak siap sebelum menjadi inventori.",
+            )}
+          >
+            {receipts.length ? (
+              <div className="table-scroll">
+                <table className="ady-receipts">
+                  <thead>
+                    <tr>
+                      <th>
+                        {t(
+                          "Receipt carton / batch",
+                          "Karton penerimaan / kelompok",
+                        )}
+                      </th>
+                      <th>{t("Received by", "Diterima oleh")}</th>
+                      <th>{t("Status", "Status")}</th>
+                      <th>{t("Action", "Tindakan")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {receipts.map((receipt) => (
+                      <tr key={receipt.id}>
+                        <td
+                          data-label={t(
+                            "Receipt carton / batch",
+                            "Karton penerimaan / kelompok",
+                          )}
+                        >
+                          <span className="mono">{receipt.ref}</span>
+                          <small>
+                            <button
+                              className="record-link"
+                              onClick={() => setTrace(receipt.batchId)}
+                            >
+                              {
+                                state.batches.find(
+                                  (b) => b.id === receipt.batchId,
+                                )?.code
+                              }
+                            </button>
+                          </small>
+                        </td>
+                        <td data-label={t("Received by", "Diterima oleh")}>
+                          <PersonBadge
+                            name={receipt.pic}
+                            lang={lang}
+                            caption={t("Received by", "Diterima oleh")}
+                          />
+                        </td>
+                        <td data-label={t("Status", "Status")}>
+                          <span
+                            className={
+                              "status-pill " +
+                              (receipt.stockedAt
+                                ? "tone-success"
+                                : "tone-warning")
+                            }
+                          >
+                            {receipt.stockedAt
+                              ? t("Stocked in", "Stok direkodkan")
+                              : t(
+                                  "Awaiting box count",
+                                  "Menunggu kiraan kotak",
+                                )}
+                          </span>
+                        </td>
+                        <td data-label={t("Action", "Tindakan")}>
+                          {receipt.stockedAt ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setTrace(receipt.stockCartonId!)}
+                            >
+                              {t("View stock", "Lihat stok")}
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={busy}
+                              onClick={() => finalizeAdypocide(receipt)}
+                            >
+                              {t(
+                                "Finalize box count",
+                                "Muktamadkan kiraan kotak",
+                              )}
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <Empty>
+                {t(
+                  "No Adypocide receipts yet. Receive a factory carton to begin boxing.",
+                  "Belum ada penerimaan Adypocide. Terima karton kilang untuk mula pengkotakan.",
+                )}
+              </Empty>
+            )}
+          </Panel>
           <Panel
             title={t("On the racks", "Di rak")}
             detail={t(
@@ -1282,7 +1407,7 @@ export function DraftApp() {
                   </tr>
                 </thead>
                 <tbody>
-                  {state.cartons.map((c) => (
+                  {inventoryCartons.map((c) => (
                     <tr key={c.id}>
                       <td>
                         <button
@@ -1326,7 +1451,7 @@ export function DraftApp() {
               "Rekod kiraan fizikal dahulu. Buat pelarasan dengan sebab secara berasingan.",
             )}
           >
-            {state.counts.length ? (
+            {stockCounts.length ? (
               <div className="table-scroll">
                 <table>
                   <thead>
@@ -1339,7 +1464,7 @@ export function DraftApp() {
                     </tr>
                   </thead>
                   <tbody>
-                    {state.counts.map((c) => (
+                    {stockCounts.map((c) => (
                       <tr key={c.id}>
                         <td className="mono">
                           {state.cartons.find((x) => x.id === c.cartonId)?.ref}
@@ -1764,7 +1889,8 @@ export function DraftApp() {
                     search(b.code + " " + product(b.product).name) ||
                     state.cartons.some(
                       (c) => c.batchId === b.id && search(c.ref),
-                    ),
+                    ) ||
+                    receipts.some((r) => r.batchId === b.id && search(r.ref)),
                 )
                 .map((b) => (
                   <div className="trace-batch" key={b.id}>
@@ -1777,7 +1903,7 @@ export function DraftApp() {
                     </button>
                     <ProductName id={b.product} />
                     <div className="mt-3 flex flex-wrap gap-2">
-                      {state.cartons
+                      {inventoryCartons
                         .filter((c) => c.batchId === b.id)
                         .map((c) => (
                           <button
@@ -1958,8 +2084,8 @@ export function DraftApp() {
               [
                 t("Stock-in supervisor", "Penyelia stok masuk"),
                 t(
-                  "Receive a carton. Try boxing sachets or a monthly stock count.",
-                  "Terima karton. Cuba pengkotakan sachet atau kiraan stok bulanan.",
+                  "Receive cartons. Finalize Adypocide box counts after boxing, or record a monthly stock count.",
+                  "Terima karton. Muktamadkan kiraan kotak Adypocide selepas pengkotakan, atau rekod kiraan stok bulanan.",
                 ),
               ],
               [
@@ -2007,8 +2133,8 @@ export function DraftApp() {
         <div className="inline-note">
           <ShieldCheck size={18} />
           {t(
-            "This is a shared team test workspace. Role switching does not create separate staff identities. PDF imports use editable Fullkit starting quantities. Sachet steps and operational rules remain provisional. No order-platform, WhatsApp or Fullkit sync runs here.",
-            "Ini draf UI berfungsi. Penukar peranan memaparkan akses; ia tidak mencipta identiti kakitangan berasingan. Pemetaan katalog, langkah sachet dan kelulusan masih perlu disahkan. Tiada pesanan sebenar, mesej atau penyegerakan Fullkit dijalankan.",
+            "This is a shared team test workspace. Role switching does not create separate staff identities. PDF imports use editable Fullkit starting quantities. Adypocide stock begins with supervisor-confirmed warehouse box counts. No order-platform, WhatsApp or Fullkit sync runs here.",
+            "Ini draf UI berfungsi. Penukar peranan memaparkan akses; ia tidak mencipta identiti kakitangan berasingan. Stok Adypocide bermula dengan kiraan kotak gudang yang disahkan penyelia. Tiada pesanan sebenar, mesej atau penyegerakan Fullkit dijalankan.",
           )}
         </div>
         <Panel
@@ -2524,14 +2650,21 @@ export function DraftApp() {
                               "Pelaksana direkodkan",
                             )}
                           />
-                          {st.qty ?? "—"} {units(lang, batchUnit(linkedBatch))}
+                          {linkedBatch.product !== "ady" && (
+                            <>
+                              {st.qty ?? "—"}{" "}
+                              {units(lang, batchUnit(linkedBatch))}
+                            </>
+                          )}
                         </p>
-                        <small>
-                          {st.start || "—"} – {st.end || "—"} · QC:{" "}
-                          {st.qc === "not-recorded"
-                            ? t("not recorded", "tidak direkod")
-                            : st.qc}
-                        </small>
+                        {linkedBatch.product !== "ady" && (
+                          <small>
+                            {st.start || "—"} – {st.end || "—"} · QC:{" "}
+                            {st.qc === "not-recorded"
+                              ? t("not recorded", "tidak direkod")
+                              : st.qc}
+                          </small>
+                        )}
                       </div>
                     </div>
                   ))}

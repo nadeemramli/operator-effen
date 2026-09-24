@@ -675,12 +675,22 @@ option {
   background: color-mix(in srgb, var(--warning) 9%, transparent);
   flex-shrink: 0;
 }
+.attention-copy {
+  flex: 1;
+  min-width: 0;
+}
+.attention-copy .order-line-values {
+  display: inline;
+}
+.attention-copy .order-line-values > span + span::before {
+  content: ", ";
+}
 .attention-list strong {
   display: block;
   font-size: 11px;
   font-weight: 550;
 }
-.attention-list small {
+.attention-copy > small {
   display: block;
   font-size: 10px;
   color: var(--muted-foreground);
@@ -690,6 +700,7 @@ option {
 .attention-list button > svg {
   margin-left: auto;
   color: var(--muted-foreground);
+  flex-shrink: 0;
 }
 .table-scroll {
   overflow-x: auto;
@@ -1882,14 +1893,6 @@ td small {
   .overview-grid {
     grid-template-columns: 1fr;
   }
-  .attention-list {
-    display: flex;
-    gap: 25px;
-  }
-  .attention-list > button,
-  .attention-item {
-    border: 0;
-  }
   .draft-strip .strip-detail {
     display: none;
   }
@@ -2143,11 +2146,15 @@ td small {
 }
 
 @media (max-width: 600px) {
+  .ady-receipts,
+  .machine-records,
   .batch-history,
   .batch-process-record {
     display: block;
     white-space: normal;
   }
+  .ady-receipts thead,
+  .machine-records thead,
   .batch-history thead,
   .batch-process-record thead {
     position: absolute;
@@ -2156,10 +2163,14 @@ td small {
     overflow: hidden;
     clip-path: inset(50%);
   }
+  .ady-receipts tbody,
+  .machine-records tbody,
   .batch-history tbody,
   .batch-process-record tbody {
     display: block;
   }
+  .ady-receipts tbody tr,
+  .machine-records tbody tr,
   .batch-history tbody tr,
   .batch-process-record tbody tr {
     display: grid;
@@ -2168,6 +2179,8 @@ td small {
     padding: 20px 17px;
     border-bottom: 1px solid var(--border);
   }
+  .ady-receipts td,
+  .machine-records td,
   .batch-history td,
   .batch-process-record td {
     display: block;
@@ -2175,6 +2188,8 @@ td small {
     border: 0;
     overflow-wrap: anywhere;
   }
+  .ady-receipts td::before,
+  .machine-records td::before,
   .batch-history td::before,
   .batch-process-record td::before {
     content: attr(data-label);
@@ -2183,6 +2198,9 @@ td small {
     color: var(--muted-foreground);
     margin-bottom: 8px;
   }
+  .ady-receipts td:first-child,
+  .ady-receipts td:nth-child(2),
+  .machine-records td,
   .batch-history td:first-child,
   .batch-history td:nth-child(4),
   .batch-process-record td:first-child,
@@ -2190,11 +2208,14 @@ td small {
   .batch-process-record td:last-child {
     grid-column: 1 / -1;
   }
+  .ady-receipts td:first-child::before,
+  .machine-records td:first-child::before,
   .batch-history td:first-child::before,
   .batch-history td:last-child::before,
   .batch-process-record td:first-child::before {
     display: none;
   }
+  .ady-receipts td:last-child,
   .batch-history td:last-child {
     align-self: end;
     justify-self: end;
