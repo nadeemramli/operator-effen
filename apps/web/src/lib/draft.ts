@@ -29,6 +29,7 @@ export const products = [
     name: "Cavernosil",
     short: "CAV",
     unit: "bottle" as Unit,
+    factory: "bottle" as const,
     color: "var(--info)",
   },
   {
@@ -36,6 +37,7 @@ export const products = [
     name: "Glycoxil",
     short: "GLY",
     unit: "bottle" as Unit,
+    factory: "bottle" as const,
     color: "var(--success)",
   },
   {
@@ -43,6 +45,7 @@ export const products = [
     name: "Lipidri",
     short: "LIP",
     unit: "bottle" as Unit,
+    factory: "bottle" as const,
     color: "var(--warning)",
   },
   {
@@ -50,6 +53,7 @@ export const products = [
     name: "Synovil",
     short: "SYN",
     unit: "bottle" as Unit,
+    factory: "bottle" as const,
     color: "var(--ai)",
   },
   {
@@ -57,6 +61,7 @@ export const products = [
     name: "Adypocide",
     short: "ADY",
     unit: "box" as Unit,
+    factory: "sachet" as const,
     color: "var(--chart-5)",
   },
 ];
@@ -69,6 +74,8 @@ export const people = [
   "Sample Packer B",
 ];
 export const product = (id: string) => products.find((p) => p.id === id)!;
+export const isSachet = (productId: string) =>
+  product(productId)?.factory === "sachet";
 export const today = () =>
   new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kuala_Lumpur" }).format(
     new Date(),
@@ -111,7 +118,16 @@ export const sachetSteps = [
   ["Batch marking & checks", "Penandaan kelompok & semakan"],
   ["Count & bag", "Pengiraan & pembungkusan beg"],
 ];
+export interface PicChange {
+  kind: "assignment" | "correction" | "handover";
+  from: string;
+  to: string;
+  at: string;
+  effectiveAt?: string;
+  reason: string;
+}
 export interface Step {
+  picHistory?: PicChange[];
   sachetStage?: string;
   machine?: string;
   pic: string;
@@ -136,6 +152,7 @@ export interface Batch {
 export interface Carton {
   id: string;
   ref: string;
+  legacyRef?: string;
   batchId: string;
   product: string;
   unit: Unit;
@@ -147,6 +164,7 @@ export interface Carton {
 export interface AdypocideReceipt {
   id: string;
   ref: string;
+  legacyRef?: string;
   batchId: string;
   pic: string;
   at: string;
@@ -269,8 +287,20 @@ export interface Draft {
   notes: Note[];
   closedDays: string[];
 }
+// Preserve record IDs and original references while displaying one batch number throughout stock flows.
+export function withBatchReferences(current: Draft): Draft {
+  const state = structuredClone(current);
+  for (const record of [...state.cartons, ...(state.adypocideReceipts ?? [])]) {
+    const batch = state.batches.find((b) => b.id === record.batchId);
+    if (batch && record.ref !== batch.code) {
+      record.legacyRef ??= record.ref;
+      record.ref = batch.code;
+    }
+  }
+  return state;
+}
 export const stepNames = (b: Batch) =>
-  b.product === "ady"
+  isSachet(b.product)
     ? b.steps.map((step, i) => {
         const stage = sachetProcesses.find((p) => p.id === step.sachetStage);
         return stage
@@ -281,10 +311,10 @@ export const stepNames = (b: Batch) =>
       })
     : bottleSteps;
 export const batchFactory = (b: Batch) =>
-  b.product === "ady" ? "sachet" : "bottle";
+  isSachet(b.product) ? "sachet" : "bottle";
 export const batchUnit = (b: Batch): Unit => product(b.product).unit;
 export const batchComplete = (b: Batch) =>
-  b.product === "ady"
+  isSachet(b.product)
     ? sachetProcesses.every((stage) =>
         b.steps.some(
           (step) => step.sachetStage === stage.id && step.done && !!step.pic,
@@ -300,7 +330,7 @@ export const adypocideReceipts = (s: Draft): AdypocideReceipt[] => [
   ...s.cartons
     .filter(
       (c) =>
-        c.product === "ady" &&
+        isSachet(c.product) &&
         c.unit === "sachet" &&
         available(s, c) > 0 &&
         !s.adypocideReceipts?.some((r) => r.legacySourceId === c.id),
@@ -400,19 +430,19 @@ export function createDraft(): Draft {
     code: "TEST-" + p.short + "-001",
     product: p.id,
     date,
-    target: p.id === "ady" ? 0 : 240,
-    actual: p.id === "ady" ? 0 : 240,
-    sent: p.id === "ady" ? 0 : 120,
-    ...(p.id === "ady" ? { transferredAt: at, transferPic: people[0] } : {}),
-    steps: (p.id === "ady" ? sachetProcesses : bottleSteps).map((_, j) => ({
-      ...(p.id === "ady"
+    target: isSachet(p.id) ? 0 : 240,
+    actual: isSachet(p.id) ? 0 : 240,
+    sent: isSachet(p.id) ? 0 : 120,
+    ...(isSachet(p.id) ? { transferredAt: at, transferPic: people[0] } : {}),
+    steps: (isSachet(p.id) ? sachetProcesses : bottleSteps).map((_, j) => ({
+      ...(isSachet(p.id)
         ? {
             machine: sachetProcesses[j].machine,
             sachetStage: sachetProcesses[j].id,
           }
         : {}),
       pic: people[(i + j) % 4],
-      qty: p.id === "ady" ? null : 240,
+      qty: isSachet(p.id) ? null : 240,
       start: "08:00",
       end: "09:00",
       done: true,
@@ -442,10 +472,10 @@ export function createDraft(): Draft {
     ],
   });
   const cartons: Carton[] = products
-    .filter((p) => p.id !== "ady")
+    .filter((p) => !isSachet(p.id))
     .map((p, i) => ({
       id: "c-" + p.id,
-      ref: "TEST-CTN-" + String(i + 1).padStart(3, "0"),
+      ref: batches.find((b) => b.product === p.id)!.code,
       batchId: "b-" + p.id,
       product: p.id,
       unit: "bottle",
@@ -563,7 +593,7 @@ export function createDraft(): Draft {
     adypocideReceipts: [
       {
         id: "r-ady",
-        ref: "TEST-CTN-005",
+        ref: batches.find((b) => b.product === "ady")!.code,
         batchId: "b-ady",
         pic: people[2],
         at,
@@ -632,7 +662,7 @@ export type Command = {
 export function applyCommand(current: Draft, cmd: Command): Draft {
   if (!roles.some((r) => r.id === cmd.role))
     throw new Error("Choose a valid test role.");
-  const s = structuredClone(current),
+  const s = withBatchReferences(current),
     v = cmd.input,
     at = new Date().toISOString();
   const str = (k: string, required = true) => {
@@ -691,34 +721,109 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         code,
         product: p,
         date: str("date"),
-        target: p === "ady" ? 0 : num("target", 1),
+        target: isSachet(p) ? 0 : num("target", 1),
         actual: 0,
         sent: 0,
-        steps:
-          p === "ady"
-            ? sachetProcesses.map((stage) => ({
-                ...blankStep(),
-                machine: stage.machine,
-                sachetStage: stage.id,
-              }))
-            : bottleSteps.map(blankStep),
+        steps: isSachet(p)
+          ? sachetProcesses.map((stage) => ({
+              ...blankStep(),
+              machine: stage.machine,
+              sachetStage: stage.id,
+            }))
+          : bottleSteps.map(blankStep),
       };
+      b.steps.forEach((step, index) => {
+        const pic = str("pic_" + index, false);
+        if (pic) {
+          step.pic = pic;
+          step.picHistory = [
+            {
+              kind: "assignment",
+              from: "",
+              to: pic,
+              at,
+              reason: "Assigned during batch planning",
+            },
+          ];
+        }
+      });
       s.batches.unshift(b);
       log(
         b.id,
         "Batch planned",
         b.code +
-          (p === "ady"
+          (isSachet(p)
             ? " · machine and PIC records"
             : " · " + b.target + " " + batchUnit(b)),
+      );
+      break;
+    }
+    case "change-step-pic": {
+      allow("production");
+      const b = find(s.batches),
+        index = num("step"),
+        step = b.steps[index];
+      if (!step) throw new Error("Choose a valid production process.");
+      const kind = str("kind"),
+        pic = str("pic"),
+        reason = str("reason");
+      if (kind !== "correction" && kind !== "handover")
+        throw new Error("Choose a PIC correction or shift handover.");
+      if (pic === step.pic) throw new Error("Choose a different PIC.");
+      let effectiveAt: string | undefined;
+      if (kind === "handover") {
+        if (!step.pic)
+          throw new Error("Assign the first PIC before recording a handover.");
+        if (batchTransferred(b))
+          throw new Error(
+            "This batch is already transferred; use a correction for mistaken records.",
+          );
+        const local = str("effectiveAt");
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local))
+          throw new Error("Enter the takeover date and time in Malaysia time.");
+        const time = new Date(local + ":00+08:00");
+        if (
+          !Number.isFinite(time.getTime()) ||
+          time.getTime() > Date.now() ||
+          local.slice(0, 10) < b.date
+        )
+          throw new Error(
+            "Takeover time must be on or after the batch date and not in the future.",
+          );
+        effectiveAt = time.toISOString();
+        const lastHandover = step.picHistory
+          ?.filter((h) => h.kind === "handover")
+          .at(-1);
+        if (
+          lastHandover?.effectiveAt &&
+          effectiveAt <= lastHandover.effectiveAt
+        )
+          throw new Error("Takeover must be later than the previous handover.");
+      }
+      const previous = step.pic;
+      (step.picHistory ??= []).push({
+        kind,
+        from: previous,
+        to: pic,
+        at,
+        effectiveAt,
+        reason,
+      });
+      step.pic = pic;
+      log(
+        b.id,
+        kind === "handover"
+          ? "Production shift handover"
+          : "Production PIC corrected",
+        `${stepNames(b)[index][0]} · ${previous || "Unassigned"} → ${pic} · ${effectiveAt ?? at} · ${reason}`,
       );
       break;
     }
     case "machine": {
       allow("production");
       const b = find(s.batches);
-      if (b.product !== "ady")
-        throw new Error("Machine-only records are for Adypocide.");
+      if (!isSachet(b.product))
+        throw new Error("Machine-only records are for sachet products.");
       if (batchTransferred(b))
         throw new Error("This batch has already been sent to the warehouse.");
       const stage = sachetProcesses.find((stage) => stage.id === str("stage"));
@@ -728,8 +833,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (previous?.done)
         throw new Error("This process already has a recorded PIC.");
       const pic = str("pic");
+      if (previous?.pic && previous.pic !== pic)
+        throw new Error(
+          "Use Edit PIC or Shift handover to change the assigned person first.",
+        );
       const record = {
-        ...blankStep(),
+        ...(previous ?? blankStep()),
         machine: stage.machine,
         sachetStage: stage.id,
         pic,
@@ -748,7 +857,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "step": {
       allow("production");
       const b = find(s.batches);
-      if (b.product === "ady")
+      if (isSachet(b.product))
         throw new Error(
           "Record the machine and PIC without an output quantity.",
         );
@@ -762,7 +871,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const qc = str("qc");
       if (!["not-recorded", "pass", "issue"].includes(qc))
         throw new Error("Choose a QC result.");
+      if (st.pic && st.pic !== str("pic"))
+        throw new Error(
+          "Use Edit PIC or Shift handover to change the assigned person first.",
+        );
       b.steps[index] = {
+        ...st,
         pic: str("pic"),
         qty: num("qty"),
         start: str("start", false),
@@ -788,7 +902,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "transfer": {
       allow("production");
       const b = find(s.batches);
-      if (b.product === "ady") {
+      if (isSachet(b.product)) {
         if (batchTransferred(b))
           throw new Error("This batch has already been sent to the warehouse.");
         if (!batchComplete(b))
@@ -820,19 +934,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "receive": {
       allow("intake");
       const b = find(s.batches, "batchId");
-      if (b.product === "ady")
+      if (isSachet(b.product))
         throw new Error(
-          "Receive Adypocide for boxing before confirming its finished boxes.",
+          "Receive sachets for boxing before confirming its finished boxes.",
         );
       const qty = num("qty", 1),
-        ref = str("ref");
-      if (
-        s.cartons.some((c) => c.ref.toLowerCase() === ref.toLowerCase()) ||
-        adypocideReceipts(s).some(
-          (r) => r.ref.toLowerCase() === ref.toLowerCase(),
-        )
-      )
-        throw new Error("Use a unique carton reference in this draft.");
+        ref = b.code;
       if (qty > b.sent - batchReceived(s, b))
         throw new Error(
           "Count exceeds the outstanding factory transfer. Review the transfer first.",
@@ -859,16 +966,15 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "receive-ady": {
       allow("intake");
       const batch = find(s.batches, "batchId");
-      if (batch.product !== "ady" || !batchTransferred(batch))
-        throw new Error("Choose an Adypocide batch sent to the warehouse.");
-      const ref = str("ref");
+      if (!isSachet(batch.product) || !batchTransferred(batch))
+        throw new Error("Choose a sachet batch sent to the warehouse.");
+      const ref = batch.code;
       if (
-        s.cartons.some((c) => c.ref.toLowerCase() === ref.toLowerCase()) ||
-        adypocideReceipts(s).some(
-          (r) => r.ref.toLowerCase() === ref.toLowerCase(),
-        )
+        adypocideReceipts(s).some((r) => r.batchId === batch.id && !r.stockedAt)
       )
-        throw new Error("Use a unique carton reference in this draft.");
+        throw new Error(
+          "This batch already has a receipt awaiting boxing. Finalize that receipt first.",
+        );
       const receipt: AdypocideReceipt = {
         id: id(),
         ref,
@@ -879,7 +985,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       (s.adypocideReceipts ??= []).unshift(receipt);
       log(
         batch.id,
-        "Adypocide cartons received for boxing",
+        "Sachet cartons received for boxing",
         ref + " · " + receipt.pic + " · stock count pending",
       );
       break;
@@ -889,27 +995,21 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const receipt = adypocideReceipts(s).find(
         (r) => r.id === str("receiptId"),
       );
-      if (!receipt)
-        throw new Error("Choose an Adypocide receipt awaiting boxing.");
+      if (!receipt) throw new Error("Choose a sachet receipt awaiting boxing.");
       if (receipt.stockedAt)
         throw new Error("This receipt has already been stocked in.");
+      const batch = s.batches.find((b) => b.id === receipt.batchId);
+      if (!batch || !isSachet(batch.product))
+        throw new Error("Choose a sachet batch.");
       const boxes = num("boxes"),
         pic = str("pic"),
-        ref = str("ref");
-      if (
-        s.cartons.some((c) => c.ref.toLowerCase() === ref.toLowerCase()) ||
-        adypocideReceipts(s).some(
-          (r) =>
-            r.id !== receipt.id && r.ref.toLowerCase() === ref.toLowerCase(),
-        )
-      )
-        throw new Error("Use a unique stock carton reference.");
+        ref = batch.code;
       const carton: Carton = {
         id: id(),
         ref,
         batchId: receipt.batchId,
-        product: "ady",
-        unit: "box",
+        product: batch.product,
+        unit: batchUnit(batch),
         qty: boxes,
         rack: str("rack"),
         pic,
@@ -923,14 +1023,14 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       else s.adypocideReceipts[index] = finalized;
       log(
         receipt.batchId,
-        "Adypocide box count finalized",
+        "Sachet box count finalized",
         receipt.ref + " · " + boxes + " boxes · " + pic,
       );
       break;
     }
     case "box": {
       throw new Error(
-        "Use Adypocide box stock-in; sachet quantities and conversion ratios are no longer recorded.",
+        "Use sachet box stock-in; sachet quantities and conversion ratios are no longer recorded.",
       );
     }
     case "order": {
@@ -1311,9 +1411,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       allow("intake");
       const c = find(s.cartons, "cartonId");
       if (c.unit === "sachet")
-        throw new Error(
-          "Finalize the finished box count in Adypocide stock-in.",
-        );
+        throw new Error("Finalize the finished box count in sachet stock-in.");
       const count: Count = {
         id: id(),
         cartonId: c.id,
@@ -1344,9 +1442,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error("This count has already been adjusted.");
       const c = s.cartons.find((c) => c.id === count.cartonId)!;
       if (c.unit === "sachet")
-        throw new Error(
-          "Finalize the finished box count in Adypocide stock-in.",
-        );
+        throw new Error("Finalize the finished box count in sachet stock-in.");
       if (available(s, c) !== count.book)
         throw new Error(
           "Stock moved after this count. Count again before adjustment.",

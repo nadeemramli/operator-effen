@@ -155,3 +155,35 @@ server session, and apply assignment restrictions to API responses and database 
 (including PDF sources). The current JSON workspace and role/profile selectors are
 still a shared demo and do not provide private employee access. Keep staff login
 rollout separate until the owner supplies the roster and access administrator.
+
+### Production PIC planning and changes
+
+Each batch plan can assign a PIC to every fixed process. These are planned
+assignments: they do not complete work, create stock or enable handoff. Process
+completion keeps the planned PIC and all change history.
+
+The production log offers **Edit PIC** for a mistaken selection. **More → Shift
+handover** records a real change of performer, including the takeover date/time
+in Malaysia time and a reason. Both preserve the previous PIC and an audit event.
+A handover must have an existing PIC, cannot precede the batch date or previous
+handover, and cannot be recorded after factory transfer. Historical misclicks can
+still be corrected with a reason. Process output totals are not split between PICs.
+
+Previous batches → View record → Open production log selects that batch's work
+date. A prominent date banner and date picker control the daily production list.
+
+### Batch and carton reference
+
+The batch number is the carton reference throughout stock-in, stock issue and
+traceability. Users never enter a separate carton number. Bottle receipts can use
+separate racks/receipt records under the same batch number; internal IDs preserve
+balances and allocations. Sachet intake allows one pending boxing receipt per
+batch; further deliveries can be recorded after that receipt is finalized.
+
+Older saved references are retained as `legacyRef` when normalized for display
+and subsequent saves. Record IDs, quantities, movement links and historical event
+text are unchanged. The factory batch picker shows product name before batch code.
+
+Sachet intake labels are generic. The catalog's factory type controls the route,
+so additional sachet products use the same process and stock-in rules when added
+to the catalog. This change does not invent additional product entries.

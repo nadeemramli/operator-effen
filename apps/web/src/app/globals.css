@@ -892,7 +892,7 @@ td small {
   padding-top: 5px;
   font-variant-numeric: tabular-nums;
 }
-.process-list > button {
+.process-list > .process-row > button {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: start;
@@ -903,18 +903,18 @@ td small {
   padding: 16px 0;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
 }
-.process-list > button:last-child {
+.process-list > .process-row > button:last-child {
   border-bottom: 0;
 }
-.process-list > button:not(:disabled):hover .process-copy > strong {
+.process-list > .process-row > button:not(:disabled):hover .process-copy > strong {
   color: var(--success);
 }
-.process-list > button:focus-visible {
+.process-list > .process-row > button:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 3px;
   border-radius: 4px;
 }
-.process-list > button > .step-number {
+.process-list > .process-row > button > .step-number {
   width: 20px;
   height: 20px;
   margin-top: 1px;
@@ -2539,3 +2539,21 @@ td small {
 .order-profile { max-width: 540px; }
 @media (max-width: 900px) { .order-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .order-filters { grid-template-columns: 1fr; } .order-bulk > button { flex: 1 1 45%; height: auto; min-height: 38px; white-space: normal; } }
+
+.production-date-banner { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:22px 24px; border:1px solid var(--border); border-left:4px solid var(--success); border-radius:10px; background:var(--card); }
+.production-date-banner > div { display:grid; gap:7px; }
+.production-date-banner span { font-size:11px; letter-spacing:.08em; color:var(--muted-foreground); }
+.production-date-banner strong { font-size:22px; line-height:1.35; }
+.production-date-banner label { display:grid; gap:6px; font-size:12px; color:var(--muted-foreground); }
+.plan-pic-field { display:grid; gap:6px; margin-left:auto; min-width:210px; font-size:12px; color:var(--muted-foreground); }
+.process-pic-tools { display:flex; flex-wrap:wrap; gap:8px; align-items:start; padding:4px 0 12px; }
+.pic-more, .pic-history { font-size:12px; color:var(--muted-foreground); }
+.pic-more summary, .pic-history summary { cursor:pointer; padding:8px 0; }
+.pic-history { width:100%; white-space:normal; }
+.pic-history p { margin:8px 0; line-height:1.65; }
+@media (max-width:600px) {
+ .production-date-banner { flex-direction:column; align-items:stretch; padding:18px; }
+ .production-date-banner strong { font-size:20px; }
+ .plan-route > div { flex-wrap:wrap; }
+ .plan-pic-field { flex:1 1 100%; min-width:0; margin-left:0; }
+}
