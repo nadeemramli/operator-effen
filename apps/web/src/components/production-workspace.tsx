@@ -35,6 +35,7 @@ import {
   products,
   product,
   stepNames,
+  sachetProcesses,
   today,
   tr,
   type Batch,
@@ -699,34 +700,26 @@ function AdypocideProductionCard({
       </div>
       <p className="field-hint mt-4">
         {t(
-          "Record every machine and PIC involved in this batch. Finished boxes are counted at stock-in.",
-          "Rekod setiap mesin dan PIC yang terlibat dalam kelompok ini. Kotak siap dikira semasa stok masuk.",
+          "Record a PIC for each of the four fixed processes. The batch number above applies to every stage. Finished boxes are counted at stock-in.",
+          "Rekod PIC untuk keempat-empat proses tetap. Nombor kelompok di atas digunakan untuk setiap peringkat. Kotak siap dikira semasa stok masuk.",
         )}
       </p>
-      <MachineRecords batch={b} lang={lang} />
-      {!sent && (
-        <Button
-          variant="outline"
-          onClick={() =>
-            show({
-              type: "machine",
-              title: t("Record machine and PIC", "Rekod mesin dan PIC"),
-              description: b.code,
-              hidden: { id: b.id },
-              fields: [
-                {
-                  name: "machine",
-                  label: t("Machine name / number", "Nama / nombor mesin"),
-                },
-                pic(),
-              ],
-            })
-          }
-        >
-          <Plus size={15} />
-          {t("Record machine and PIC", "Rekod mesin dan PIC")}
-        </Button>
-      )}
+      <MachineRecords
+        batch={b}
+        lang={lang}
+        onRecord={
+          sent
+            ? undefined
+            : (stage) =>
+                show({
+                  type: "machine",
+                  title: t("Record process PIC", "Rekod PIC proses"),
+                  description: `${b.code} · ${t(stage.en, stage.ms)}`,
+                  hidden: { id: b.id, stage: stage.id },
+                  fields: [pic()],
+                })
+        }
+      />
       <div className="batch-footer">
         <small>{b.date}</small>
         <Button
@@ -754,51 +747,87 @@ function AdypocideProductionCard({
   );
 }
 
-function MachineRecords({ batch: b, lang }: { batch: Batch; lang: Lang }) {
+function MachineRecords({
+  batch: b,
+  lang,
+  onRecord,
+}: {
+  batch: Batch;
+  lang: Lang;
+  onRecord?: (stage: (typeof sachetProcesses)[number]) => void;
+}) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
-  const records = b.steps.filter((step) => step.done);
-  if (!records.length)
-    return (
-      <p className="field-hint my-4">
-        {t("No machine records yet.", "Belum ada rekod mesin.")}
-      </p>
-    );
+  const showFixed =
+    !batchTransferred(b) || b.steps.some((step) => step.sachetStage);
+  const legacy = b.steps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => !step.sachetStage && step.done);
   return (
     <div className="table-scroll my-4">
       <table className="machine-records">
         <thead>
           <tr>
-            <th>
-              {t("Machine / recorded process", "Mesin / proses direkodkan")}
-            </th>
+            <th>{t("Process / machine", "Proses / mesin")}</th>
             <th>
               {t("Person responsible (PIC)", "Orang bertanggungjawab (PIC)")}
             </th>
           </tr>
         </thead>
         <tbody>
-          {b.steps.map(
-            (step, i) =>
-              step.done && (
-                <tr key={i}>
-                  <td data-label={t("Machine", "Mesin")}>
-                    {stepNames(b)[i][lang === "ms" ? 1 : 0]}
+          {showFixed &&
+            sachetProcesses.map((stage, index) => {
+              const step = b.steps.find(
+                (step) => step.sachetStage === stage.id,
+              );
+              return (
+                <tr key={stage.id}>
+                  <td data-label={t("Process / machine", "Proses / mesin")}>
+                    {index + 1}. {t(stage.en, stage.ms)}
                   </td>
-                  <td
-                    data-label={t(
-                      "Person responsible (PIC)",
-                      "Orang bertanggungjawab (PIC)",
+                  <td data-label="PIC">
+                    {step?.done ? (
+                      <PersonBadge
+                        name={step.pic}
+                        lang={lang}
+                        caption={t(
+                          "Recorded performer",
+                          "Pelaksana direkodkan",
+                        )}
+                      />
+                    ) : onRecord ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => onRecord(stage)}
+                      >
+                        {t("Record PIC", "Rekod PIC")}
+                      </Button>
+                    ) : (
+                      <span className="text-muted-foreground">
+                        {t("Not recorded", "Belum direkod")}
+                      </span>
                     )}
-                  >
-                    <PersonBadge
-                      name={step.pic}
-                      lang={lang}
-                      caption={t("Recorded performer", "Pelaksana direkodkan")}
-                    />
                   </td>
                 </tr>
-              ),
-          )}
+              );
+            })}
+          {legacy.map(({ step, index }) => (
+            <tr key={`legacy-${index}`}>
+              <td data-label={t("Historical record", "Rekod terdahulu")}>
+                {stepNames(b)[index][lang === "ms" ? 1 : 0]}
+                <small>
+                  {t("Historical machine record", "Rekod mesin terdahulu")}
+                </small>
+              </td>
+              <td data-label="PIC">
+                <PersonBadge
+                  name={step.pic}
+                  lang={lang}
+                  caption={t("Recorded performer", "Pelaksana direkodkan")}
+                />
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -821,7 +850,9 @@ function BatchPlanForm({
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [productId, setProductId] = useState(defaultProduct);
   const route =
-    productId === "ady" ? [] : stepNames({ product: productId } as Batch);
+    productId === "ady"
+      ? sachetProcesses.map((stage) => [stage.en, stage.ms])
+      : stepNames({ product: productId } as Batch);
   return (
     <Panel
       className="batch-plan"
@@ -923,8 +954,8 @@ function BatchPlanForm({
               <p>
                 {productId === "ady"
                   ? t(
-                      "Record the machine name or number and its PIC in the production log. No output quantity is required.",
-                      "Rekod nama atau nombor mesin dan PIC dalam log pengeluaran. Kuantiti hasil tidak diperlukan.",
+                      "The four processes below are fixed. Record only the PIC for each process under this batch number. No output quantity is required.",
+                      "Empat proses di bawah adalah tetap. Rekod PIC sahaja untuk setiap proses di bawah nombor kelompok ini. Kuantiti hasil tidak diperlukan.",
                     )
                   : t(
                       "Assign the actual PIC and enter output when each process is recorded in the production log.",

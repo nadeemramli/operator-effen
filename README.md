@@ -97,8 +97,12 @@ are evidence of recorded work, not a physical guarantee of parcel contents.
 
 ### Adypocide production and stock-in
 
-Production records the batch, each machine, and its PIC without planned or actual
-sachet quantities. A factory handoff and warehouse receipt do not create stock.
+Production uses four fixed sachet processes under one batch number: Mixer machine
+(mixing), Sachet filling machine (filling), Inkjet printer (batching), and Shrink
+machine (plastic wrapping). Each process records only its PIC, with no planned or
+actual sachet quantities. All four PICs are required before warehouse handoff.
+Historical free-form machine records keep their original labels and PICs; they
+are not automatically mapped to the new stages. A factory handoff and warehouse receipt do not create stock.
 After warehouse boxing, the stock-in supervisor finalizes the receipt with the
 actual finished box count (one box is one inventory unit), stock carton reference,
 and rack. The box carton retains its receipt and batch links for machine/PIC tracing.

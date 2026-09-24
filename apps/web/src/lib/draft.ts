@@ -79,12 +79,40 @@ export const bottleSteps = [
   ["Bottle Cap & Capping Machine", "Penutup botol & mesin penutup"],
   ["Batching, Sticker & QC", "Nombor kelompok, pelekat & QC"],
 ];
+export const sachetProcesses = [
+  {
+    id: "mixing",
+    machine: "Mixer machine",
+    en: "Mixer machine (mixing)",
+    ms: "Mesin pengadun (mengadun)",
+  },
+  {
+    id: "filling",
+    machine: "Sachet filling machine",
+    en: "Sachet filling machine (filling)",
+    ms: "Mesin pengisian sachet (mengisi)",
+  },
+  {
+    id: "batching",
+    machine: "Inkjet printer",
+    en: "Inkjet printer (batching)",
+    ms: "Pencetak inkjet (nombor kelompok)",
+  },
+  {
+    id: "wrapping",
+    machine: "Shrink machine",
+    en: "Shrink machine (plastic wrapping)",
+    ms: "Mesin shrink (balutan plastik)",
+  },
+];
+// Labels for historical records created before the fixed sachet route.
 export const sachetSteps = [
   ["Filling & sealing", "Pengisian & pengedapan"],
   ["Batch marking & checks", "Penandaan kelompok & semakan"],
   ["Count & bag", "Pengiraan & pembungkusan beg"],
 ];
 export interface Step {
+  sachetStage?: string;
   machine?: string;
   pic: string;
   qty: number | null;
@@ -243,18 +271,25 @@ export interface Draft {
 }
 export const stepNames = (b: Batch) =>
   b.product === "ady"
-    ? b.steps.map((step, i) =>
-        step.machine
-          ? [step.machine, step.machine]
-          : (sachetSteps[i] ?? ["Machine record", "Rekod mesin"]),
-      )
+    ? b.steps.map((step, i) => {
+        const stage = sachetProcesses.find((p) => p.id === step.sachetStage);
+        return stage
+          ? [stage.en, stage.ms]
+          : step.machine
+            ? [step.machine, step.machine]
+            : (sachetSteps[i] ?? ["Machine record", "Rekod mesin"]);
+      })
     : bottleSteps;
 export const batchFactory = (b: Batch) =>
   b.product === "ady" ? "sachet" : "bottle";
 export const batchUnit = (b: Batch): Unit => product(b.product).unit;
 export const batchComplete = (b: Batch) =>
   b.product === "ady"
-    ? b.steps.some((step) => step.done && step.pic)
+    ? sachetProcesses.every((stage) =>
+        b.steps.some(
+          (step) => step.sachetStage === stage.id && step.done && !!step.pic,
+        ),
+      )
     : b.steps.every((step) => step.done);
 export const batchTransferred = (b: Batch) => !!b.transferredAt || b.sent > 0;
 export const stockCartons = (s: Draft) =>
@@ -369,17 +404,20 @@ export function createDraft(): Draft {
     actual: p.id === "ady" ? 0 : 240,
     sent: p.id === "ady" ? 0 : 120,
     ...(p.id === "ady" ? { transferredAt: at, transferPic: people[0] } : {}),
-    steps: (p.id === "ady" ? [["Sample sachet machine"]] : bottleSteps).map(
-      (_, j) => ({
-        ...(p.id === "ady" ? { machine: "Sample sachet machine" } : {}),
-        pic: people[(i + j) % 4],
-        qty: p.id === "ady" ? null : 240,
-        start: "08:00",
-        end: "09:00",
-        done: true,
-        qc: "not-recorded",
-      }),
-    ),
+    steps: (p.id === "ady" ? sachetProcesses : bottleSteps).map((_, j) => ({
+      ...(p.id === "ady"
+        ? {
+            machine: sachetProcesses[j].machine,
+            sachetStage: sachetProcesses[j].id,
+          }
+        : {}),
+      pic: people[(i + j) % 4],
+      qty: p.id === "ady" ? null : 240,
+      start: "08:00",
+      end: "09:00",
+      done: true,
+      qc: "not-recorded",
+    })),
   }));
   batches.push({
     id: "b-cav-next",
@@ -656,7 +694,14 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         target: p === "ady" ? 0 : num("target", 1),
         actual: 0,
         sent: 0,
-        steps: p === "ady" ? [] : bottleSteps.map(blankStep),
+        steps:
+          p === "ady"
+            ? sachetProcesses.map((stage) => ({
+                ...blankStep(),
+                machine: stage.machine,
+                sachetStage: stage.id,
+              }))
+            : bottleSteps.map(blankStep),
       };
       s.batches.unshift(b);
       log(
@@ -676,13 +721,27 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error("Machine-only records are for Adypocide.");
       if (batchTransferred(b))
         throw new Error("This batch has already been sent to the warehouse.");
-      const machine = str("machine"),
-        pic = str("pic");
-      b.steps.push({ ...blankStep(), machine, pic, done: true });
+      const stage = sachetProcesses.find((stage) => stage.id === str("stage"));
+      if (!stage)
+        throw new Error("Choose one of the four fixed sachet processes.");
+      const previous = b.steps.find((step) => step.sachetStage === stage.id);
+      if (previous?.done)
+        throw new Error("This process already has a recorded PIC.");
+      const pic = str("pic");
+      const record = {
+        ...blankStep(),
+        machine: stage.machine,
+        sachetStage: stage.id,
+        pic,
+        done: true,
+      };
+      if (previous) b.steps[b.steps.indexOf(previous)] = record;
+      else b.steps.push(record);
+
       log(
         b.id,
         "Machine responsibility recorded",
-        b.code + " · " + machine + " · " + pic,
+        b.code + " · " + stage.en + " · " + pic,
       );
       break;
     }
@@ -733,7 +792,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         if (batchTransferred(b))
           throw new Error("This batch has already been sent to the warehouse.");
         if (!batchComplete(b))
-          throw new Error("Record a machine and PIC before transfer.");
+          throw new Error(
+            "Record a machine and PIC for all four fixed processes before transfer.",
+          );
         b.transferredAt = at;
         b.transferPic = str("pic");
         log(
