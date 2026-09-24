@@ -29,6 +29,9 @@ import {
 } from "./draft-primitives";
 import {
   batchUnit,
+  batchFactory,
+  batchComplete,
+  batchTransferred,
   products,
   product,
   stepNames,
@@ -51,7 +54,7 @@ const qcLabel = (value: string, lang: Lang) =>
           "Tidak direkod / tidak diperiksa",
         );
 function BatchStatus({ batch, lang }: { batch: Batch; lang: Lang }) {
-  const complete = batch.steps.every((s) => s.done),
+  const complete = batchComplete(batch),
     started = batch.steps.some((s) => s.done);
   return (
     <span
@@ -120,20 +123,18 @@ export function ProductionWorkspace({
   const newBatch = () => router.push(href("plan"));
   const visibleBatches = state.batches.filter(
     (b) =>
-      (factory === "all" || batchUnit(b) === factory) &&
+      (factory === "all" || batchFactory(b) === factory) &&
       (!selectedId || b.id === selectedId),
   );
   const historyBatches = state.batches
     .filter(
       (b) =>
-        (factory === "all" || batchUnit(b) === factory) &&
+        (factory === "all" || batchFactory(b) === factory) &&
         (b.code + " " + product(b.product).name + " " + b.date)
           .toLowerCase()
           .includes(search.toLowerCase()) &&
         (status === "all" ||
-          (status === "recorded"
-            ? b.steps.every((s) => s.done)
-            : !b.steps.every((s) => s.done))),
+          (status === "recorded" ? batchComplete(b) : !batchComplete(b))),
     )
     .sort((a, b) => b.date.localeCompare(a.date));
   const productionLog = (
@@ -174,8 +175,8 @@ export function ProductionWorkspace({
         <div className="inline-note">
           <AlertTriangle size={17} />
           {t(
-            "Sachet steps are provisional until the factory form is supplied. Bottling follows the existing operator log.",
-            "Langkah sachet masih cadangan sehingga borang kilang diterima. Pembotolan mengikut log operator sedia ada.",
+            "Adypocide production records each machine and its PIC. The warehouse confirms finished boxes during stock-in.",
+            "Pengeluaran Adypocide merekod setiap mesin dan PIC. Gudang mengesahkan kotak siap semasa stok masuk.",
           )}
         </div>
       )}
@@ -191,193 +192,206 @@ export function ProductionWorkspace({
         {state.batches
           .filter(
             (b) =>
-              (factory === "all" || batchUnit(b) === factory) &&
+              (factory === "all" || batchFactory(b) === factory) &&
               (!selectedId || b.id === selectedId),
           )
-          .map((b) => (
-            <section className="batch-card" key={b.id}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <ProductName id={b.product} />
-                  <button
-                    onClick={() => router.push(href("history", b.id))}
-                    className="record-link mono block mt-2"
-                  >
-                    {b.code}
-                  </button>
+          .map((b) =>
+            b.product === "ady" ? (
+              <AdypocideProductionCard
+                key={b.id}
+                batch={b}
+                lang={lang}
+                show={show}
+                pic={pic}
+                onOpenRecord={() => router.push(href("history", b.id))}
+              />
+            ) : (
+              <section className="batch-card" key={b.id}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <ProductName id={b.product} />
+                    <button
+                      onClick={() => router.push(href("history", b.id))}
+                      className="record-link mono block mt-2"
+                    >
+                      {b.code}
+                    </button>
+                  </div>
+                  <BatchStatus batch={b} lang={lang} />
                 </div>
-                <BatchStatus batch={b} lang={lang} />
-              </div>
-              <div className="batch-stats">
-                <span>
-                  {t("Planned", "Dirancang")}
-                  <strong>{fmt(b.target)}</strong>
-                </span>
-                <span>
-                  {t("Finished", "Siap")}
-                  <strong>{fmt(b.actual)}</strong>
-                </span>
-                <span>
-                  {t("Sent to fulfilment", "Dihantar ke pemenuhan")}
-                  <strong>{fmt(b.sent)}</strong>
-                </span>
-              </div>
-              <div className="process-list">
-                {b.steps.map((step, i) => (
-                  <button
-                    key={i}
-                    disabled={step.done}
+                <div className="batch-stats">
+                  <span>
+                    {t("Planned", "Dirancang")}
+                    <strong>{fmt(b.target)}</strong>
+                  </span>
+                  <span>
+                    {t("Finished", "Siap")}
+                    <strong>{fmt(b.actual)}</strong>
+                  </span>
+                  <span>
+                    {t("Sent to fulfilment", "Dihantar ke pemenuhan")}
+                    <strong>{fmt(b.sent)}</strong>
+                  </span>
+                </div>
+                <div className="process-list">
+                  {b.steps.map((step, i) => (
+                    <button
+                      key={i}
+                      disabled={step.done}
+                      onClick={() =>
+                        show({
+                          type: "step",
+                          title: stepNames(b)[i][lang === "ms" ? 1 : 0],
+                          description:
+                            b.code +
+                            " · " +
+                            t(
+                              "Enter completed output and the actual performer.",
+                              "Masukkan hasil siap dan pelaksana sebenar.",
+                            ),
+                          hidden: { id: b.id, step: i },
+                          fields: [
+                            pic(),
+                            number(
+                              "qty",
+                              t("Output quantity", "Jumlah hasil") +
+                                " (" +
+                                units(lang, batchUnit(b)) +
+                                ")",
+                            ),
+                            {
+                              name: "start",
+                              label: t("Start time", "Masa mula"),
+                              type: "time",
+                              required: false,
+                            },
+                            {
+                              name: "end",
+                              label: t("End time", "Masa tamat"),
+                              type: "time",
+                              required: false,
+                            },
+                            {
+                              name: "qc",
+                              label: t(
+                                "QC result, if performed",
+                                "Keputusan QC, jika dilakukan",
+                              ),
+                              type: "select",
+                              value: "not-recorded",
+                              options: [
+                                {
+                                  value: "not-recorded",
+                                  label: t(
+                                    "Not recorded / not checked",
+                                    "Tidak direkod / tidak diperiksa",
+                                  ),
+                                },
+                                {
+                                  value: "pass",
+                                  label: t(
+                                    "Checked — passed",
+                                    "Diperiksa — lulus",
+                                  ),
+                                },
+                                {
+                                  value: "issue",
+                                  label: t(
+                                    "Checked — issue found",
+                                    "Diperiksa — isu ditemui",
+                                  ),
+                                },
+                              ],
+                            },
+                          ],
+                        })
+                      }
+                    >
+                      <span
+                        className={"step-number " + (step.done ? "done" : "")}
+                      >
+                        {step.done ? <Check size={13} /> : i + 1}
+                      </span>
+                      <span className="process-copy">
+                        <strong>
+                          {stepNames(b)[i][lang === "ms" ? 1 : 0]}
+                        </strong>
+                        {step.done ? (
+                          <PersonBadge
+                            name={step.pic}
+                            lang={lang}
+                            compact
+                            caption={t(
+                              "Recorded performer",
+                              "Pelaksana direkodkan",
+                            )}
+                          />
+                        ) : (
+                          <small className="process-pending">
+                            {t(
+                              "Awaiting supervisor entry",
+                              "Menunggu rekod penyelia",
+                            )}
+                          </small>
+                        )}
+                      </span>
+                      {step.done ? (
+                        <span className="process-output">
+                          <span>{fmt(step.qty ?? 0)}</span>
+                          <small>{units(lang, batchUnit(b))}</small>
+                        </span>
+                      ) : (
+                        <Plus size={14} className="process-add" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <div className="batch-footer">
+                  <small>
+                    {b.date} · {units(lang, batchUnit(b))}
+                  </small>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!batchComplete(b) || b.actual <= b.sent}
                     onClick={() =>
                       show({
-                        type: "step",
-                        title: stepNames(b)[i][lang === "ms" ? 1 : 0],
+                        type: "transfer",
+                        title: t(
+                          "Send to fulfilment",
+                          "Hantar ke pusat pemenuhan",
+                        ),
                         description:
                           b.code +
                           " · " +
-                          t(
-                            "Enter completed output and the actual performer.",
-                            "Masukkan hasil siap dan pelaksana sebenar.",
-                          ),
-                        hidden: { id: b.id, step: i },
+                          (b.actual - b.sent) +
+                          " " +
+                          t("available at factory", "tersedia di kilang"),
+                        hidden: { id: b.id },
                         fields: [
-                          pic(),
                           number(
                             "qty",
-                            t("Output quantity", "Jumlah hasil") +
-                              " (" +
-                              units(lang, batchUnit(b)) +
-                              ")",
+                            t("Units sent", "Unit dihantar"),
+                            undefined,
+                            1,
                           ),
-                          {
-                            name: "start",
-                            label: t("Start time", "Masa mula"),
-                            type: "time",
-                            required: false,
-                          },
-                          {
-                            name: "end",
-                            label: t("End time", "Masa tamat"),
-                            type: "time",
-                            required: false,
-                          },
-                          {
-                            name: "qc",
-                            label: t(
-                              "QC result, if performed",
-                              "Keputusan QC, jika dilakukan",
-                            ),
-                            type: "select",
-                            value: "not-recorded",
-                            options: [
-                              {
-                                value: "not-recorded",
-                                label: t(
-                                  "Not recorded / not checked",
-                                  "Tidak direkod / tidak diperiksa",
-                                ),
-                              },
-                              {
-                                value: "pass",
-                                label: t(
-                                  "Checked — passed",
-                                  "Diperiksa — lulus",
-                                ),
-                              },
-                              {
-                                value: "issue",
-                                label: t(
-                                  "Checked — issue found",
-                                  "Diperiksa — isu ditemui",
-                                ),
-                              },
-                            ],
-                          },
+                          pic(),
                         ],
                       })
                     }
                   >
-                    <span
-                      className={"step-number " + (step.done ? "done" : "")}
-                    >
-                      {step.done ? <Check size={13} /> : i + 1}
-                    </span>
-                    <span className="process-copy">
-                      <strong>{stepNames(b)[i][lang === "ms" ? 1 : 0]}</strong>
-                      {step.done ? (
-                        <PersonBadge
-                          name={step.pic}
-                          lang={lang}
-                          compact
-                          caption={t(
-                            "Recorded performer",
-                            "Pelaksana direkodkan",
-                          )}
-                        />
-                      ) : (
-                        <small className="process-pending">
-                          {t(
-                            "Awaiting supervisor entry",
-                            "Menunggu rekod penyelia",
-                          )}
-                        </small>
-                      )}
-                    </span>
-                    {step.done ? (
-                      <span className="process-output">
-                        <span>{fmt(step.qty ?? 0)}</span>
-                        <small>{units(lang, batchUnit(b))}</small>
-                      </span>
-                    ) : (
-                      <Plus size={14} className="process-add" />
-                    )}
-                  </button>
-                ))}
-              </div>
-              <div className="batch-footer">
-                <small>
-                  {b.date} · {units(lang, batchUnit(b))}
-                </small>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!b.steps.every((s) => s.done) || b.actual <= b.sent}
-                  onClick={() =>
-                    show({
-                      type: "transfer",
-                      title: t(
-                        "Send to fulfilment",
-                        "Hantar ke pusat pemenuhan",
-                      ),
-                      description:
-                        b.code +
-                        " · " +
-                        (b.actual - b.sent) +
-                        " " +
-                        t("available at factory", "tersedia di kilang"),
-                      hidden: { id: b.id },
-                      fields: [
-                        number(
-                          "qty",
-                          t("Units sent", "Unit dihantar"),
-                          undefined,
-                          1,
-                        ),
-                        pic(),
-                      ],
-                    })
-                  }
-                >
-                  {t("Send to fulfilment", "Hantar ke pemenuhan")}
-                  <ArrowRight size={14} />
-                </Button>
-              </div>
-            </section>
-          ))}
+                    {t("Send to fulfilment", "Hantar ke pemenuhan")}
+                    <ArrowRight size={14} />
+                  </Button>
+                </div>
+              </section>
+            ),
+          )}
       </div>
       <p className="transfer-help">
         {t(
-          "Send to fulfilment records finished stock leaving the factory. The stock-in supervisor records its arrival separately.",
-          "Hantar ke pemenuhan merekod stok siap yang meninggalkan kilang. Penyelia stok masuk merekod penerimaannya secara berasingan.",
+          "Send to fulfilment records the factory handoff. Adypocide quantities are finalized by stock-in after warehouse boxing.",
+          "Hantar ke pemenuhan merekod serahan kilang. Kuantiti Adypocide dimuktamadkan oleh stok masuk selepas pengkotakan di gudang.",
         )}
       </p>
       <Button variant="outline" onClick={closeDay}>
@@ -572,8 +586,14 @@ export function ProductionWorkspace({
                             "Dirancang / siap",
                           )}
                         >
-                          {fmt(b.target)} / {fmt(b.actual)}
-                          <small>{units(lang, batchUnit(b))}</small>
+                          {b.product === "ady" ? (
+                            t("Machine / PIC records", "Rekod mesin / PIC")
+                          ) : (
+                            <>
+                              {fmt(b.target)} / {fmt(b.actual)}
+                              <small>{units(lang, batchUnit(b))}</small>
+                            </>
+                          )}
                         </td>
                         <td data-label={t("Recorded PICs", "PIC direkodkan")}>
                           <div className="history-people">
@@ -642,6 +662,149 @@ export function ProductionWorkspace({
   );
 }
 
+function AdypocideProductionCard({
+  batch: b,
+  lang,
+  show,
+  pic,
+  onOpenRecord,
+}: {
+  batch: Batch;
+  lang: Lang;
+  show: (spec: FormSpec) => void;
+  pic: (name?: string, label?: string) => Field;
+  onOpenRecord: () => void;
+}) {
+  const t = (en: string, ms: string) => tr(lang, en, ms);
+  const sent = batchTransferred(b);
+  return (
+    <section className="batch-card">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <ProductName id={b.product} />
+          <button
+            onClick={onOpenRecord}
+            className="record-link mono block mt-2"
+          >
+            {b.code}
+          </button>
+        </div>
+        <span
+          className={"status-pill " + (sent ? "tone-success" : "tone-info")}
+        >
+          {sent
+            ? t("Sent to warehouse", "Dihantar ke gudang")
+            : t("Machine records", "Rekod mesin")}
+        </span>
+      </div>
+      <p className="field-hint mt-4">
+        {t(
+          "Record every machine and PIC involved in this batch. Finished boxes are counted at stock-in.",
+          "Rekod setiap mesin dan PIC yang terlibat dalam kelompok ini. Kotak siap dikira semasa stok masuk.",
+        )}
+      </p>
+      <MachineRecords batch={b} lang={lang} />
+      {!sent && (
+        <Button
+          variant="outline"
+          onClick={() =>
+            show({
+              type: "machine",
+              title: t("Record machine and PIC", "Rekod mesin dan PIC"),
+              description: b.code,
+              hidden: { id: b.id },
+              fields: [
+                {
+                  name: "machine",
+                  label: t("Machine name / number", "Nama / nombor mesin"),
+                },
+                pic(),
+              ],
+            })
+          }
+        >
+          <Plus size={15} />
+          {t("Record machine and PIC", "Rekod mesin dan PIC")}
+        </Button>
+      )}
+      <div className="batch-footer">
+        <small>{b.date}</small>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={sent || !batchComplete(b)}
+          onClick={() =>
+            show({
+              type: "transfer",
+              title: t("Send batch to warehouse", "Hantar kelompok ke gudang"),
+              description: t(
+                "Confirm that all machine and PIC records are complete. Stock-in will count finished boxes after boxing.",
+                "Sahkan semua rekod mesin dan PIC lengkap. Stok masuk akan mengira kotak siap selepas pengkotakan.",
+              ),
+              hidden: { id: b.id },
+              fields: [pic()],
+            })
+          }
+        >
+          {t("Send to warehouse", "Hantar ke gudang")}
+          <ArrowRight size={14} />
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+function MachineRecords({ batch: b, lang }: { batch: Batch; lang: Lang }) {
+  const t = (en: string, ms: string) => tr(lang, en, ms);
+  const records = b.steps.filter((step) => step.done);
+  if (!records.length)
+    return (
+      <p className="field-hint my-4">
+        {t("No machine records yet.", "Belum ada rekod mesin.")}
+      </p>
+    );
+  return (
+    <div className="table-scroll my-4">
+      <table className="machine-records">
+        <thead>
+          <tr>
+            <th>
+              {t("Machine / recorded process", "Mesin / proses direkodkan")}
+            </th>
+            <th>
+              {t("Person responsible (PIC)", "Orang bertanggungjawab (PIC)")}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {b.steps.map(
+            (step, i) =>
+              step.done && (
+                <tr key={i}>
+                  <td data-label={t("Machine", "Mesin")}>
+                    {stepNames(b)[i][lang === "ms" ? 1 : 0]}
+                  </td>
+                  <td
+                    data-label={t(
+                      "Person responsible (PIC)",
+                      "Orang bertanggungjawab (PIC)",
+                    )}
+                  >
+                    <PersonBadge
+                      name={step.pic}
+                      lang={lang}
+                      caption={t("Recorded performer", "Pelaksana direkodkan")}
+                    />
+                  </td>
+                </tr>
+              ),
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function BatchPlanForm({
   lang,
   busy,
@@ -657,7 +820,8 @@ function BatchPlanForm({
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [productId, setProductId] = useState(defaultProduct);
-  const route = stepNames({ product: productId } as Batch);
+  const route =
+    productId === "ady" ? [] : stepNames({ product: productId } as Batch);
   return (
     <Panel
       className="batch-plan"
@@ -733,32 +897,39 @@ function BatchPlanForm({
                 defaultValue={today()}
               />
             </div>
-            <div>
-              <Label htmlFor="plan-target">
-                {t("Planned quantity", "Kuantiti dirancang")} ·{" "}
-                {units(lang, productId === "ady" ? "sachet" : "bottle")}
-              </Label>
-              <Input
-                id="plan-target"
-                name="target"
-                type="number"
-                required
-                min={1}
-                max={1000000}
-                step={1}
-                placeholder="0"
-              />
-            </div>
+            {productId !== "ady" && (
+              <div>
+                <Label htmlFor="plan-target">
+                  {t("Planned quantity", "Kuantiti dirancang")} ·{" "}
+                  {units(lang, "bottle")}
+                </Label>
+                <Input
+                  id="plan-target"
+                  name="target"
+                  type="number"
+                  required
+                  min={1}
+                  max={1000000}
+                  step={1}
+                  placeholder="0"
+                />
+              </div>
+            )}
           </div>
           <div className="plan-section-title">
             <span>02</span>
             <div>
               <h3>{t("Production process", "Proses pengeluaran")}</h3>
               <p>
-                {t(
-                  "Assign the actual PIC and enter output when each process is recorded in the production log.",
-                  "Pilih PIC sebenar dan masukkan hasil apabila setiap proses direkodkan dalam log pengeluaran.",
-                )}
+                {productId === "ady"
+                  ? t(
+                      "Record the machine name or number and its PIC in the production log. No output quantity is required.",
+                      "Rekod nama atau nombor mesin dan PIC dalam log pengeluaran. Kuantiti hasil tidak diperlukan.",
+                    )
+                  : t(
+                      "Assign the actual PIC and enter output when each process is recorded in the production log.",
+                      "Pilih PIC sebenar dan masukkan hasil apabila setiap proses direkodkan dalam log pengeluaran.",
+                    )}
               </p>
             </div>
           </div>
@@ -780,16 +951,21 @@ function BatchPlanForm({
             <p className="inline-note">
               <AlertTriangle size={16} />
               {t(
-                "Sachet steps are provisional. Plan in loose sachets, not retail boxes.",
-                "Langkah sachet masih cadangan. Rancang dalam unit sachet longgar, bukan kotak jualan.",
+                "The stock-in supervisor confirms the actual finished box count after warehouse boxing. One finished box is one inventory unit.",
+                "Penyelia stok masuk mengesahkan jumlah kotak siap selepas pengkotakan di gudang. Satu kotak siap ialah satu unit inventori.",
               )}
             </p>
           )}
           <p className="field-hint">
-            {t(
-              "Planning does not create finished stock. Actual output and sending stock to fulfilment are recorded after the work takes place.",
-              "Perancangan tidak mewujudkan stok siap. Hasil sebenar dan penghantaran ke pemenuhan direkod selepas kerja dilakukan.",
-            )}
+            {productId === "ady"
+              ? t(
+                  "Save the batch, record every machine and PIC involved, then send the batch to the warehouse for boxing.",
+                  "Simpan kelompok, rekod setiap mesin dan PIC terlibat, kemudian hantar kelompok ke gudang untuk pengkotakan.",
+                )
+              : t(
+                  "Planning does not create finished stock. Actual output and sending stock to fulfilment are recorded after the work takes place.",
+                  "Perancangan tidak mewujudkan stok siap. Hasil sebenar dan penghantaran ke pemenuhan direkod selepas kerja dilakukan.",
+                )}
           </p>
         </fieldset>
         <div className="plan-actions">
@@ -810,6 +986,34 @@ function BatchPlanForm({
 
 function BatchRecord({ batch: b, lang }: { batch: Batch; lang: Lang }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
+  if (b.product === "ady")
+    return (
+      <Panel
+        className="batch-record"
+        title={b.code}
+        detail={
+          b.date +
+          " · " +
+          t("Adypocide machine responsibility", "Tanggungjawab mesin Adypocide")
+        }
+      >
+        <div className="batch-record-heading">
+          <ProductName id={b.product} />
+          <span>
+            {batchTransferred(b)
+              ? t("Sent to warehouse", "Dihantar ke gudang")
+              : t("Awaiting warehouse handoff", "Menunggu serahan ke gudang")}
+          </span>
+        </div>
+        <MachineRecords batch={b} lang={lang} />
+        <p className="record-footnote">
+          {t(
+            "The stock-in supervisor records inventory after counting finished boxes in the warehouse.",
+            "Penyelia stok masuk merekod inventori selepas mengira kotak siap di gudang.",
+          )}
+        </p>
+      </Panel>
+    );
   return (
     <Panel
       className="batch-record"

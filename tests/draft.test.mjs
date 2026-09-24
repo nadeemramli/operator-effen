@@ -6,6 +6,9 @@ import {
   available,
   orderIssued,
   batchReceived,
+  batchComplete,
+  adypocideReceipts,
+  stockCartons,
 } from "../apps/web/src/lib/draft.ts";
 const run = (s, role, type, input) => applyCommand(s, { role, type, input });
 test("factory → carton → parcel preserves batch linkage and does not deduct twice", () => {
@@ -79,37 +82,252 @@ test("a stock issue cannot overdraw a carton or use another product", () => {
   );
   assert.equal(available(s, s.cartons[0]), 114);
 });
-test("sachet boxing conserves source units and requires an explicit ratio", () => {
-  let s = createDraft();
-  const input = {
-    cartonId: "c-ady",
-    boxes: 10,
-    loss: 2,
-    ref: "TEST-BOXES",
-    rack: "B-01",
-    pic: "X",
-  };
-  assert.throws(() => run(s, "intake", "box", input), /ratio/);
-  s = run(s, "intake", "box", { ...input, ratio: 20 });
-  assert.equal(
-    available(
-      s,
-      s.cartons.find((c) => c.id === "c-ady"),
-    ),
-    298,
+test("Adypocide records machines and PICs, then creates stock only from warehouse box counts", () => {
+  let s = run(createDraft(), "production", "batch", {
+    product: "ady",
+    code: "ADY-NEW",
+    date: "2026-09-24",
+  });
+  const batchId = s.batches[0].id;
+  assert.equal(batchComplete(s.batches[0]), false);
+  assert.throws(
+    () => run(s, "production", "transfer", { id: batchId, pic: "Factory PIC" }),
+    /machine and PIC/,
   );
-  assert.equal(available(s, s.cartons[0]), 10);
-  assert.equal(s.cartons[0].unit, "box");
-  assert.equal(s.cartons[0].batchId, "b-ady");
   assert.throws(
     () =>
-      run(s, "outbound", "issue", {
-        cartonId: "c-ady",
-        orderId: "o-6",
-        qty: 1,
+      run(s, "intake", "receive-ady", {
+        batchId,
+        ref: "ADY-IN",
+        pic: "Receiver",
+      }),
+    /sent to the warehouse/,
+  );
+  s = run(s, "production", "machine", {
+    id: batchId,
+    machine: "Machine 1",
+    pic: "Operator A",
+  });
+  s = run(s, "production", "machine", {
+    id: batchId,
+    machine: "Machine 2",
+    pic: "Operator B",
+  });
+  assert.deepEqual(
+    s.batches[0].steps.map((step) => [step.machine, step.pic, step.qty]),
+    [
+      ["Machine 1", "Operator A", null],
+      ["Machine 2", "Operator B", null],
+    ],
+  );
+  assert.equal(s.batches[0].target, 0);
+  assert.equal(s.batches[0].actual, 0);
+  s = run(s, "production", "transfer", {
+    id: batchId,
+    pic: "Factory supervisor",
+  });
+  assert.throws(
+    () =>
+      run(s, "production", "transfer", {
+        id: batchId,
+        pic: "Factory supervisor",
+      }),
+    /already/,
+  );
+  assert.throws(
+    () =>
+      run(s, "production", "machine", {
+        id: batchId,
+        machine: "Machine 3",
+        pic: "Operator C",
+      }),
+    /already/,
+  );
+  s = run(s, "intake", "receive-ady", {
+    batchId,
+    ref: "ADY-IN",
+    pic: "Receiver",
+  });
+  const receiptId = s.adypocideReceipts[0].id;
+  assert.equal(
+    stockCartons(s).some((c) => c.batchId === batchId),
+    false,
+  );
+  assert.equal(batchReceived(s, s.batches[0]), 0);
+  assert.throws(
+    () =>
+      run(s, "intake", "receive-ady", {
+        batchId,
+        ref: "ady-in",
+        pic: "Receiver",
+      }),
+    /unique/,
+  );
+  const input = {
+    receiptId,
+    boxes: 87,
+    ref: "ADY-BOXES",
+    rack: "B-01",
+    pic: "Stock-in supervisor",
+  };
+  for (const role of [
+    "production",
+    "admin",
+    "outbound",
+    "packer",
+    "management",
+  ])
+    assert.throws(() => run(s, role, "stock-in-ady", input), /supervisor/);
+  for (const boxes of [undefined, "", -1, 1.5])
+    assert.throws(
+      () => run(s, "intake", "stock-in-ady", { ...input, boxes }),
+      /boxes|whole number/,
+    );
+  s = run(s, "intake", "stock-in-ady", input);
+  const carton = s.cartons[0];
+  assert.equal(carton.batchId, batchId);
+  assert.equal(carton.unit, "box");
+  assert.equal(carton.qty, 87);
+  assert.equal(carton.pic, "Stock-in supervisor");
+  assert.equal(batchReceived(s, s.batches[0]), 87);
+  assert.equal(s.adypocideReceipts[0].stockCartonId, carton.id);
+  assert.ok(s.adypocideReceipts[0].stockedAt);
+  assert.throws(() => run(s, "intake", "stock-in-ady", input), /already/);
+  s = run(s, "outbound", "issue", {
+    cartonId: carton.id,
+    orderId: "o-6",
+    qty: 2,
+    pic: "Outbound",
+  });
+  assert.equal(available(s, carton), 85);
+  assert.equal(
+    s.batches.find((b) => b.id === batchId).steps[1].pic,
+    "Operator B",
+  );
+});
+test("Adypocide rejects old quantity workflows and allows an explicit zero finished-box count", () => {
+  let s = createDraft();
+  assert.throws(
+    () =>
+      run(s, "intake", "receive", {
+        batchId: "b-ady",
+        qty: 500,
+        ref: "OLD",
+        rack: "A",
         pic: "X",
       }),
-    /saleable/,
+    /boxing/,
+  );
+  assert.throws(
+    () =>
+      run(s, "production", "step", {
+        id: "b-ady",
+        step: 0,
+        qty: 500,
+        pic: "X",
+        qc: "pass",
+      }),
+    /machine and PIC/,
+  );
+  assert.throws(
+    () =>
+      run(s, "intake", "box", {
+        cartonId: "c-ady",
+        ratio: 20,
+        boxes: 10,
+        loss: 0,
+      }),
+    /no longer/,
+  );
+  s = run(s, "intake", "stock-in-ady", {
+    receiptId: "r-ady",
+    boxes: 0,
+    ref: "ZERO-BOXES",
+    rack: "B",
+    pic: "X",
+  });
+  assert.equal(s.cartons[0].qty, 0);
+  assert.ok(s.adypocideReceipts[0].stockedAt);
+  assert.equal(
+    stockCartons(s).some((c) => c.unit === "sachet"),
+    false,
+  );
+});
+test("legacy sachet receipts need a fresh box count without converting or replacing existing box stock", () => {
+  let s = createDraft();
+  delete s.adypocideReceipts;
+  const batch = s.batches.find((b) => b.id === "b-ady");
+  delete batch.transferredAt;
+  batch.sent = 500;
+  const source = {
+    id: "legacy-sachets",
+    ref: "LEGACY-IN",
+    batchId: batch.id,
+    product: "ady",
+    unit: "sachet",
+    qty: 500,
+    rack: "B",
+    pic: "Receiver",
+    at: "2026-09-21",
+  };
+  const existing = {
+    ...source,
+    id: "existing-boxes",
+    ref: "OLD-BOXES",
+    unit: "box",
+    qty: 10,
+  };
+  s.cartons.push(source, existing);
+  s.boxing.push({
+    id: "old-boxing",
+    sourceId: source.id,
+    cartonId: existing.id,
+    boxes: 10,
+    ratio: 20,
+    loss: 2,
+    pic: "X",
+    at: "2026-09-21",
+  });
+  assert.equal(available(s, source), 298);
+  assert.equal(adypocideReceipts(s).length, 1);
+  assert.equal(
+    stockCartons(s)
+      .filter((c) => c.product === "ady")
+      .reduce((n, c) => n + c.qty, 0),
+    10,
+  );
+  assert.throws(
+    () =>
+      run(s, "intake", "count", { cartonId: source.id, actual: 298, pic: "X" }),
+    /box count/,
+  );
+  s = run(s, "intake", "stock-in-ady", {
+    receiptId: source.id,
+    boxes: 12,
+    ref: "NEW-BOXES",
+    rack: "B",
+    pic: "Supervisor",
+  });
+  assert.deepEqual(
+    s.cartons.find((c) => c.id === source.id),
+    source,
+  );
+  assert.deepEqual(
+    s.cartons.find((c) => c.id === existing.id),
+    existing,
+  );
+  assert.equal(batchReceived(s, batch), 22);
+  assert.equal(adypocideReceipts(s).filter((r) => !r.stockedAt).length, 0);
+  assert.throws(
+    () =>
+      run(s, "intake", "stock-in-ady", {
+        receiptId: source.id,
+        boxes: 12,
+        ref: "AGAIN",
+        rack: "B",
+        pic: "X",
+      }),
+    /already/,
   );
 });
 test("counts do not silently adjust stock; movement after a count invalidates its adjustment", () => {
