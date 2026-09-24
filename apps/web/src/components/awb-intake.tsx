@@ -277,11 +277,11 @@ export function AwbIntake({
         aria-label={t("Order workspace", "Ruang pesanan")}
       >
         {[
-          ["register", t("Order register", "Daftar pesanan")],
+          ["register", t("Manual / scanned AWB", "AWB manual / diimbas")],
           ...(role === "admin"
             ? [["upload", t("Upload AWB batch", "Muat naik kelompok AWB")]]
             : []),
-          ["batches", t("Handoff batches", "Kelompok serahan")],
+          ["batches", t("Import history", "Sejarah import")],
         ].map(([key, label]) => (
           <Button
             key={key}
@@ -305,11 +305,11 @@ export function AwbIntake({
       {screen === "upload" && (
         <Panel
           title={t(
-            "One upload. One clear handoff.",
+            "Bulk AWB input and review",
             "Satu muat naik. Serahan yang jelas.",
           )}
           detail={t(
-            "Send your PDFs through WhatsApp as usual, then upload the same files here.",
+            "Upload available AWB PDFs, verify the extracted contents, and confirm orders into the daily register.",
             "Hantar PDF melalui WhatsApp seperti biasa, kemudian muat naik fail yang sama di sini.",
           )}
         >
@@ -434,7 +434,7 @@ export function AwbIntake({
       )}
       {screen === "batches" && (
         <Panel
-          title={t("Handoff batches", "Kelompok serahan")}
+          title={t("Import history", "Sejarah import")}
           detail={t(
             "Saved reviews and confirmed Admin handoffs.",
             "Semakan disimpan dan serahan Admin disahkan.",
@@ -501,7 +501,7 @@ export function AwbIntake({
                     onClick={() => void save(true)}
                   >
                     <Check size={16} />
-                    {t("Confirm handoff", "Sahkan serahan")} · {ready}
+                    {t("Confirm orders", "Sahkan pesanan")} · {ready}
                   </Button>
                 </>
               )}

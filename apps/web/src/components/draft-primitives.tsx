@@ -105,9 +105,17 @@ export function Status({ order, lang }: { order: Order; lang: Lang }) {
           ? tr(lang, "Handed over", "Diserah")
           : order.actual !== null
             ? tr(lang, "Packed", "Dibungkus")
-            : order.printed
-              ? tr(lang, "Ready to pack", "Sedia dibungkus")
-              : tr(lang, "Awaiting print", "Menunggu cetakan")}
+            : order.reviewState === "pending"
+              ? tr(lang, "Awaiting review", "Menunggu semakan")
+              : order.printed
+                ? order.assignedPacker
+                  ? tr(
+                      lang,
+                      "Assigned to packer",
+                      "Ditugaskan kepada pembungkus",
+                    )
+                  : tr(lang, "Awaiting assignment", "Menunggu tugasan")
+                : tr(lang, "Awaiting print", "Menunggu cetakan")}
     </span>
   );
 }
@@ -191,7 +199,7 @@ export type FormSpec = {
   title: string;
   description: string;
   fields: Field[];
-  hidden?: Record<string, string | number>;
+  hidden?: Record<string, string | number | string[]>;
   submit?: string;
 };
 export function ActionForm({

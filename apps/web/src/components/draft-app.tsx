@@ -12,7 +12,6 @@ import {
   Activity,
   ArrowDownToLine,
   ArrowRight,
-  ArrowUpFromLine,
   Boxes,
   Check,
   ChevronRight,
@@ -38,6 +37,7 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { ProductionWorkspace } from "./production-workspace";
+import { OrderWorkspace } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { channels } from "@/lib/awb-import";
 import { PersonBadge } from "./person-profile";
@@ -105,6 +105,8 @@ type View =
   | "production"
   | "warehouse"
   | "outbound"
+  | "input"
+  | "tally"
   | "orders"
   | "packing"
   | "trace"
@@ -139,16 +141,23 @@ const navigation: {
     roles: ["intake"],
   },
   {
+    id: "input",
+    en: "Input orders",
+    ms: "Masukkan pesanan",
+    icon: FileText,
+    roles: ["admin", "outbound"],
+  },
+  {
     id: "orders",
-    en: "Orders & AWBs",
-    ms: "Pesanan & AWB",
+    en: "Order management",
+    ms: "Pengurusan pesanan",
     icon: FileText,
     roles: ["admin", "outbound"],
   },
   {
     id: "outbound",
-    en: "Stock out & dispatch",
-    ms: "Stok keluar & serahan",
+    en: "Incoming orders",
+    ms: "Pesanan masuk",
     icon: Truck,
     roles: ["outbound"],
   },
@@ -158,6 +167,13 @@ const navigation: {
     ms: "Stesen pembungkusan",
     icon: PackageCheck,
     roles: ["packer", "outbound"],
+  },
+  {
+    id: "tally",
+    en: "Daily tally",
+    ms: "Jumlah akhir hari",
+    icon: ClipboardList,
+    roles: ["outbound", "management"],
   },
   {
     id: "trace",
@@ -207,17 +223,29 @@ const copy: Record<View, [string, string, string, string]> = {
     "Receive factory output, box sachets and keep carton balances visible.",
     "Terima hasil kilang, kotakkan sachet dan pantau baki karton.",
   ],
+  input: [
+    "Input orders",
+    "Masukkan pesanan",
+    "Upload PDFs or enter an AWB manually, then review its contents.",
+    "Muat naik PDF atau masukkan AWB secara manual, kemudian semak kandungannya.",
+  ],
+  tally: [
+    "Daily fulfilment tally",
+    "Jumlah pemenuhan harian",
+    "Compare order demand, supervisor counts, issued stock and packer declarations.",
+    "Bandingkan permintaan, kiraan penyelia, stok dikeluarkan dan rekod pembungkus.",
+  ],
   orders: [
-    "Start with the order",
-    "Bermula dengan pesanan",
-    "Record the AWB and expected contents. Keep sending PDFs through WhatsApp.",
-    "Rekod AWB dan kandungan dijangka. Teruskan menghantar PDF melalui WhatsApp.",
+    "Order management",
+    "Pengurusan pesanan",
+    "Review orders by day, product and package.",
+    "Semak pesanan mengikut hari, produk dan pakej.",
   ],
   outbound: [
-    "From rack to customer",
-    "Dari rak ke pelanggan",
-    "Stock issue and courier handover are separate records.",
-    "Pengeluaran stok dan serahan kurier ialah rekod berasingan.",
+    "Incoming orders for the day",
+    "Pesanan masuk hari ini",
+    "Count printed labels, issue rack stock and assign AWBs to packers.",
+    "Kira label bercetak, keluarkan stok rak dan tugaskan AWB kepada pembungkus.",
   ],
   packing: [
     "One parcel. An honest count.",
@@ -262,7 +290,8 @@ export function DraftApp() {
     [light, setLight] = useState(false),
     [reset, setReset] = useState(false),
     [query, setQuery] = useState(""),
-    [channel, setChannel] = useState("all"),
+    [channel] = useState("all"),
+    [packerProfile, setPackerProfile] = useState(""),
     [trace, setTrace] = useState<string | null>(null);
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const allowed = navigation.filter((n) => n.roles.includes(role));
@@ -369,7 +398,9 @@ export function DraftApp() {
     name,
     label,
     type: "person",
-    options: people.map((p) => ({ value: p, label: p })),
+    options: state?.staffProfiles
+      ? state.staffProfiles.map((p) => ({ value: p.id, label: p.name }))
+      : people.map((p) => ({ value: p, label: p })),
     hint: t(
       "Sample people for this draft. Real staff will be added later.",
       "Nama contoh untuk draf. Kakitangan sebenar akan ditambah kemudian.",
@@ -404,7 +435,7 @@ export function DraftApp() {
       type: "order",
       title: t("Record an AWB", "Rekod AWB"),
       description: t(
-        "Manual entry for the draft. Use a test reference, not a customer's personal data.",
+        "Type or scan the AWB reference using a barcode reader. Enter its contents, then confirm the order in Order management. Printing alone does not add an order.",
         "Entri manual untuk draf. Gunakan rujukan ujian, bukan data peribadi pelanggan.",
       ),
       fields: [
@@ -423,7 +454,7 @@ export function DraftApp() {
           name: "package",
           label: t("Package name / SKU", "Nama pakej / SKU"),
           hint: t(
-            "Sample packages only; real catalog mapping awaits verification.",
+            "Use the same package name / SKU as your labels so orders group together.",
             "Pakej contoh sahaja; pemetaan katalog sebenar menunggu pengesahan.",
           ),
         },
@@ -566,45 +597,6 @@ export function DraftApp() {
         pic(),
       ],
     });
-  const issue = (o: Order) =>
-    show({
-      type: "issue",
-      title: t("Issue stock to packing", "Keluarkan stok untuk pembungkusan"),
-      description:
-        o.awb +
-        " · " +
-        t(
-          "This deducts stock from the rack. Courier handover is recorded separately.",
-          "Ini menolak stok dari rak. Serahan kurier direkodkan berasingan.",
-        ),
-      hidden: { orderId: o.id },
-      fields: [
-        {
-          name: "cartonId",
-          label: t("Carton / available units", "Karton / unit tersedia"),
-          type: "select",
-          options: state?.cartons
-            .filter(
-              (c) =>
-                orderLines(o).some((l) => l.product === c.product) &&
-                c.unit === product(c.product).unit &&
-                available(state, c) > 0,
-            )
-            .map((c) => ({
-              value: c.id,
-              label:
-                c.ref + " · " + available(state, c) + " " + units(lang, c.unit),
-            })),
-        },
-        number(
-          "qty",
-          t("Units taken from carton", "Unit diambil dari karton"),
-          undefined,
-          1,
-        ),
-        pic(),
-      ],
-    });
   const pack = (o: Order) =>
     show({
       type: "pack",
@@ -618,7 +610,7 @@ export function DraftApp() {
               `${product(l.product).name}: ${l.expected} ${units(lang, product(l.product).unit)}`,
           )
           .join(" · "),
-      hidden: { id: o.id },
+      hidden: { id: o.id, pic: packerProfile },
       fields: [
         ...orderLines(o).map((l) =>
           number(
@@ -631,7 +623,6 @@ export function DraftApp() {
               ")",
           ),
         ),
-        pic("pic", t("Packed by", "Dibungkus oleh")),
         pic("labelPic", t("AWB attached by", "AWB dilekatkan oleh")),
       ],
       submit: t("Save actual count", "Simpan kiraan sebenar"),
@@ -1546,7 +1537,7 @@ export function DraftApp() {
           </Button>
         </>
       );
-    if (view === "orders")
+    if (view === "input")
       return (
         <AwbIntake
           state={state}
@@ -1555,220 +1546,101 @@ export function DraftApp() {
           busy={busy}
           onCommand={command}
         >
-          <div className="toolbar">
-            <SearchBox
-              query={query}
-              setQuery={setQuery}
-              placeholder={t(
-                "Search AWB, product or package…",
-                "Cari AWB, produk atau pakej…",
-              )}
-            />
-            {role === "admin" && (
+          <Panel
+            title={t("Manual / scanned AWB", "AWB manual / diimbas")}
+            detail={t(
+              "For TikTok labels already printed, enter or scan the reference and enter the package contents. A barcode identifies the parcel; it does not supply its contents. PDF import is also available.",
+              "Untuk label TikTok sudah dicetak, masukkan atau imbas rujukan dan masukkan kandungan pakej. Kod bar mengenal pasti bungkusan sahaja. Import PDF juga tersedia.",
+            )}
+          >
+            <div className="p-6 space-y-4">
               <Button className="action-primary" onClick={newOrder}>
                 <Plus size={16} />
-                {t("Record AWB", "Rekod AWB")}
+                {t("Enter an order", "Masukkan pesanan")}
               </Button>
-            )}
-          </div>
-          <div className="inline-note">
-            <MessageSquare size={17} />
-            {t(
-              "Send PDFs through WhatsApp as usual. Upload a batch to prepare the expected counts, or record one AWB manually.",
-              "Hantar PDF melalui WhatsApp seperti biasa. Muat naik kelompok untuk menyediakan jumlah dijangka, atau rekod satu AWB secara manual.",
-            )}
-          </div>
-          <Panel
-            title={t("Order register", "Daftar pesanan")}
-            action={
-              <select
-                className="compact-select"
-                aria-label={t("Order source filter", "Penapis sumber pesanan")}
-                value={channel}
-                onChange={(e) => setChannel(e.target.value)}
-              >
-                <option value="all">{t("All sources", "Semua sumber")}</option>
-                {channels.map((x) => (
-                  <option key={x}>{x}</option>
-                ))}
-              </select>
-            }
-          >
-            {orderTable(true)}
+              <p>
+                {t(
+                  "New manual orders wait for review before joining daily demand.",
+                  "Pesanan manual baharu menunggu semakan sebelum ditambah ke permintaan harian.",
+                )}
+              </p>
+              <Button variant="outline" onClick={() => go("orders")}>
+                {t("Open order management", "Buka pengurusan pesanan")}
+              </Button>
+            </div>
           </Panel>
         </AwbIntake>
       );
-    if (view === "outbound")
+    if (view === "orders" || view === "outbound" || view === "tally")
       return (
-        <>
-          <div className="metrics-grid three">
-            <Metric
-              label={t("AWBs awaiting print", "AWB menunggu cetakan")}
-              value={pending.filter((o) => !o.printed).length}
-              detail={t("Record the physical print", "Rekod cetakan sebenar")}
-            />
-            <Metric
-              label={t("Awaiting parcel count", "Menunggu kiraan bungkusan")}
-              value={pending.filter((o) => o.actual === null).length}
-              detail={t(
-                "Packer enters actual contents",
-                "Pembungkus merekod kandungan sebenar",
-              )}
-            />
-            <Metric
-              label={t(
-                "Packed, awaiting handover",
-                "Dibungkus, menunggu serahan",
-              )}
-              value={pending.filter((o) => o.actual !== null).length}
-              detail={t(
-                "Includes unresolved count exceptions",
-                "Termasuk pengecualian kiraan",
-              )}
-              color="var(--warning)"
-            />
-          </div>
-          <SearchBox
-            query={query}
-            setQuery={setQuery}
-            placeholder={t("Find an AWB or product…", "Cari AWB atau produk…")}
-          />
-          <div className="outbound-list">
-            {pending
-              .filter((o) =>
-                search(
-                  o.awb +
-                    " " +
-                    orderLines(o)
-                      .map((l) => product(l.product).name)
-                      .join(" "),
-                ),
-              )
-              .map((o) => (
-                <section className="outbound-card" key={o.id}>
-                  <div className="outbound-summary">
-                    <div>
-                      <button
-                        className="record-link mono"
-                        onClick={() => setTrace(o.id)}
-                      >
-                        {o.awb}
-                      </button>
-                      <div className="mt-2">
-                        <OrderProducts order={o} />
-                        <small className="ml-2 text-muted-foreground">
-                          {[o.channel, o.courier].filter(Boolean).join(" · ")}
-                        </small>
-                      </div>
-                    </div>
-                    <Status order={o} lang={lang} />
-                  </div>
-                  <div className="outbound-numbers">
-                    <span>
-                      {t("Expected", "Dijangka")}
-                      <strong>
-                        <OrderQuantities
-                          order={o}
-                          lang={lang}
-                          field="expected"
-                        />
-                      </strong>
-                    </span>
-                    <span>
-                      {t("Issued", "Dikeluarkan")}
-                      <strong>
-                        <OrderQuantities
-                          order={o}
-                          lang={lang}
-                          field="issued"
-                          state={state}
-                        />
-                      </strong>
-                    </span>
-                    <span>
-                      {t("Packed", "Dibungkus")}
-                      <strong
-                        className={
-                          variance(o) !== null && variance(o) !== 0
-                            ? "text-warning"
-                            : ""
-                        }
-                      >
-                        <OrderQuantities order={o} lang={lang} field="actual" />
-                      </strong>
-                    </span>
-                  </div>
-                  <div className="outbound-actions">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={o.printed}
-                      onClick={() =>
-                        show({
-                          type: "print",
-                          title: t("Record AWB print", "Rekod cetakan AWB"),
-                          description:
-                            o.awb +
-                            " · " +
-                            t(
-                              "Confirm the label has been printed.",
-                              "Sahkan label telah dicetak.",
-                            ),
-                          hidden: { id: o.id },
-                          fields: [pic()],
-                        })
-                      }
-                    >
-                      {o.printed ? <Check size={14} /> : <FileText size={14} />}{" "}
-                      {o.printed
-                        ? t("Printed", "Dicetak")
-                        : t("Record print", "Rekod cetakan")}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => issue(o)}
-                    >
-                      <ArrowUpFromLine size={14} />
-                      {t("Issue stock", "Keluarkan stok")}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => correct(o)}
-                    >
-                      {t("Correct", "Betulkan")}
-                    </Button>
-                    <Button
-                      size="sm"
-                      className="action-primary"
-                      disabled={o.actual === null}
-                      onClick={() => dispatch(o)}
-                    >
-                      {t("Handover", "Serahan")}
-                      <ArrowRight size={14} />
-                    </Button>
-                  </div>
-                </section>
-              ))}
-          </div>
-          {!pending.length && (
-            <Empty>
-              {t(
-                "All recorded parcels have been handed over.",
-                "Semua bungkusan telah diserahkan.",
-              )}
-            </Empty>
-          )}
-          <Button variant="outline" onClick={closeDay}>
-            <ClipboardList size={16} />
-            {t("End-of-day review", "Semakan akhir hari")}
-          </Button>
-        </>
+        <OrderWorkspace
+          key={view}
+          state={state}
+          lang={lang}
+          role={role}
+          busy={busy}
+          mode={
+            view === "orders"
+              ? "management"
+              : view === "tally"
+                ? "tally"
+                : "incoming"
+          }
+          show={show}
+          pic={pic}
+          trace={setTrace}
+          correct={correct}
+          dispatch={dispatch}
+        />
       );
     if (view === "packing")
       return (
         <>
+          <label className="order-profile">
+            {t("Test packer profile", "Profil pembungkus ujian")}
+            <select
+              className="form-select"
+              value={packerProfile}
+              onChange={(e) => setPackerProfile(e.target.value)}
+            >
+              <option value="">
+                {t(
+                  "Choose a packer to see their assigned AWBs",
+                  "Pilih pembungkus untuk melihat AWB ditugaskan",
+                )}
+              </option>
+              {(state.staffProfiles
+                ? state.staffProfiles
+                    .filter((p) => p.role === "packer")
+                    .map((p) => ({ id: p.id, name: p.name }))
+                : people.map((p) => ({ id: p, name: p }))
+              ).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <small>
+              {t(
+                "Test preview only. Separate staff sign-in is not enabled yet.",
+                "Pratonton ujian sahaja. Log masuk kakitangan berasingan belum diaktifkan.",
+              )}
+            </small>
+          </label>
+          <div className="inline-note">
+            {
+              filteredOrders.filter(
+                (o) =>
+                  !o.dispatched &&
+                  o.assignedPacker === packerProfile &&
+                  packerProfile,
+              ).length
+            }{" "}
+            {t(
+              "assigned AWBs awaiting handover",
+              "AWB ditugaskan menunggu serahan",
+            )}
+          </div>
           <div className="inline-note">
             <PackageCheck size={18} />
             {t(
@@ -1786,7 +1658,12 @@ export function DraftApp() {
           />
           <div className="packing-grid">
             {filteredOrders
-              .filter((o) => !o.dispatched)
+              .filter(
+                (o) =>
+                  !o.dispatched &&
+                  !!packerProfile &&
+                  o.assignedPacker === packerProfile,
+              )
               .map((o) => (
                 <section className="packing-card" key={o.id}>
                   <div className="flex justify-between items-start gap-3">

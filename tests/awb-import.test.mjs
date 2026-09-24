@@ -155,6 +155,7 @@ test("mixed parcel records separate counts and cannot cancel opposite product va
   s = run(s, "import-release", { id: b.id });
   const o = s.orders[0];
   assert.equal(o.lines.length, 2);
+  o.assignedPacker = "TEST PACKER";
   s = run(
     s,
     "pack",

@@ -34,6 +34,8 @@ test("factory → carton → parcel preserves batch linkage and does not deduct 
     package: "Test pair",
     expected: 2,
   });
+  s = run(s, "admin", "review-order", { id: s.orders[0].id, pic: "Reviewer" });
+  s.orders[0].assignedPacker = "Sample Packer A";
   const order = s.orders[0];
   s = run(s, "outbound", "issue", {
     cartonId: c.id,
@@ -378,6 +380,7 @@ test("adjustments require a reason and cannot be applied twice", () => {
 });
 test("packer counts must be explicit and cannot overwrite an existing count", () => {
   const s = createDraft();
+  s.orders.find((o) => o.id === "o-3").assignedPacker = "X";
   assert.throws(
     () =>
       run(s, "packer", "pack", {
