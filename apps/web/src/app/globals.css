@@ -675,12 +675,22 @@ option {
   background: color-mix(in srgb, var(--warning) 9%, transparent);
   flex-shrink: 0;
 }
+.attention-copy {
+  flex: 1;
+  min-width: 0;
+}
+.attention-copy .order-line-values {
+  display: inline;
+}
+.attention-copy .order-line-values > span + span::before {
+  content: ", ";
+}
 .attention-list strong {
   display: block;
   font-size: 11px;
   font-weight: 550;
 }
-.attention-list small {
+.attention-copy > small {
   display: block;
   font-size: 10px;
   color: var(--muted-foreground);
@@ -690,6 +700,7 @@ option {
 .attention-list button > svg {
   margin-left: auto;
   color: var(--muted-foreground);
+  flex-shrink: 0;
 }
 .table-scroll {
   overflow-x: auto;
@@ -1881,14 +1892,6 @@ td small {
   }
   .overview-grid {
     grid-template-columns: 1fr;
-  }
-  .attention-list {
-    display: flex;
-    gap: 25px;
-  }
-  .attention-list > button,
-  .attention-item {
-    border: 0;
   }
   .draft-strip .strip-detail {
     display: none;

@@ -1132,7 +1132,7 @@ export function DraftApp() {
                     <span className="attention-icon">
                       <AlertTriangle size={17} />
                     </span>
-                    <span>
+                    <span className="attention-copy">
                       <strong>{o.awb}</strong>
                       <small>
                         <OrderQuantities
@@ -1157,7 +1157,7 @@ export function DraftApp() {
                     <span className="attention-icon">
                       <Boxes size={17} />
                     </span>
-                    <span>
+                    <span className="attention-copy">
                       <strong>
                         {t("Adypocide boxing", "Pengkotakan Adypocide")}
                       </strong>
