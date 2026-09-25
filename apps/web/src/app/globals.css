@@ -1205,6 +1205,7 @@ td small {
 
 /* Stable illustrated sample identities: keep names and responsibilities readable. */
 .pic-profile {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 11px;
@@ -2568,7 +2569,7 @@ td small {
 .package-table td:first-child { min-width:180px; max-width:300px; white-space:normal; }
 .package-table tfoot { border-top:1px solid var(--border); background:var(--muted); }
 .package-assignments { display:grid; gap:8px; min-width:170px; }
-.package-assignments span { display:flex; justify-content:space-between; gap:16px; }
+.package-assignment { display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .package-assignments small { display:block; color:var(--muted-foreground); }
 .product-package-footer { padding:20px 24px; display:flex; flex-wrap:wrap; gap:16px; align-items:center; justify-content:space-between; border-top:1px solid var(--border); }
 .product-package-footer p { color:var(--muted-foreground); font-size:13px; }
@@ -2579,3 +2580,13 @@ td small {
 .action-summary span { color:var(--muted-foreground); font-size:12px; line-height:1.5; }
 .action-summary strong { font-size:20px; }
 @media(max-width:560px) { .product-count-bar { gap:20px; padding:20px; } .product-count-bar > button { width:100%; } .product-package-footer { padding:20px; } }
+
+.profile-number-field { display:grid; grid-template-columns:minmax(0,1fr) 100px; align-items:center; gap:12px 16px; padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--muted); }
+.profile-number-field > label { min-width:0; }
+.profile-number-field .pic-profile { min-width:0; }
+.profile-number-field .pic-identity > strong { white-space:normal; overflow-wrap:anywhere; }
+.profile-number-field > .field-hint { grid-column:1 / -1; margin:0; }
+.profile-quantity { display:grid; gap:6px; }
+.profile-quantity > span { color:var(--muted-foreground); font-size:12px; }
+.profile-quantity input { width:100%; }
+@media(max-width:420px) { .profile-number-field { grid-template-columns:minmax(0,1fr) 80px; padding:12px; gap:12px; } }

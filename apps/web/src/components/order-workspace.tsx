@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { PersonBadge } from "./person-profile";
 import {
   Panel,
   Empty,
@@ -517,8 +518,16 @@ export function OrderWorkspace({
                             <td>
                               <div className="package-assignments">
                                 {names.map((name) => (
-                                  <span key={name}>
-                                    {staffName(name)}{" "}
+                                  <div
+                                    className="package-assignment"
+                                    key={name}
+                                  >
+                                    <PersonBadge
+                                      name={staffName(name)}
+                                      lang={lang}
+                                      caption={t("Packer", "Pembungkus")}
+                                      compact
+                                    />
                                     <b>
                                       {
                                         g.orders.filter(
@@ -526,7 +535,7 @@ export function OrderWorkspace({
                                         ).length
                                       }
                                     </b>
-                                  </span>
+                                  </div>
                                 ))}
                                 {unassigned > 0 && (
                                   <small>
@@ -582,6 +591,13 @@ export function OrderWorkspace({
                                         ...packers.map(
                                           (person, i): Field => ({
                                             name: "allocation_" + i,
+                                            profile: {
+                                              name: person.label,
+                                              caption: t(
+                                                "Packer",
+                                                "Pembungkus",
+                                              ),
+                                            },
                                             label:
                                               person.label +
                                               " · " +
@@ -825,7 +841,14 @@ export function OrderWorkspace({
                     <td>
                       <OrderQuantities order={o} lang={lang} field="expected" />
                     </td>
-                    <td>{staffName(o.assignedPacker ?? "") || "—"}</td>
+                    <td>
+                      <PersonBadge
+                        name={staffName(o.assignedPacker ?? "")}
+                        lang={lang}
+                        caption={t("Assigned packer", "Pembungkus ditugaskan")}
+                        compact
+                      />
+                    </td>
                     <td>
                       <OrderQuantities order={o} lang={lang} field="actual" />
                     </td>
@@ -1079,8 +1102,12 @@ export function OrderWorkspace({
                     return (
                       <tr key={JSON.stringify([packer, p.id])}>
                         <td>
-                          {staffName(packer) ||
-                            t("Unassigned", "Belum ditugaskan")}
+                          <PersonBadge
+                            name={staffName(packer)}
+                            lang={lang}
+                            caption={t("Packer", "Pembungkus")}
+                            compact
+                          />
                         </td>
                         <td>
                           {p.name}
