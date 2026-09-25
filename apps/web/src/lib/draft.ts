@@ -369,9 +369,45 @@ export const variance = (o: Order) => {
   if (lines.some((l) => l.actual === null)) return null;
   return lines.map((l) => l.actual! - l.expected).find((n) => n !== 0) ?? 0;
 };
+export const singleProductOrder = (o: Order) =>
+  new Set(orderLines(o).map((l) => l.product)).size === 1;
 export const orderReady = (o: Order) => o.reviewState !== "pending";
 export const dailyOrders = (s: Draft, date: string) =>
   s.orders.filter((o) => o.date === date && orderReady(o));
+export function packageGroups(orders: Order[]) {
+  const groups = new Map<
+    string,
+    {
+      key: string;
+      product: string;
+      package: string;
+      perParcel: number;
+      orders: Order[];
+    }
+  >();
+  for (const o of orders.filter(
+    (o) => orderReady(o) && singleProductOrder(o),
+  )) {
+    const product = orderLines(o)[0].product;
+    const perParcel = orderLines(o).reduce((n, l) => n + l.expected, 0);
+    const key = JSON.stringify([product, o.package, perParcel]);
+    const group = groups.get(key) ?? {
+      key,
+      product,
+      package: o.package,
+      perParcel,
+      orders: [],
+    };
+    group.orders.push(o);
+    groups.set(key, group);
+  }
+  return [...groups.values()].sort(
+    (a, b) =>
+      a.product.localeCompare(b.product) ||
+      a.package.localeCompare(b.package) ||
+      a.perParcel - b.perParcel,
+  );
+}
 export const demandFingerprint = (s: Draft, date: string, productId: string) =>
   JSON.stringify(
     dailyOrders(s, date)
@@ -1117,14 +1153,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const tally = dailyTally(s, date).find((t) => t.product === p);
       if (!tally?.awbs)
         throw new Error("No reviewed orders for this product and day.");
-      if (
-        dailyOrders(s, date).some(
-          (o) => orderLines(o).some((l) => l.product === p) && !o.printed,
-        )
-      )
-        throw new Error(
-          "Record the printed labels for this product before counting.",
-        );
       const note = str("note", !!tally.count || counted !== tally.expected);
       const count: SortCount = {
         id: id(),
@@ -1141,9 +1169,149 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       s.sortCounts.unshift(count);
       log(
         date,
-        "Printed-label count recorded",
+        "Supervisor sort count recorded",
         `${product(p).name}: system ${tally.expected}, supervisor ${counted} · ${count.pic} · ${note}`,
       );
+      break;
+    }
+    case "assign-package": {
+      allow("outbound");
+      const date = str("date"),
+        key = str("group"),
+        pic = str("pic");
+      const group = packageGroups(dailyOrders(s, date)).find(
+        (g) => g.key === key,
+      );
+      if (!group) throw new Error("This package group is no longer available.");
+      const tally = dailyTally(s, date).find(
+        (t) => t.product === group.product,
+      )!;
+      if (!tally.count || tally.stale)
+        throw new Error(
+          "Record a current supervisor count before assigning packers.",
+        );
+      const orders = group.orders
+        .filter((o) => !o.dispatched && o.actual === null)
+        .sort((a, b) => a.id.localeCompare(b.id));
+      if (!orders.length)
+        throw new Error("No unpacked parcels remain in this package.");
+      if (
+        !Array.isArray(v.packers) ||
+        !v.packers.length ||
+        new Set(v.packers).size !== v.packers.length
+      )
+        throw new Error("Choose distinct packer profiles.");
+      const targets = v.packers.map((packer, i) => {
+        if (
+          typeof packer !== "string" ||
+          !(s.staffProfiles
+            ? s.staffProfiles.some(
+                (p) => p.id === packer && p.role === "packer",
+              )
+            : people.includes(packer))
+        )
+          throw new Error("Choose a packer profile.");
+        return { packer, count: num("allocation_" + i) };
+      });
+      if (targets.reduce((n, t) => n + t.count, 0) > orders.length)
+        throw new Error(
+          "Assigned parcels exceed the remaining package orders.",
+        );
+      const assignments = new Map<string, string>();
+      // Keep current assignments up to each quota, then allocate unassigned parcels.
+      for (const target of targets)
+        for (const o of orders
+          .filter((o) => o.assignedPacker === target.packer)
+          .slice(0, target.count))
+          assignments.set(o.id, target.packer);
+      const free = orders.filter((o) => !assignments.has(o.id));
+      for (const target of targets) {
+        let remaining =
+          target.count -
+          [...assignments.values()].filter((p) => p === target.packer).length;
+        while (remaining-- > 0)
+          assignments.set(free.shift()!.id, target.packer);
+      }
+      if (
+        orders.some(
+          (o) => o.assignedPacker && o.assignedPacker !== assignments.get(o.id),
+        )
+      )
+        str("reason");
+      for (const o of orders) {
+        const next = assignments.get(o.id);
+        if (o.assignedPacker === next) continue;
+        const previous = o.assignedPacker ?? "Unassigned";
+        o.assignedPacker = next;
+        o.assignedAt = at;
+        log(
+          o.id,
+          "Package packer assignment",
+          `${group.package} · ${previous} → ${next ?? "Unassigned"} · by ${pic} · ${str("reason", false)}`,
+        );
+      }
+      break;
+    }
+    case "split-order": {
+      allow("admin", "outbound");
+      const o = find(s.orders);
+      if (singleProductOrder(o))
+        throw new Error("This record already has one product.");
+      if (
+        o.actual !== null ||
+        o.dispatched ||
+        s.issues.some((i) => i.orderId === o.id)
+      )
+        throw new Error(
+          "This historical record has stock or packing activity. Preserve it and ask a supervisor to reconcile it separately.",
+        );
+      const pic = str("pic"),
+        reason = str("reason");
+      const totals = new Map<string, number>();
+      for (const line of orderLines(o))
+        totals.set(
+          line.product,
+          (totals.get(line.product) ?? 0) + line.expected,
+        );
+      const parcels = [...totals].map(([product, expected], i) => ({
+        ...o,
+        id: i === 0 ? o.id : id(),
+        awb: normalizeAwb(str("awb_" + product)),
+        product,
+        package: str("package_" + product),
+        expected,
+        originalExpected: expected,
+        lines: undefined,
+        reviewState: "confirmed" as const,
+        reviewedBy: pic,
+        assignedPacker: undefined,
+        assignedAt: undefined,
+        printed: false,
+        packer: "",
+        labelPic: "",
+        note: `${o.note} · Split from ${o.awb}: ${reason}`,
+      }));
+      if (
+        new Set(parcels.map((p) => p.awb)).size !== parcels.length ||
+        parcels.some((p) =>
+          s.orders.some(
+            (other) => other.id !== o.id && normalizeAwb(other.awb) === p.awb,
+          ),
+        )
+      )
+        throw new Error("Enter a distinct actual AWB for each product parcel.");
+      const original = { awb: o.awb, lines: orderLines(o), package: o.package };
+      s.orders.splice(
+        s.orders.findIndex((r) => r.id === o.id),
+        1,
+        ...parcels,
+      );
+      for (const parcel of parcels)
+        log(
+          parcel.id,
+          "Brands separated into parcels",
+          `${JSON.stringify(original)} → ${parcel.awb} · ${parcel.product} · ${parcel.expected} · ${pic} · ${reason}`,
+        );
       break;
     }
     case "assign-orders":
@@ -1154,7 +1322,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (
         !Array.isArray(v.ids) ||
         !v.ids.length ||
-        v.ids.length > 500 ||
+        v.ids.length > 10000 ||
         new Set(v.ids).size !== v.ids.length
       )
         throw new Error("Select distinct AWBs first.");
@@ -1167,7 +1335,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const pic = str("pic");
       if (cmd.type === "assign-orders" || cmd.type === "issue-orders") {
         for (const o of orders) {
-          if (!o.printed) throw new Error("Record the printed labels first.");
+          if (!singleProductOrder(o))
+            throw new Error(
+              "Separate brands into independent parcels before fulfilment.",
+            );
           for (const line of orderLines(o)) {
             const tally = dailyTally(s, o.date).find(
               (t) => t.product === line.product,
@@ -1213,8 +1384,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         )
           throw new Error("Choose a packer profile.");
         for (const o of orders) {
-          if (!o.printed || o.actual !== null)
-            throw new Error("Only printed, unpacked AWBs can be assigned.");
+          if (o.actual !== null)
+            throw new Error("Only unpacked parcels can be assigned.");
           if (o.assignedPacker && o.assignedPacker !== packer) str("reason");
           const previous = o.assignedPacker ?? "Unassigned";
           o.assignedPacker = packer;
@@ -1284,6 +1455,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         o = find(s.orders, "orderId"),
         qty = num("qty", 1);
       if (!orderReady(o)) throw new Error("Review this order first.");
+      if (!singleProductOrder(o))
+        throw new Error(
+          "Separate brands into independent parcels before fulfilment.",
+        );
       if (o.dispatched)
         throw new Error("This parcel has already been handed over.");
       if (
@@ -1311,6 +1486,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "pack": {
       allow("packer");
       const o = find(s.orders);
+      if (!singleProductOrder(o))
+        throw new Error(
+          "Separate brands into independent parcels before fulfilment.",
+        );
       if (o.actual !== null)
         throw new Error(
           "Saved parcel quantities require a supervisor correction.",

@@ -312,7 +312,7 @@ test("carry-over retains issued stock and assignment; historical checkpoint is f
   assert.equal(s.orders[0].assignedPacker, "Sample Packer A");
   assert.equal(s.issues.length, 1);
 });
-test("role, print, count and assignment gates cannot be skipped", () => {
+test("role, count and assignment gates remain enforced without a printing gate", () => {
   let s = fixture();
   const ids = s.orders.map((o) => o.id);
   assert.throws(
@@ -341,11 +341,10 @@ test("role, print, count and assignment gates cannot be skipped", () => {
       /supervisor/,
     );
   s.orders[0].printed = false;
-  assert.throws(
-    () =>
-      run(s, "sort-count", { date, product: "cav", counted: 100, pic: "X" }),
-    /printed labels/,
-  );
+  s = run(s, "sort-count", { date, product: "cav", counted: 100, pic: "X" });
+  s = run(s, "assign-orders", { ids, packer: "Sample Packer A", pic: "X" });
+  assert.equal(s.orders[0].printed, false);
+  assert.equal(s.orders[0].assignedPacker, "Sample Packer A");
 });
 test("opposite AWB variances do not disappear when total packed matches demand", () => {
   const s = fixture();
@@ -362,11 +361,52 @@ test("future staff assignments use stable profile IDs and require a packer role"
     { id: "staff-packer-1", name: "Same display name", role: "packer" },
     { id: "staff-supervisor-1", name: "Same display name", role: "outbound" },
   ];
-  s = run(s, "sort-count", { date, product: "cav", counted: 100, pic: "staff-supervisor-1" });
+  s = run(s, "sort-count", {
+    date,
+    product: "cav",
+    counted: 100,
+    pic: "staff-supervisor-1",
+  });
   const ids = [s.orders[0].id];
-  assert.throws(() => run(s, "assign-orders", { ids, packer: "staff-supervisor-1", pic: "staff-supervisor-1" }), /packer profile/);
-  s = run(s, "assign-orders", { ids, packer: "staff-packer-1", pic: "staff-supervisor-1" });
-  assert.throws(() => run(s, "pack", { id: ids[0], actual: 50, pic: "Same display name", labelPic: "staff-packer-1" }, "packer"), /assigned packer/);
-  s = run(s, "pack", { id: ids[0], actual: 50, pic: "staff-packer-1", labelPic: "staff-packer-1" }, "packer");
+  assert.throws(
+    () =>
+      run(s, "assign-orders", {
+        ids,
+        packer: "staff-supervisor-1",
+        pic: "staff-supervisor-1",
+      }),
+    /packer profile/,
+  );
+  s = run(s, "assign-orders", {
+    ids,
+    packer: "staff-packer-1",
+    pic: "staff-supervisor-1",
+  });
+  assert.throws(
+    () =>
+      run(
+        s,
+        "pack",
+        {
+          id: ids[0],
+          actual: 50,
+          pic: "Same display name",
+          labelPic: "staff-packer-1",
+        },
+        "packer",
+      ),
+    /assigned packer/,
+  );
+  s = run(
+    s,
+    "pack",
+    {
+      id: ids[0],
+      actual: 50,
+      pic: "staff-packer-1",
+      labelPic: "staff-packer-1",
+    },
+    "packer",
+  );
   assert.equal(s.orders[0].packer, "staff-packer-1");
 });

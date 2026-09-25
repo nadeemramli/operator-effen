@@ -11,7 +11,6 @@ import {
   createDraft,
   applyCommand,
   variance,
-  orderIssued,
 } from "../apps/web/src/lib/draft.ts";
 const file = {
   id: "a".repeat(64),
@@ -149,60 +148,37 @@ test("save, release and retry create one parcel and no stock, print or packing s
   conflict.rows[0].lines[0].units = 6;
   assert.equal(rowStatus(conflict.rows[0], conflict, s), "conflict");
 });
-test("mixed parcel records separate counts and cannot cancel opposite product variances", () => {
+test("mixed brands stay in review until each actual parcel has a separate AWB", () => {
   const b = batch([page(ninja() + "\n2x Adipocyde [adipocyde1]")]);
+  b.rows[0].reviewed = true;
+  b.rows[0].reviewNote = "Checked source";
+  assert.match(rowProblems(b.rows[0]).join(), /own parcel/);
   let s = run(createDraft(), "import-save", { batch: b });
+  assert.throws(() => run(s, "import-release", { id: b.id }), /Resolve/);
+  b.updatedAt = s.awbImports[0].updatedAt;
+  const original = b.rows[0];
+  b.rows = original.lines.map((line, i) => ({
+    ...original,
+    id: crypto.randomUUID(),
+    awb: `NVMYBRAND00000${i}`,
+    lines: [line],
+  }));
+  s = run(s, "import-save", { batch: b });
   s = run(s, "import-release", { id: b.id });
-  const o = s.orders[0];
-  assert.equal(o.lines.length, 2);
-  o.assignedPacker = "TEST PACKER";
-  s = run(
-    s,
-    "pack",
-    {
-      id: o.id,
-      actual_cav: 3,
-      actual_ady: 3,
-      pic: "TEST PACKER",
-      labelPic: "TEST LABEL",
-    },
-    "packer",
-  );
-  assert.notEqual(variance(s.orders[0]), 0);
-  assert.throws(
-    () =>
-      run(
-        s,
-        "dispatch",
-        { id: o.id, reference: "TEST-MANIFEST", pic: "TEST" },
-        "outbound",
-      ),
-    /note/,
-  );
-  s = run(
-    s,
-    "correct",
-    {
-      id: o.id,
-      product: "cav",
-      field: "expected",
-      qty: 3,
-      reason: "Source reviewed",
-    },
-    "outbound",
-  );
-  assert.equal(
-    s.orders[0].lines.find((l) => l.product === "cav").originalExpected,
-    4,
-  );
-  s = run(
-    s,
-    "issue",
-    { orderId: o.id, cartonId: "c-cav", qty: 3, pic: "TEST" },
-    "outbound",
-  );
-  assert.equal(orderIssued(s, s.orders[0], "cav"), 3);
-  assert.equal(orderIssued(s, s.orders[0], "ady"), 0);
+  const parcels = s.orders.filter((o) => o.importId === b.id);
+  assert.equal(parcels.length, 2);
+  assert.ok(parcels.every((o) => o.lines.length === 1));
+  assert.equal(new Set(parcels.map((o) => o.awb)).size, 2);
+});
+test("historical mixed-brand quantities retain independent variance", () => {
+  const o = {
+    ...createDraft().orders[0],
+    lines: [
+      { product: "cav", expected: 4, originalExpected: 4, actual: 3 },
+      { product: "ady", expected: 2, originalExpected: 2, actual: 3 },
+    ],
+  };
+  assert.notEqual(variance(o), 0);
 });
 test("review and exclusion require notes, roles are enforced and split orders need allocation review", () => {
   const b = batch([page(ninja()), page(ninja("NVMYTEST000002"), 2)]);

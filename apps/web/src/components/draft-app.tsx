@@ -37,7 +37,7 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { ProductionWorkspace, ProcessPicHistory } from "./production-workspace";
-import { OrderWorkspace } from "./order-workspace";
+import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { channels } from "@/lib/awb-import";
 import { PersonBadge } from "./person-profile";
@@ -156,13 +156,6 @@ const navigation: {
     roles: ["admin", "outbound"],
   },
   {
-    id: "outbound",
-    en: "Incoming orders",
-    ms: "Pesanan masuk",
-    icon: Truck,
-    roles: ["outbound"],
-  },
-  {
     id: "packing",
     en: "Packing station",
     ms: "Stesen pembungkusan",
@@ -245,7 +238,7 @@ const copy: Record<View, [string, string, string, string]> = {
   outbound: [
     "Incoming orders for the day",
     "Pesanan masuk hari ini",
-    "Count printed labels, issue rack stock and assign AWBs to packers.",
+    "Review daily packages, count stock requirements and assign packers.",
     "Kira label bercetak, keluarkan stok rak dan tugaskan AWB kepada pembungkus.",
   ],
   packing: [
@@ -293,10 +286,14 @@ export function DraftApp() {
     [query, setQuery] = useState(""),
     [channel] = useState("all"),
     [packerProfile, setPackerProfile] = useState(""),
+    [packingDate, setPackingDate] = useState(today),
+    [packingSelection, setPackingSelection] = useState<string[]>([]),
     [trace, setTrace] = useState<string | null>(null);
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const allowed = navigation.filter((n) => n.roles.includes(role));
-  const requested = params.get("view") as View;
+  const requested = (
+    params.get("view") === "outbound" ? "orders" : params.get("view")
+  ) as View;
   const view = allowed.some((n) => n.id === requested)
     ? requested
     : allowed[0].id;
@@ -752,6 +749,9 @@ export function DraftApp() {
   const filteredOrders =
     state?.orders.filter(
       (o) =>
+        (view !== "packing" ||
+          (o.date === packingDate &&
+            (!packingSelection.length || packingSelection.includes(o.id)))) &&
         (channel === "all" || o.channel === channel) &&
         search(
           o.awb +
@@ -1582,13 +1582,7 @@ export function DraftApp() {
           lang={lang}
           role={role}
           busy={busy}
-          mode={
-            view === "orders"
-              ? "management"
-              : view === "tally"
-                ? "tally"
-                : "incoming"
-          }
+          mode={view === "tally" ? "tally" : "management"}
           show={show}
           pic={pic}
           trace={setTrace}
@@ -1604,12 +1598,15 @@ export function DraftApp() {
             <select
               className="form-select"
               value={packerProfile}
-              onChange={(e) => setPackerProfile(e.target.value)}
+              onChange={(e) => {
+                setPackerProfile(e.target.value);
+                setPackingSelection([]);
+              }}
             >
               <option value="">
                 {t(
-                  "Choose a packer to see their assigned AWBs",
-                  "Pilih pembungkus untuk melihat AWB ditugaskan",
+                  "Choose a packer to see their packages",
+                  "Pilih pembungkus untuk melihat pakej ditugaskan",
                 )}
               </option>
               {(state.staffProfiles
@@ -1630,6 +1627,31 @@ export function DraftApp() {
               )}
             </small>
           </label>
+          <label className="order-profile">
+            {t("Packing day (Malaysia)", "Hari pembungkusan (Malaysia)")}
+            <Input
+              type="date"
+              value={packingDate}
+              onChange={(e) => {
+                setPackingDate(e.target.value);
+                setPackingSelection([]);
+                setQuery("");
+              }}
+            />
+          </label>
+          <PackerPackageSummary
+            orders={state.orders.filter(
+              (o) =>
+                o.date === packingDate &&
+                !!packerProfile &&
+                o.assignedPacker === packerProfile,
+            )}
+            lang={lang}
+            onSelect={(ids) => {
+              setPackingSelection(ids);
+              setQuery("");
+            }}
+          />
           <div className="inline-note">
             {
               filteredOrders.filter(
@@ -1659,6 +1681,11 @@ export function DraftApp() {
               "Cari AWB di hadapan anda…",
             )}
           />
+          {!!packingSelection.length && (
+            <Button variant="outline" onClick={() => setPackingSelection([])}>
+              {t("Show all assigned packages", "Papar semua pakej ditugaskan")}
+            </Button>
+          )}
           <div className="packing-grid">
             {filteredOrders
               .filter(
@@ -1966,8 +1993,8 @@ export function DraftApp() {
               [
                 t("Stock-in supervisor", "Penyelia stok masuk"),
                 t(
-                  "Receive cartons. Finalize Adypocide box counts after boxing, or record a monthly stock count.",
-                  "Terima karton. Muktamadkan kiraan kotak Adypocide selepas pengkotakan, atau rekod kiraan stok bulanan.",
+                  "Receive cartons. Finalize sachet product box counts after boxing, or record a monthly stock count.",
+                  "Terima karton. Muktamadkan kiraan kotak produk sachet selepas pengkotakan, atau rekod kiraan stok bulanan.",
                 ),
               ],
               [
@@ -1980,8 +2007,8 @@ export function DraftApp() {
               [
                 t("Stock-out supervisor", "Penyelia stok keluar"),
                 t(
-                  "Record the print and issue matching carton stock to an AWB.",
-                  "Rekod cetakan dan keluarkan stok karton sepadan untuk AWB.",
+                  "Count daily product requirements, issue rack stock and assign packages to packers.",
+                  "Kira keperluan produk harian, keluarkan stok rak dan tugaskan pakej kepada pembungkus.",
                 ),
               ],
               [
