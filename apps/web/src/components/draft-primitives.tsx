@@ -1,5 +1,5 @@
 "use client";
-import { PersonPicker } from "./person-profile";
+import { PersonPicker, PersonBadge } from "./person-profile";
 import type { ReactNode } from "react";
 import { ArrowUpRight, Inbox } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -195,6 +195,7 @@ export type Field = {
   required?: boolean;
   min?: number;
   hint?: string;
+  profile?: { name: string; caption?: string };
 };
 export type FormSpec = {
   type: string;
@@ -255,9 +256,23 @@ export function ActionForm({
               </div>
             )}
             {spec.fields.map((field) => (
-              <div className="space-y-2" key={field.name}>
+              <div
+                className={field.profile ? "profile-number-field" : "space-y-2"}
+                key={field.name}
+              >
                 <Label htmlFor={"field-" + field.name}>
-                  {field.label}
+                  {field.profile ? (
+                    <>
+                      <PersonBadge
+                        name={field.profile.name}
+                        lang={lang}
+                        caption={field.profile.caption}
+                      />
+                      <span className="sr-only">{field.label}</span>
+                    </>
+                  ) : (
+                    field.label
+                  )}
                   {field.required === false ? (
                     <small className="text-muted-foreground">
                       ({tr(lang, "optional", "pilihan")})
@@ -298,6 +313,23 @@ export function ActionForm({
                     required={field.required !== false}
                     maxLength={2000}
                   />
+                ) : field.profile ? (
+                  <div className="profile-quantity">
+                    <span aria-hidden="true">
+                      {tr(lang, "Parcels", "Bungkusan")}
+                    </span>
+                    <Input
+                      id={"field-" + field.name}
+                      name={field.name}
+                      type="number"
+                      aria-label={field.label}
+                      defaultValue={field.value ?? 0}
+                      required={field.required !== false}
+                      min={field.min ?? 0}
+                      max={1000000}
+                      step={1}
+                    />
+                  </div>
                 ) : (
                   <Input
                     id={"field-" + field.name}
