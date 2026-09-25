@@ -107,15 +107,9 @@ export function Status({ order, lang }: { order: Order; lang: Lang }) {
             ? tr(lang, "Packed", "Dibungkus")
             : order.reviewState === "pending"
               ? tr(lang, "Awaiting review", "Menunggu semakan")
-              : order.printed
-                ? order.assignedPacker
-                  ? tr(
-                      lang,
-                      "Assigned to packer",
-                      "Ditugaskan kepada pembungkus",
-                    )
-                  : tr(lang, "Awaiting assignment", "Menunggu tugasan")
-                : tr(lang, "Awaiting print", "Menunggu cetakan")}
+              : order.assignedPacker
+                ? tr(lang, "Assigned to packer", "Ditugaskan kepada pembungkus")
+                : tr(lang, "Awaiting assignment", "Menunggu tugasan")}
     </span>
   );
 }
@@ -209,6 +203,7 @@ export type FormSpec = {
   fields: Field[];
   hidden?: Record<string, string | number | string[]>;
   submit?: string;
+  summary?: { label: string; value: string }[];
 };
 export function ActionForm({
   spec,
@@ -249,6 +244,16 @@ export function ActionForm({
               });
             }}
           >
+            {spec.summary && (
+              <div className="action-summary">
+                {spec.summary.map((item) => (
+                  <div key={item.label}>
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                  </div>
+                ))}
+              </div>
+            )}
             {spec.fields.map((field) => (
               <div className="space-y-2" key={field.name}>
                 <Label htmlFor={"field-" + field.name}>

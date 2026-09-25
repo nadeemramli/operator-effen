@@ -382,6 +382,10 @@ export function rowProblems(row: ImportRow): string[] {
     problems.push("Source and store required");
   if (!couriers.includes(row.courier)) problems.push("Courier required");
   if (!row.lines.length) problems.push("Product details missing");
+  if (new Set(row.lines.map((l) => l.product)).size > 1)
+    problems.push(
+      "Each brand needs its own parcel and actual AWB. Keep one product here and use Add missed label for the other parcel.",
+    );
   if (
     row.lines.some(
       (l) =>

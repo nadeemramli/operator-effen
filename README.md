@@ -187,3 +187,27 @@ text are unchanged. The factory batch picker shows product name before batch cod
 Sachet intake labels are generic. The catalog's factory type controls the route,
 so additional sachet products use the same process and stock-in rules when added
 to the catalog. This change does not invent additional product entries.
+
+### Outbound packages (25 September 2026)
+
+Order management is the combined daily outbound workspace; old `view=outbound`
+links resolve to it. Each product has its own package table with parcel count,
+units per parcel, total bottles/boxes, packer shares and recorded progress.
+Search selects matching package groups, while a group's assignment always covers
+its full daily workload. Individual AWB review and manual carry-over are below
+in Parcel records & review. Daily tally remains the reconciliation view.
+
+Record count captures the independent supervisor total. Printing is external to
+Operator and does not block counts, stock issue or assignment; existing print
+history remains intact. Stock issue works across the displayed product packages.
+Assign packers sets quantities per packer for the group's remaining unpacked
+parcels. The server retains current assignments where possible and automatically
+allocates parcel IDs to meet the quantities. Reassignments require a reason;
+completed records stay unchanged. Packers see their product/package totals and
+can open the assigned parcels to enter actual contents.
+
+Each brand is an independent parcel with its actual AWB. New mixed-brand import
+rows stay in review until separated using the actual labels. Existing mixed-brand
+records without stock or packing activity can be explicitly separated in Order
+management with a reason and actual AWBs. Historical activity is preserved and
+requires supervisor reconciliation; it is never silently split or duplicated.
