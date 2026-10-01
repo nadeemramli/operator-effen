@@ -2,6 +2,12 @@
 
 Operator EFFEN is an authenticated operations test workspace. The workflow previews use fictional data; individual staff authentication is a later rollout step.
 
+## Production readiness planning
+
+The [production readiness plan](docs/production-readiness-plan.md) and [execution backlog / continuation guide](docs/production-readiness-backlog.md) cover speed, concurrent staff, transactional inventory, security, uptime, recovery and three-hour offline operation. Track implementation in [epic #7](https://github.com/nadeemramli/operator-effen/issues/7) and its seven workstream issues.
+
+Confirmed sizing: 7–10 packers on phones, up to 2 production users and 2 supervisors on laptops (11–14 concurrent users). Architecture and release targets are proposals; publishing this plan does not establish live factory readiness. See the dated baseline and decision register before continuing on another computer.
+
 ## Stack
 
 - Node.js 24 (see `.nvmrc`), pnpm 11.16.0
@@ -77,7 +83,7 @@ Its English/Malay interface uses Fullkit's theme tokens and Geist fonts.
 - The database is dedicated to this draft. Vercel's **Production hosting target**
   points to this test backend so the stable Vercel URL is available to the team;
   that label does not mean live operational inventory.
-- No customer PII, live stock, messages, PDF imports or Fullkit writes are involved.
+- No live stock, messaging integrations or Fullkit writes are involved. Bulk AWB PDF intake is implemented; keep source documents and customer data private.
 
 Run `pnpm test` for the stock conservation, traceability, role-action and correction
 invariants. Run `pnpm lint`, `pnpm typecheck` and `pnpm build` before publishing.
@@ -89,8 +95,8 @@ courier handover, trace lookup, management review notes, CSV export and shared f
 The test reset is destructive only to this sandbox and requires UI confirmation.
 
 Known boundaries: sample packages and staff; one product per AWB and one batch per
-carton; aggregate workspace reports; no PDF parsing or
-external integrations. Process-record correction and real approval permissions
+carton; aggregate workspace reports; embedded PDF text extraction and browser-local OCR;
+no external order integrations. Process-record correction and real approval permissions
 need the remaining operational decisions before live use. A recorded QC grouping
 does not imply QC was performed or passed. Parcel declarations and allocation logs
 are evidence of recorded work, not a physical guarantee of parcel contents.
