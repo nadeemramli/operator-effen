@@ -14,6 +14,8 @@
 --     route gates) itself. Operation results and the commit audit are written atomically.
 --   * No service-role key is used. A caller without the server key cannot commit anything;
 --     a server-key holder still cannot act as another user or bypass the invariants.
+-- Authorization and invariant checks fail closed: a guard proceeds only when its whole
+-- condition IS TRUE; NULL (unknown caller, missing field) is treated as a denial.
 -- Limitation kept: state is still one JSON document per site with one revision (#10).
 -- Rollback: supabase/rollback/20261005090000_operator_trusted_commands.down.sql.
 
@@ -261,10 +263,19 @@ begin
   -- Stock movements are positive whole quantities.
   if exists (
     select 1 from jsonb_array_elements(coalesce(p_new -> 'issues', '[]')) i
-    where jsonb_typeof(i -> 'qty') <> 'number' or (i ->> 'qty')::numeric <= 0
-      or (i ->> 'qty')::numeric <> trunc((i ->> 'qty')::numeric)
+    where coalesce(jsonb_typeof(i -> 'qty'), 'missing') <> 'number'
+      or ((i ->> 'qty')::numeric > 0 and (i ->> 'qty')::numeric = trunc((i ->> 'qty')::numeric)) is not true
   ) then
     raise exception 'Stock issues must be positive whole quantities.' using errcode = '23514';
+  end if;
+  -- Every carton has a non-negative whole received quantity.
+  if exists (
+    select 1 from jsonb_array_elements(coalesce(p_new -> 'cartons', '[]')) c
+    where coalesce(jsonb_typeof(c -> 'qty'), 'missing') <> 'number'
+      or ((c ->> 'qty')::numeric >= 0 and (c ->> 'qty')::numeric = trunc((c ->> 'qty')::numeric)) is not true
+      or coalesce(c ->> 'id', '') = ''
+  ) then
+    raise exception 'Cartons need an identifier and a whole received quantity.' using errcode = '23514';
   end if;
   -- Received cartons keep their quantity, batch, product and unit, and are never removed.
   if exists (
@@ -301,7 +312,8 @@ begin
       left join adjusted a on a.version = d.version and a.id = c ->> 'id')
     select 1 from balances n
     left join balances o on o.version = 'old' and o.id = n.id
-    where n.version = 'new' and n.available < 0 and n.available < coalesce(o.available, 0)
+    where n.version = 'new'
+      and (n.available is null or (n.available < 0 and n.available < coalesce(o.available, 0)))
   ) then
     raise exception 'This change would take a carton below zero stock.' using errcode = '23514';
   end if;
@@ -312,7 +324,8 @@ begin
       select n ->> 'id' as id, n from jsonb_array_elements(coalesce(p_new -> 'batches', '[]')) n
     ) x on x.id = o ->> 'id'
     where x.n is null
-      or x.n ->> 'code' <> o ->> 'code' or x.n ->> 'product' <> o ->> 'product'
+      or x.n ->> 'code' is distinct from o ->> 'code'
+      or x.n ->> 'product' is distinct from o ->> 'product'
       or (o ->> 'transferredAt' is not null and (
         x.n ->> 'transferredAt' is distinct from o ->> 'transferredAt'
         or x.n ->> 'transferPic' is distinct from o ->> 'transferPic'))
@@ -387,13 +400,15 @@ begin
       and not exists (
         select 1 from jsonb_array_elements(coalesce(p_old -> 'batches', '[]')) ob
         where ob ->> 'id' = nb ->> 'id' and ob ->> 'transferredAt' is not null)
-      and exists (
+      and (coalesce(jsonb_typeof(nb -> 'route' -> 'stages'), 'missing') <> 'array'
+        or jsonb_array_length(nb -> 'route' -> 'stages') = 0
+        or exists (
         select 1 from jsonb_array_elements_text(nb -> 'route' -> 'stages') stage
         where not exists (
           select 1 from jsonb_array_elements(coalesce(nb -> 'steps', '[]')) st
           where st ->> 'sachetStage' = stage
             and coalesce((st ->> 'done')::boolean, false)
-            and coalesce(st ->> 'pic', '') <> ''))
+            and coalesce(st ->> 'pic', '') <> '')))
   ) then
     raise exception 'Every stage of the batch route needs a completed record with a PIC before transfer.' using errcode = '23514';
   end if;
@@ -460,8 +475,8 @@ begin
   select * into v_prior from public.operator_commits c
   where c.workspace_id = p_workspace and c.operation_id = p_operation;
   if found then
-    if v_prior.user_id <> v_uid or v_prior.command <> p_command
-      or v_prior.fingerprint <> p_fingerprint then
+    if v_prior.user_id is distinct from v_uid or v_prior.command is distinct from p_command
+      or v_prior.fingerprint is distinct from p_fingerprint then
       raise exception 'This save ID was already used for a different change.' using errcode = 'PT409';
     end if;
     return query select v_current.state, v_current.revision, true;
@@ -471,21 +486,22 @@ begin
   if not found then
     raise exception 'Unknown operational command.' using errcode = '42501';
   end if;
-  if not public.operator_has_capability(p_workspace, v_rule.capability) then
+  if public.operator_has_capability(p_workspace, v_rule.capability) is not true then
     raise exception 'Your role at this site does not permit %.', v_rule.capability using errcode = '42501';
   end if;
   select k.secret into v_secret from operator_private.server_keys k where k.id = 'commit';
   if v_secret is null then
     raise exception 'Operational saving is not configured.' using errcode = '55000';
   end if;
-  if p_fingerprint is null or p_fingerprint !~ '^[0-9a-f]{64}$' then
-    raise exception 'Invalid operation fingerprint.' using errcode = '22023';
+  if (p_fingerprint ~ '^[0-9a-f]{64}$') is not true or p_operation is null
+    or p_expected_revision is null or p_state is null then
+    raise exception 'Invalid operation.' using errcode = '22023';
   end if;
   v_message := concat_ws(E'\n', 'operator-commit-v1', p_workspace::text,
     p_expected_revision::text, v_uid::text, p_operation::text, p_command, p_fingerprint,
     encode(extensions.digest(convert_to(coalesce(p_state, ''), 'UTF8'), 'sha256'), 'hex'));
-  if p_attestation is null or lower(p_attestation) <>
-    encode(extensions.hmac(convert_to(v_message, 'UTF8'), v_secret, 'sha256'), 'hex') then
+  if (lower(p_attestation) =
+    encode(extensions.hmac(convert_to(v_message, 'UTF8'), v_secret, 'sha256'), 'hex')) is not true then
     raise exception 'This change was not validated by the Operator server.' using errcode = '42501';
   end if;
   begin
@@ -493,14 +509,14 @@ begin
   exception when others then
     raise exception 'Invalid workspace state.' using errcode = '22023';
   end;
-  if jsonb_typeof(v_new) <> 'object' then
+  if (jsonb_typeof(v_new) = 'object') is not true then
     raise exception 'Invalid workspace state.' using errcode = '22023';
   end if;
   if (v_new - v_rule.state_keys) is distinct from (v_current.state - v_rule.state_keys) then
     raise exception 'This change is outside the % command scope.', p_command using errcode = '42501';
   end if;
   perform operator_private.assert_transition(v_current.state, v_new, v_uid);
-  if v_current.revision <> p_expected_revision then
+  if v_current.revision is distinct from p_expected_revision then
     return;
   end if;
   update public.operator_workspaces w
@@ -559,11 +575,13 @@ stable
 security definer
 set search_path = ''
 as $$
-  select exists (
-    select 1 from public.operator_grantable_roles g
-    where g.grantor_role = operator_private.admin_role(p_workspace) and g.grantable_role = p_role)
-  and (operator_private.admin_role(p_workspace) = 'hr'
-    or public.operator_has_capability(p_workspace, 'members.manage'))
+  select coalesce(
+    exists (
+      select 1 from public.operator_grantable_roles g
+      where g.grantor_role = operator_private.admin_role(p_workspace) and g.grantable_role = p_role)
+    and (operator_private.admin_role(p_workspace) = 'hr'
+      or public.operator_has_capability(p_workspace, 'members.manage')),
+    false)
 $$;
 create policy "HR and site supervisors read membership audit" on public.operator_membership_audit
 for select to authenticated using (
@@ -600,7 +618,10 @@ begin
   if v_uid is null then
     raise exception 'Sign in again.' using errcode = '28000';
   end if;
-  if p_user = v_uid then
+  if p_user is null or p_role is null or coalesce(trim(p_display_name), '') = '' then
+    raise exception 'Choose the person, role and display name.' using errcode = '22023';
+  end if;
+  if p_user is not distinct from v_uid then
     raise exception 'You cannot change your own access.' using errcode = '42501';
   end if;
   if coalesce(trim(p_reason), '') = '' then
@@ -615,13 +636,14 @@ begin
     where m.user_id = p_user and m.scope = 'all-sites' for update;
   elsif p_scope = 'site' then
     v_actor_role := operator_private.admin_role(p_workspace);
-    if p_workspace is null or not operator_private.may_grant(p_workspace, p_role) then
+    if p_workspace is null or operator_private.may_grant(p_workspace, p_role) is not true then
       raise exception 'You cannot grant % access at this site.', p_role using errcode = '42501';
     end if;
     select * into v_before from public.operator_memberships m
     where m.user_id = p_user and m.workspace_id = p_workspace for update;
     -- Changing someone's existing access requires authority over their current role too.
-    if v_before.id is not null and not operator_private.may_grant(p_workspace, v_before.role) then
+    if v_before.id is not null
+      and operator_private.may_grant(p_workspace, v_before.role) is not true then
       raise exception 'You cannot change the access of a % member.', v_before.role using errcode = '42501';
     end if;
   else
@@ -668,15 +690,17 @@ begin
     raise exception 'Enter a reason for this access change.' using errcode = '22023';
   end if;
   select * into v_before from public.operator_memberships m where m.id = p_membership for update;
-  if v_before.id is null then
-    raise exception 'Membership not found.' using errcode = '42501';
-  end if;
-  if v_before.user_id = v_uid then
-    raise exception 'You cannot change your own access.' using errcode = '42501';
-  end if;
-  v_actor_role := operator_private.admin_role(v_before.workspace_id);
-  if not (v_actor_role = 'hr'
-    or (v_before.workspace_id is not null and operator_private.may_grant(v_before.workspace_id, v_before.role))) then
+  v_actor_role := case when v_before.id is not null
+    then operator_private.admin_role(v_before.workspace_id) end;
+  -- Fail closed: proceed only when the whole permission expression IS TRUE. An unknown
+  -- membership, a caller without an active role (outsider, revoked, another site) or any
+  -- NULL is a denial, reported identically so membership IDs cannot be probed.
+  if (v_before.id is not null
+    and v_actor_role is not null
+    and v_before.user_id is distinct from v_uid
+    and (v_actor_role = 'hr'
+      or (v_before.workspace_id is not null
+        and operator_private.may_grant(v_before.workspace_id, v_before.role)))) is not true then
     raise exception 'You cannot revoke this access.' using errcode = '42501';
   end if;
   update public.operator_memberships m
@@ -700,13 +724,13 @@ declare
   v_uid uuid := (select auth.uid());
   v_before jsonb;
 begin
-  if operator_private.admin_role(null) is distinct from 'hr' then
+  if operator_private.admin_role(null) is distinct from 'hr' or p_workspace is null then
     raise exception 'Only HR can change site capability policy.' using errcode = '42501';
   end if;
   if coalesce(trim(p_reason), '') = '' then
     raise exception 'Enter a reason for this policy change.' using errcode = '22023';
   end if;
-  if jsonb_typeof(p_policy) <> 'object' or exists (
+  if (jsonb_typeof(p_policy) = 'object') is not true or exists (
     select 1 from jsonb_each(p_policy) e
     where jsonb_typeof(e.value) <> 'array' or exists (
       select 1 from jsonb_array_elements_text(e.value) cap

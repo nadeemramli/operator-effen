@@ -13,7 +13,8 @@ insert into auth.users (id) values
   ('00000000-0000-4000-8000-000000000007'), -- all-sites office admin
   ('00000000-0000-4000-8000-000000000008'), -- all-sites HR
   ('00000000-0000-4000-8000-000000000009'), -- site A stock-out SV
-  ('00000000-0000-4000-8000-000000000010'); -- new hire (no membership yet)
+  ('00000000-0000-4000-8000-000000000010'), -- new hire (no membership yet)
+  ('00000000-0000-4000-8000-000000000011'); -- authenticated outsider (never a member)
 insert into operator_private.server_keys (id, secret)
 values ('commit', decode(repeat('ab', 32), 'hex'));
 insert into public.operator_workspaces (id, site_id, name, state) values
@@ -202,6 +203,9 @@ select pg_temp.expect(pg_temp.commit_as(null, :A, 'machine', pg_temp.state()), '
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'reset', pg_temp.state()), '42501', 'unknown command');
 
 -- 5. Membership administration: scoped, audited, no self-promotion or escalation.
+-- Membership IDs are looked up with full privileges so denials are tested with real UUIDs.
+select id as "PEER" from public.operator_memberships
+where user_id = '00000000-0000-4000-8000-000000000006' \gset
 begin;
 select pg_temp.as_user(:SV);
 do $$ begin
@@ -213,7 +217,7 @@ select pg_temp.expect_denied($q$select public.operator_grant_membership('1000000
 select pg_temp.expect_denied($q$select public.operator_grant_membership('10000000-0000-4000-8000-00000000000b', '00000000-0000-4000-8000-000000000010', 'packer', 'Other site', null, 'x')$q$, 'SV grants at another site');
 select pg_temp.expect_denied($q$select public.operator_grant_membership(null, '00000000-0000-4000-8000-000000000010', 'management', 'Global', null, 'x', 'all-sites')$q$, 'SV grants all-sites access');
 select pg_temp.expect_denied($q$select public.operator_grant_membership('10000000-0000-4000-8000-00000000000a', '00000000-0000-4000-8000-000000000006', 'packer', 'Demote peer', null, 'x')$q$, 'SV changes a peer supervisor');
-select pg_temp.expect_denied($q$select public.operator_revoke_membership((select id from public.operator_memberships where user_id = '00000000-0000-4000-8000-000000000006'), 'x')$q$, 'SV revokes a peer supervisor');
+select pg_temp.expect_denied(format('select public.operator_revoke_membership(%L, %L)', :'PEER', 'x'), 'SV revokes a peer supervisor (known UUID)');
 select pg_temp.expect_denied($q$select public.operator_set_site_policy('10000000-0000-4000-8000-00000000000a', '{}', 'x')$q$, 'SV changes site policy');
 select pg_temp.expect_denied($q$update public.operator_memberships set role = 'hr' where user_id = '00000000-0000-4000-8000-000000000001'$q$, 'direct self-promotion');
 select pg_temp.expect_denied($q$insert into public.operator_membership_audit (action, actor_user, actor_role, reason) values ('grant', gen_random_uuid(), 'hr', 'forged')$q$, 'forged membership audit');
@@ -243,6 +247,114 @@ commit;
 select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000004', :A, 'review',
   jsonb_set(pg_temp.state(), '{notes}', (pg_temp.state() -> 'notes') || '[{"id":"n4","text":"x","author":{"userId":"00000000-0000-4000-8000-000000000004"}}]')),
   '42501', 'site policy removed management comments at site A');
+
+-- 5b. Fail-closed revocation and grants: an authenticated outsider, a revoked supervisor,
+--     another site's supervisor and all-sites management cannot revoke or grant site or
+--     all-sites memberships, even with the membership UUID. Nothing changes; no audit row.
+create temp table snapshot as
+  select (select jsonb_agg(to_jsonb(m) order by m.id) from public.operator_memberships m) as members,
+         (select count(*) from public.operator_membership_audit) as audits;
+grant select on snapshot to authenticated;
+do $$
+declare
+  callers uuid[] := array[
+    '00000000-0000-4000-8000-000000000011',  -- outsider, no membership at all
+    '00000000-0000-4000-8000-000000000005',  -- revoked site A supervisor
+    '00000000-0000-4000-8000-000000000003',  -- site B supervisor
+    '00000000-0000-4000-8000-000000000004']; -- all-sites management (not HR)
+  targets uuid[];
+  c uuid;
+  t uuid;
+  outcome text;
+begin
+  select array_agg(id) into targets from public.operator_memberships
+  where user_id in ('00000000-0000-4000-8000-000000000002',   -- site A packer (site)
+                    '00000000-0000-4000-8000-000000000006',   -- site A stock-in SV (site)
+                    '00000000-0000-4000-8000-000000000008',   -- HR (all-sites)
+                    '00000000-0000-4000-8000-000000000004');  -- management (all-sites)
+  targets := targets || gen_random_uuid();                     -- unknown membership UUID
+  foreach c in array callers loop
+    foreach t in array targets loop
+      perform set_config('request.jwt.claim.sub', c::text, true);
+      execute 'set local role authenticated';
+      begin
+        perform public.operator_revoke_membership(t, 'probe');
+        outcome := 'allowed';
+      exception when others then outcome := sqlstate;
+      end;
+      execute 'reset role';
+      if outcome <> '42501' then
+        raise exception 'FAIL: % revoking % returned % (expected 42501)', c, t, outcome;
+      end if;
+    end loop;
+    perform set_config('request.jwt.claim.sub', c::text, true);
+    execute 'set local role authenticated';
+    begin
+      perform public.operator_grant_membership('10000000-0000-4000-8000-00000000000a',
+        '00000000-0000-4000-8000-000000000010', 'driver', 'Probe', null, 'probe');
+      outcome := 'allowed';
+    exception when others then outcome := sqlstate;
+    end;
+    execute 'reset role';
+    if outcome <> '42501' then
+      raise exception 'FAIL: % granting returned % (expected 42501)', c, outcome;
+    end if;
+  end loop;
+  if (select jsonb_agg(to_jsonb(m) order by m.id) from public.operator_memberships m)
+    is distinct from (select members from snapshot) then
+    raise exception 'FAIL: memberships changed after denied calls';
+  end if;
+  if (select count(*) from public.operator_membership_audit) <> (select audits from snapshot) then
+    raise exception 'FAIL: audit rows written for denied calls';
+  end if;
+end $$;
+-- NULL arguments never authorize anything.
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000008');
+select pg_temp.expect_denied($q$select public.operator_revoke_membership(null, 'x')$q$, 'revoke NULL membership');
+do $$ begin
+  begin
+    perform public.operator_grant_membership('10000000-0000-4000-8000-00000000000a', null, 'packer', 'x', null, 'x');
+    raise exception 'FAIL: grant with NULL user succeeded';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.operator_set_site_policy('10000000-0000-4000-8000-00000000000a', null, 'x');
+    raise exception 'FAIL: NULL site policy accepted';
+  exception when invalid_parameter_value then null;
+  end;
+end $$;
+rollback;
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'machine', pg_temp.state(),
+  p_fingerprint => repeat('a', 64), p_sign => false), '42501', 'unsigned commit');
+do $$
+declare r jsonb;
+begin
+  -- Even correctly signed, a NULL expected revision is refused rather than skipping the check.
+  perform set_config('request.jwt.claim.sub', '00000000-0000-4000-8000-000000000001', true);
+  execute 'set local role authenticated';
+  begin
+    perform public.operator_commit_workspace('10000000-0000-4000-8000-00000000000a', null,
+      'machine', gen_random_uuid(), repeat('a', 64), '{}', repeat('0', 64));
+    r := '{"ok": true}';
+  exception when others then r := jsonb_build_object('code', sqlstate);
+  end;
+  execute 'reset role';
+  if r ->> 'code' is distinct from '22023' then raise exception 'FAIL: NULL revision -> %', r; end if;
+end $$;
+-- Invariants treat missing fields as violations (signed, so only the invariants decide).
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000009', :A, 'issue',
+  jsonb_set(pg_temp.state(), '{issues}', (pg_temp.state() -> 'issues') || '[{"id":"i-null","cartonId":"c1","orderId":"o"}]')),
+  '23514', 'issue without quantity');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :A, 'receive',
+  jsonb_set(pg_temp.state(), '{cartons}', (pg_temp.state() -> 'cartons') || '[{"id":"c-null","batchId":"b-sent","product":"cav","unit":"bottle"}]')),
+  '23514', 'carton without quantity');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch',
+  pg_temp.state() #- '{batches,1,code}'), '23514', 'batch code removed');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch',
+  jsonb_set(pg_temp.state(), '{batches}', (pg_temp.state() -> 'batches') || jsonb_build_array(jsonb_build_object(
+    'id', 'b-nostages', 'code', 'NOSTAGES', 'product', 'ady', 'sent', 0, 'route', jsonb_build_object('id', 'sachet-v2'),
+    'transferredAt', '2026-10-04T00:00:00Z', 'steps', '[]'::jsonb)))), '23514', 'transfer with a route lacking stages');
 
 -- 6. Operational source files: site/role scoped; cross-site only where explicit.
 insert into storage.objects (bucket_id, name) values

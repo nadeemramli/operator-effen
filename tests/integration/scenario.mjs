@@ -38,6 +38,7 @@ const people = {
   admin: { role: "admin", scope: "all-sites", name: "Synthetic Office Admin" },
   hr: { role: "hr", scope: "all-sites", name: "Synthetic HR" },
   newHire: { name: "Synthetic New Hire" },
+  outsider: { name: "Synthetic Outsider" },
   preview: { preview: true, name: "Preview tester" },
 };
 const email = (key) => key.toLowerCase() + "@synthetic.test";
@@ -510,6 +511,48 @@ await check("B: HR revocation takes effect on the revoked member's next request"
   assert.ok([401, 403].includes(r.status), String(r.status));
   assert.equal((await api(intake, "GET")).status, 403);
   assert.equal(stored(W.a).machines.some((m) => m.name === "After revoke"), false);
+});
+
+await check("B: outsider, revoked and other-site users cannot revoke or grant access, even with the UUID", async () => {
+  const snapshot = () =>
+    sql(`select coalesce(jsonb_agg(to_jsonb(m) order by m.id), '[]')::text || '|' || (select count(*) from public.operator_membership_audit) from public.operator_memberships m`);
+  const before = snapshot();
+  const membershipOf = (key, scope = "site") =>
+    sql(`select id from public.operator_memberships where user_id='${people[key].id}' and scope='${scope}' order by created_at limit 1`);
+  const targets = [membershipOf("packerA"), membershipOf("prodA"), membershipOf("hr", "all-sites"), membershipOf("mgmt", "all-sites"), randomUUID()];
+  // intakeA was revoked in the previous scenario; outsider never had a membership.
+  for (const caller of ["outsider", "intakeA", "prodB", "mgmt"]) {
+    const jwt = await token(caller);
+    assert.ok(jwt, caller + " has a real session");
+    for (const target of targets) {
+      const res = await rest("rpc/operator_revoke_membership", jwt, { method: "POST", body: JSON.stringify({ p_membership: target, p_reason: "probe" }) });
+      const body = await res.json().catch(() => ({}));
+      assert.equal(res.status, 403, `${caller} revoking ${target}: ${res.status} ${JSON.stringify(body)}`);
+      assert.equal(body.code, "42501");
+      assert.equal(body.message, "You cannot revoke this access.");
+    }
+    for (const [ws, scope, role] of [[W.a, "site", "driver"], [null, "all-sites", "hr"]]) {
+      const res = await rest("rpc/operator_grant_membership", jwt, {
+        method: "POST",
+        body: JSON.stringify({ p_workspace: ws, p_user: people.newHire.id, p_role: role, p_display_name: "Probe", p_staff_profile_id: null, p_reason: "probe", p_scope: scope }),
+      });
+      assert.equal(res.status, 403, `${caller} granting ${scope}: ${res.status}`);
+    }
+  }
+  assert.equal(snapshot(), before, "memberships and audit unchanged after denied calls");
+  // Authorized paths still work: the site supervisor revokes staff it granted; HR revokes elsewhere.
+  const sv = await token("prodA"), hr = await token("hr");
+  const siteA = sql(`select id from public.operator_memberships where user_id='${people.newHire.id}' and workspace_id='${W.a}'`);
+  const siteB = sql(`select id from public.operator_memberships where user_id='${people.newHire.id}' and workspace_id='${W.b}'`);
+  const svRevoke = await rest("rpc/operator_revoke_membership", sv, { method: "POST", body: JSON.stringify({ p_membership: siteA, p_reason: "Contract ended" }) });
+  assert.equal(svRevoke.status, 204, await svRevoke.text());
+  const svOther = await rest("rpc/operator_revoke_membership", sv, { method: "POST", body: JSON.stringify({ p_membership: siteB, p_reason: "x" }) });
+  assert.equal(svOther.status, 403);
+  const hrRevoke = await rest("rpc/operator_revoke_membership", hr, { method: "POST", body: JSON.stringify({ p_membership: siteB, p_reason: "Contract ended" }) });
+  assert.equal(hrRevoke.status, 204, await hrRevoke.text());
+  assert.equal(sql(`select string_agg(active::text, ',') from public.operator_memberships where user_id='${people.newHire.id}' and scope='site'`), "false,false");
+  const audit = sql(`select string_agg(action || ':' || actor_role, ',' order by id) from public.operator_membership_audit where target_user='${people.newHire.id}' and action='revoke'`);
+  assert.equal(audit, "revoke:production,revoke:hr");
 });
 
 await check("B: a view-only packer posts authored feedback through the UI; it persists", async () => {

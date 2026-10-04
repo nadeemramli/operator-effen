@@ -63,7 +63,10 @@ Database functions (callable with the signed-in user's JWT; ready for the future
 Rules enforced in SQL: nobody changes their own access; only HR grants all-sites access;
 supervisors act only at their site and only on packer/driver/assistant memberships (both the
 current and the new role must be grantable); every change writes `operator_membership_audit`
-with before/after and reason. Direct table writes are denied.
+with before/after and reason. Direct table writes are denied. Every guard fails closed: it
+proceeds only when its whole condition is true, so an unknown caller, a revoked or other-site
+member, an unknown membership ID or any NULL argument is a denial (one identical message for
+unknown and unauthorized memberships, so IDs cannot be probed).
 
 Temporary provisioning (until the screen exists): an administrator creates Supabase Auth users
 and bootstraps the first all-sites HR membership with SQL on the reviewed project. After that,
