@@ -103,10 +103,14 @@ are evidence of recorded work, not a physical guarantee of parcel contents.
 
 ### Adypocide production and stock-in
 
-Production uses four fixed sachet processes under one batch number: Mixer machine
-(mixing), Sachet filling machine (filling), Inkjet printer (batching), and Shrink
-machine (plastic wrapping). Each process records only its PIC, with no planned or
-actual sachet quantities. All four PICs are required before warehouse handoff.
+New sachet batches use the versioned five-stage route under one batch number: Mixer
+machine (mixing), Sachet filling machine (filling), Inkjet printer (batching), Hologram
+machine, and Shrink machine (plastic wrapping). Each stage records its actual PIC and
+optionally the physical machine and actual time, with no sachet quantities. All five
+actual stage records are required before warehouse handoff. Completed four-stage batches
+keep their historical route; unfinished ones need an explicit route review. Production
+and Stock-in edit the same stage records. See
+[SV-only entry and the five-stage route](docs/sv-entry-and-sachet-route.md).
 Historical free-form machine records keep their original labels and PICs; they
 are not automatically mapped to the new stages. A factory handoff and warehouse receipt do not create stock.
 After warehouse boxing, the stock-in supervisor finalizes the receipt with the
@@ -131,10 +135,10 @@ are never converted into box inventory. Previously counted boxes remain stock.
   Issue stock from a rack carton to selected AWBs, then assign them to a packer.
   Each issue retains carton/batch traceability. Bulk issues fill remaining AWB demand
   in displayed order; they cannot overdraw stock or silently allocate excess units.
-- **Packing station:** Select a test packer profile to see only assigned AWBs.
-  The command handler rejects unassigned AWBs or a different declared packer.
-  Saved counts require supervisor correction; this is workflow validation, not
-  authenticated identity enforcement in the shared test account.
+- **Packing station:** The stock-out supervisor selects a packer and records the
+  actual packed count for that packer. Unassigned AWBs are rejected; a different actual
+  packer needs a reason. Packers do not save records. Saved counts require a supervisor
+  correction.
 - **Daily tally:** Compare required units, supervisor count, issued stock and actual
   packed units per product and per assigned packer. Missing entries and mismatched
   AWBs remain visible even if opposite errors cancel in the aggregate. Each count
@@ -148,7 +152,14 @@ TikTok printing does not sync orders into Operator. No TikTok API, printer liste
 camera scanner or automatic ingestion integration has been added. Refresh retrieves
 other users' changes; optimistic revision checks prevent concurrent overwrites.
 
-#### Prepared boundary for staff accounts
+#### Staff accounts
+
+Individual sign-in uses workspace memberships (`operator_memberships`, migration
+`20261004090000`). The server derives role and site from the membership; only
+supervisors write. See [SV-only entry](docs/sv-entry-and-sachet-route.md) for setup,
+policy exceptions and rollback. The paragraph below describes the earlier preview boundary.
+
+#### Prepared boundary for staff accounts (preview)
 
 Assignments have a separate `assignedPacker` reference and assignment timestamp;
 `packer` remains the person who declared the actual contents. Optional staff profiles

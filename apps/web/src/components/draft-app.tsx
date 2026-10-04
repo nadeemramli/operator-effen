@@ -2426,7 +2426,9 @@ export function DraftApp() {
             <span className="topbar-divider" />
             <span className="status-pill tone-success">
               <span className="live-dot" />
-              {t("Test workspace", "Ruang ujian")}
+              {member
+                ? t("Site workspace", "Ruang kerja tapak")
+                : t("Test workspace", "Ruang ujian")}
             </span>
           </div>
         </header>

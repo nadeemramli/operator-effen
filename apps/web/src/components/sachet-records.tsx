@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, History, Plus, Wrench } from "lucide-react";
+import { AlertTriangle, Plus, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PersonBadge } from "./person-profile";
@@ -94,7 +94,7 @@ export function ProcessPicHistory({ step, lang }: { step: Step; lang: Lang }) {
   return (
     <details className="pic-history">
       <summary>
-        <History size={12} /> {tr(lang, "History", "Sejarah")} (
+        {tr(lang, "History", "Sejarah")} (
         {changes.length + corrections.length + (step.recordedBy ? 1 : 0)})
       </summary>
       {changes.map((change, index) => (
@@ -320,7 +320,6 @@ export function RouteReview({
       {!!revisions.length && (
         <details className="pic-history revised-flag">
           <summary>
-            <AlertTriangle size={12} />{" "}
             {t("Revised after transfer", "Disemak semula selepas pemindahan")} (
             {revisions.length})
           </summary>
