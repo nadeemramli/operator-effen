@@ -45,7 +45,7 @@ test("factory → carton → parcel preserves batch linkage and does not deduct 
     qty: 2,
     pic: "Sample PIC C",
   });
-  s = run(s, "packer", "pack", {
+  s = run(s, "outbound", "pack", {
     id: order.id,
     actual: 2,
     pic: "Sample Packer A",
@@ -107,19 +107,26 @@ test("Adypocide records machines and PICs, then creates stock only from warehous
       }),
     /sent to the warehouse/,
   );
-  assert.equal(s.batches[0].steps.length, 4);
+  assert.equal(s.batches[0].steps.length, 5);
+  assert.deepEqual(s.batches[0].route.stages, [
+    "mixing",
+    "filling",
+    "batching",
+    "hologram",
+    "wrapping",
+  ]);
   for (const [index, stage] of sachetProcesses.entries()) {
     s = run(s, "production", "machine", {
       id: batchId,
       stage: stage.id,
       pic: "Operator " + String.fromCharCode(65 + index),
     });
-    assert.equal(batchComplete(s.batches[0]), index === 3);
-    if (index < 3)
+    assert.equal(batchComplete(s.batches[0]), index === 4);
+    if (index < 4)
       assert.throws(
         () =>
           run(s, "production", "transfer", { id: batchId, pic: "Factory PIC" }),
-        /all four/,
+        /all five/,
       );
   }
   assert.deepEqual(
@@ -128,7 +135,8 @@ test("Adypocide records machines and PICs, then creates stock only from warehous
       ["Mixer machine", "Operator A", null],
       ["Sachet filling machine", "Operator B", null],
       ["Inkjet printer", "Operator C", null],
-      ["Shrink machine", "Operator D", null],
+      ["Hologram machine", "Operator D", null],
+      ["Shrink machine", "Operator E", null],
     ],
   );
   assert.equal(s.batches[0].target, 0);
@@ -392,7 +400,7 @@ test("packer counts must be explicit and cannot overwrite an existing count", ()
   s.orders.find((o) => o.id === "o-3").assignedPacker = "X";
   assert.throws(
     () =>
-      run(s, "packer", "pack", {
+      run(s, "outbound", "pack", {
         id: "o-3",
         actual: "",
         pic: "X",
@@ -402,7 +410,7 @@ test("packer counts must be explicit and cannot overwrite an existing count", ()
   );
   assert.throws(
     () =>
-      run(s, "packer", "pack", {
+      run(s, "outbound", "pack", {
         id: "o-2",
         actual: 2,
         pic: "X",
@@ -410,7 +418,7 @@ test("packer counts must be explicit and cannot overwrite an existing count", ()
       }),
     /supervisor correction/,
   );
-  const updated = run(s, "packer", "pack", {
+  const updated = run(s, "outbound", "pack", {
     id: "o-3",
     actual: 0,
     pic: "X",
@@ -525,7 +533,7 @@ test("sachet route rejects arbitrary or duplicate stages and preserves legacy ma
         stage: "custom",
         pic: "X",
       }),
-    /four fixed/,
+    /Unknown production stage/,
   );
   assert.throws(
     () =>

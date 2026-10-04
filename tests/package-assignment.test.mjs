@@ -76,7 +76,7 @@ test("20 package orders split 10/10 automatically without print confirmation; re
           pic: "Sample Packer B",
           labelPic: "Sample Packer B",
         },
-        "packer",
+        "outbound",
       ),
     /assigned packer/,
   );
@@ -89,7 +89,7 @@ test("20 package orders split 10/10 automatically without print confirmation; re
       pic: "Sample Packer A",
       labelPic: "Sample Packer A",
     },
-    "packer",
+    "outbound",
   );
   assert.equal(dailyTally(s, date)[0].packed, 4);
 });
@@ -274,7 +274,7 @@ test("direct legacy commands cannot assign, issue or pack a combined brand parce
           actual_ady: 1,
           labelPic: "Sample Packer A",
         },
-        "packer",
+        "outbound",
       ),
     /Separate brands/,
   );

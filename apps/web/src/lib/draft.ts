@@ -86,6 +86,7 @@ export const bottleSteps = [
   ["Bottle Cap & Capping Machine", "Penutup botol & mesin penutup"],
   ["Batching, Sticker & QC", "Nombor kelompok, pelekat & QC"],
 ];
+// Stable stage keys. Labels are display text; records store keys plus label snapshots.
 export const sachetProcesses = [
   {
     id: "mixing",
@@ -106,30 +107,106 @@ export const sachetProcesses = [
     ms: "Pencetak inkjet (nombor kelompok)",
   },
   {
+    id: "hologram",
+    machine: "Hologram machine",
+    en: "Hologram machine",
+    ms: "Mesin hologram",
+  },
+  {
     id: "wrapping",
     machine: "Shrink machine",
     en: "Shrink machine (plastic wrapping)",
     ms: "Mesin shrink (balutan plastik)",
   },
 ];
+export type SachetStage = (typeof sachetProcesses)[number];
+export const sachetStage = (key: string) =>
+  sachetProcesses.find((stage) => stage.id === key);
+// Versioned routes. A batch keeps the route it was planned (or explicitly reviewed) under.
+export const sachetRoutes: Record<
+  string,
+  { id: string; stages: string[]; en: string; ms: string }
+> = {
+  "sachet-v1": {
+    id: "sachet-v1",
+    stages: ["mixing", "filling", "batching", "wrapping"],
+    en: "Four-stage sachet route (before Hologram)",
+    ms: "Laluan sachet empat peringkat (sebelum Hologram)",
+  },
+  "sachet-v2": {
+    id: "sachet-v2",
+    stages: ["mixing", "filling", "batching", "hologram", "wrapping"],
+    en: "Five-stage sachet route (with Hologram)",
+    ms: "Laluan sachet lima peringkat (dengan Hologram)",
+  },
+};
+export const currentSachetRoute = "sachet-v2";
+const countWords = ["zero", "one", "two", "three", "four", "five", "six"];
 // Labels for historical records created before the fixed sachet route.
 export const sachetSteps = [
   ["Filling & sealing", "Pengisian & pengedapan"],
   ["Batch marking & checks", "Penandaan kelompok & semakan"],
   ["Count & bag", "Pengiraan & pembungkusan beg"],
 ];
+// Who entered a record. Derived on the server; never accepted from the client.
+export interface Recorder {
+  kind: "member" | "preview";
+  role: Role;
+  name: string;
+  userId?: string;
+  staffProfileId?: string;
+  siteId?: string;
+}
+// Office-admin imports and management comments are unresolved exceptions to SV-only entry.
+export interface WritePolicy {
+  adminImports: boolean;
+  managementComments: boolean;
+}
+export const previewPolicy: WritePolicy = {
+  adminImports: true,
+  managementComments: true,
+};
 export interface PicChange {
-  kind: "assignment" | "correction" | "handover";
+  kind: "assignment" | "reassignment" | "correction" | "handover";
   from: string;
   to: string;
   at: string;
   effectiveAt?: string;
+  reason: string;
+  recordedBy?: Recorder;
+}
+export interface StageCorrection {
+  id: string;
+  field: "machine" | "occurredAt";
+  from: string;
+  to: string;
+  reason: string;
+  at: string;
+  recordedBy?: Recorder;
+}
+export interface StageOccurrence {
+  id: string;
+  kind: "rework";
+  pic: string;
+  machineId?: string;
+  machineName?: string;
+  occurredAt: string;
+  recordedAt: string;
+  recordedBy?: Recorder;
   reason: string;
 }
 export interface Step {
   picHistory?: PicChange[];
   sachetStage?: string;
   machine?: string;
+  machineId?: string;
+  machineName?: string;
+  occurredAt?: string;
+  recordedAt?: string;
+  recordedBy?: Recorder;
+  version?: number;
+  corrections?: StageCorrection[];
+  occurrences?: StageOccurrence[];
   pic: string;
   qty: number | null;
   start: string;
@@ -137,7 +214,58 @@ export interface Step {
   done: boolean;
   qc: "not-recorded" | "pass" | "issue";
 }
+export interface RouteSnapshot {
+  id: string;
+  stages: string[];
+  at: string;
+  review?: {
+    decision: "upgrade" | "keep-legacy";
+    from: string;
+    reason: string;
+    at: string;
+    recordedBy?: Recorder;
+  };
+}
+export interface BatchRevision {
+  id: string;
+  stage: string;
+  field: string;
+  from: string;
+  to: string;
+  reason: string;
+  at: string;
+  recordedBy?: Recorder;
+}
+export interface Machine {
+  id: string;
+  siteId?: string;
+  stage: string;
+  name: string;
+  code?: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+  history: {
+    kind: "created" | "edited" | "deactivated" | "reactivated";
+    at: string;
+    changes: Record<string, [string, string]>;
+    reason?: string;
+    recordedBy?: Recorder;
+  }[];
+}
+export interface OperationRecord {
+  id: string;
+  type: string;
+  fingerprint: string;
+  userId?: string;
+  at: string;
+}
 export interface Batch {
+  siteId?: string;
+  version?: number;
+  route?: RouteSnapshot;
+  revisions?: BatchRevision[];
   transferredAt?: string;
   transferPic?: string;
   id: string;
@@ -177,6 +305,9 @@ export interface Order {
   reviewedBy?: string;
   assignedPacker?: string;
   assignedAt?: string;
+  packedAt?: string;
+  packRecordedAt?: string;
+  packRecordedBy?: Recorder;
   lines?: OrderLine[];
   store?: string;
   orderRef?: string;
@@ -246,6 +377,9 @@ export interface Event {
   detail: string;
   actor: string;
   at: string;
+  recorder?: Recorder;
+  performer?: string;
+  occurredAt?: string;
 }
 export interface Note {
   id: string;
@@ -265,16 +399,19 @@ export interface SortCount {
   note: string;
   at: string;
 }
+// A performer profile. It never grants sign-in or write permission.
 export interface StaffProfile {
   id: string;
   name: string;
-  role: Role;
+  role: Role | "driver" | "assistant";
 }
 export interface Draft {
   staffProfiles?: StaffProfile[];
   sortCounts?: SortCount[];
   adypocideReceipts?: AdypocideReceipt[];
   awbImports?: AwbImport[];
+  machines?: Machine[];
+  operations?: OperationRecord[];
   version: 1;
   batches: Batch[];
   cartons: Carton[];
@@ -302,7 +439,7 @@ export function withBatchReferences(current: Draft): Draft {
 export const stepNames = (b: Batch) =>
   isSachet(b.product)
     ? b.steps.map((step, i) => {
-        const stage = sachetProcesses.find((p) => p.id === step.sachetStage);
+        const stage = sachetStage(step.sachetStage ?? "");
         return stage
           ? [stage.en, stage.ms]
           : step.machine
@@ -313,14 +450,38 @@ export const stepNames = (b: Batch) =>
 export const batchFactory = (b: Batch) =>
   isSachet(b.product) ? "sachet" : "bottle";
 export const batchUnit = (b: Batch): Unit => product(b.product).unit;
-export const batchComplete = (b: Batch) =>
-  isSachet(b.product)
-    ? sachetProcesses.every((stage) =>
-        b.steps.some(
-          (step) => step.sachetStage === stage.id && step.done && !!step.pic,
-        ),
-      )
-    : b.steps.every((step) => step.done);
+export const stageStep = (b: Batch, key: string) =>
+  b.steps.find((step) => step.sachetStage === key);
+export const stageDone = (b: Batch, key: string) => {
+  const step = stageStep(b, key);
+  return !!step?.done && !!step.pic;
+};
+/**
+ * The route a sachet batch must satisfy. Planned batches carry a snapshot.
+ * Transferred batches without one keep their actual historical route; an
+ * unsnapshotted batch still in production needs an explicit, reviewed decision.
+ */
+export function batchRoute(b: Batch): {
+  id: string;
+  stages: string[];
+  status: "snapshot" | "historical" | "needs-review";
+} {
+  if (b.route) return { id: b.route.id, stages: b.route.stages, status: "snapshot" };
+  const fixed = b.steps.some((step) => step.sachetStage);
+  if (batchTransferred(b))
+    return fixed
+      ? { ...sachetRoutes["sachet-v1"], status: "historical" }
+      : { id: "legacy-freeform", stages: [], status: "historical" };
+  return { ...sachetRoutes["sachet-v1"], status: "needs-review" };
+}
+export const routeStages = (b: Batch) =>
+  batchRoute(b).stages.map((key) => sachetStage(key)!);
+export const batchComplete = (b: Batch) => {
+  if (!isSachet(b.product)) return b.steps.every((step) => step.done);
+  const { stages } = batchRoute(b);
+  return !!stages.length && stages.every((key) => stageDone(b, key));
+};
+export const batchRevised = (b: Batch) => !!b.revisions?.length;
 export const batchTransferred = (b: Batch) => !!b.transferredAt || b.sent > 0;
 export const stockCartons = (s: Draft) =>
   s.cartons.filter((c) => c.unit === product(c.product).unit);
@@ -469,12 +630,25 @@ export function createDraft(): Draft {
     target: isSachet(p.id) ? 0 : 240,
     actual: isSachet(p.id) ? 0 : 240,
     sent: isSachet(p.id) ? 0 : 120,
-    ...(isSachet(p.id) ? { transferredAt: at, transferPic: people[0] } : {}),
-    steps: (isSachet(p.id) ? sachetProcesses : bottleSteps).map((_, j) => ({
+    ...(isSachet(p.id)
+      ? {
+          transferredAt: at,
+          transferPic: people[0],
+          route: {
+            id: currentSachetRoute,
+            stages: [...sachetRoutes[currentSachetRoute].stages],
+            at,
+          },
+        }
+      : {}),
+    steps: (isSachet(p.id)
+      ? sachetRoutes[currentSachetRoute].stages
+      : bottleSteps
+    ).map((key, j) => ({
       ...(isSachet(p.id)
         ? {
-            machine: sachetProcesses[j].machine,
-            sachetStage: sachetProcesses[j].id,
+            machine: sachetStage(key as string)!.machine,
+            sachetStage: key as string,
           }
         : {}),
       pic: people[(i + j) % 4],
@@ -694,10 +868,47 @@ export type Command = {
   type: string;
   role: Role;
   input: Record<string, unknown>;
+  /** Server-derived recorder. Absent only in the fictional preview/tests. */
+  actor?: Recorder;
+  policy?: WritePolicy;
 };
+/** A stale edit. Carries the current record so the supervisor can review it. */
+export class ConflictError extends Error {
+  conflict: Record<string, unknown>;
+  constructor(message: string, conflict: Record<string, unknown>) {
+    super(message);
+    this.conflict = conflict;
+  }
+}
+export const roleLabel = (role: Role) =>
+  roles.find((r) => r.id === role)?.en ?? role;
+export const recorderLabel = (r?: Recorder) =>
+  !r
+    ? ""
+    : r.kind === "member"
+      ? `${r.name} · ${roleLabel(r.role)}`
+      : roleLabel(r.role) + " (test view)";
+const MYT_LOCAL = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+/** Malaysia local "YYYY-MM-DDTHH:mm" to ISO. */
+export const fromMyt = (local: string) => {
+  if (!MYT_LOCAL.test(local)) return null;
+  const time = new Date(local + ":00+08:00");
+  return Number.isFinite(time.getTime()) ? time.toISOString() : null;
+};
+export const toMyt = (iso: string) =>
+  new Date(new Date(iso).getTime() + 8 * 3600000).toISOString().slice(0, 16);
 export function applyCommand(current: Draft, cmd: Command): Draft {
   if (!roles.some((r) => r.id === cmd.role))
     throw new Error("Choose a valid test role.");
+  if (cmd.actor && cmd.actor.role !== cmd.role)
+    throw new Error("Your signed-in role does not permit this action.");
+  const recorder: Recorder = cmd.actor ?? {
+    kind: "preview",
+    role: cmd.role,
+    name: roleLabel(cmd.role) + " (test view)",
+  };
+  const policy = cmd.policy ?? previewPolicy;
+  const site = recorder.siteId;
   const s = withBatchReferences(current),
     v = cmd.input,
     at = new Date().toISOString();
@@ -722,25 +933,141 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         "Switch to the responsible supervisor role for this action.",
       );
   };
+  const exception = (enabled: boolean, what: string) => {
+    if (!enabled)
+      throw new Error(
+        what +
+          " are not enabled for this workspace. Operational entry is supervisor-only until the owner decides this exception.",
+      );
+  };
   const find = <T extends { id: string }>(list: T[], key = "id"): T => {
     const item = list.find((x) => x.id === str(key));
     if (!item)
       throw new Error("This record could not be found. Refresh and try again.");
     return item;
   };
-  const log = (entity: string, action: string, detail: string) =>
+  const inSite = <T extends { siteId?: string }>(record: T) => {
+    if (site && record.siteId && record.siteId !== site)
+      throw new Error("This record belongs to another site.");
+    return record;
+  };
+  const log = (
+    entity: string,
+    action: string,
+    detail: string,
+    extra: { performer?: string; occurredAt?: string } = {},
+  ) =>
     s.events.unshift({
       id: id(),
       entity,
       action,
       detail,
-      actor: roles.find((r) => r.id === cmd.role)!.en + " (test view)",
+      actor: recorderLabel(recorder),
       at,
+      recorder,
+      ...extra,
     });
+  /** Optional actual-occurrence time; defaults to entry time. */
+  const occurrence = (key: string, notBefore?: string, notAfter?: string) => {
+    const local = str(key, false);
+    if (!local) return at;
+    const iso = fromMyt(local);
+    if (!iso)
+      throw new Error("Enter the actual date and time in Malaysia time.");
+    if (Date.parse(iso) > Date.now() + 5 * 60000)
+      throw new Error("The actual time cannot be in the future.");
+    if (notBefore && local.slice(0, 10) < notBefore)
+      throw new Error("The actual time cannot be before the batch work date.");
+    if (notAfter && iso > notAfter)
+      throw new Error(
+        "The actual time cannot be after the batch was sent to the warehouse.",
+      );
+    return iso;
+  };
+  const expectVersion = (
+    current: { version?: number } | undefined,
+    label: string,
+    required = false,
+    detail: () => Record<string, unknown> = () => ({}),
+  ) => {
+    const raw = v.expectedVersion;
+    if (raw === undefined || raw === null || raw === "") {
+      if (required)
+        throw new Error("Reopen this record before saving the change.");
+      return;
+    }
+    const expected = Number(raw),
+      actual = current?.version ?? 0;
+    if (expected !== actual)
+      throw new ConflictError(
+        `${label} was changed by another entry after you opened it. Review the latest record, then save again if your change is still needed.`,
+        { record: label, expectedVersion: expected, currentVersion: actual, ...detail() },
+      );
+  };
+  const bump = (record: { version?: number }) =>
+    (record.version = (record.version ?? 0) + 1);
+  const resolveStage = (b: Batch) => {
+    const key = str("stage");
+    const stage = sachetStage(key);
+    if (!stage)
+      throw new Error(
+        `Unknown production stage "${key}". Choose a fixed sachet stage from this batch's route.`,
+      );
+    const route = batchRoute(b);
+    if (!route.stages.includes(stage.id))
+      throw new Error(
+        `${stage.en} is not part of this batch's route (${route.id}).` +
+          (route.status === "needs-review"
+            ? " Review the legacy route before recording it."
+            : ""),
+      );
+    return stage;
+  };
+  const pickMachine = (stageKey: string, forCorrection = false) => {
+    const machineId = str("machineId", false);
+    if (!machineId) return undefined;
+    const machine = s.machines?.find((m) => m.id === machineId);
+    if (!machine)
+      throw new Error("This machine could not be found for this site.");
+    if (site && machine.siteId && machine.siteId !== site)
+      throw new Error("This machine belongs to another site.");
+    if (machine.stage !== stageKey)
+      throw new Error(
+        `${machine.name} is registered for ${sachetStage(machine.stage)?.en ?? machine.stage}, not this stage.`,
+      );
+    if (!machine.active && !forCorrection)
+      throw new Error(
+        `${machine.name} is inactive. Choose an active machine or reactivate it first.`,
+      );
+    return machine;
+  };
+  // Post-transfer corrections are flagged so downstream views/reports show a revision.
+  const markRevision = (
+    b: Batch,
+    stage: string,
+    field: string,
+    from: string,
+    to: string,
+    reason: string,
+  ) => {
+    if (!batchTransferred(b)) return;
+    (b.revisions ??= []).push({
+      id: id(),
+      stage,
+      field,
+      from,
+      to,
+      reason,
+      at,
+      recordedBy: recorder,
+    });
+  };
   switch (cmd.type) {
     case "import-save":
     case "import-release":
     case "import-receive": {
+      if (cmd.type !== "import-receive")
+        exception(policy.adminImports, "Office-admin imports and releases");
       const detail = applyImportCommand(s, cmd.type, v, cmd.role, at);
       log(String(v.id ?? (v.batch as AwbImport)?.id), cmd.type, detail);
       break;
@@ -752,19 +1079,29 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const code = str("code");
       if (s.batches.some((b) => b.code.toLowerCase() === code.toLowerCase()))
         throw new Error("That batch number already exists.");
+      const routeKey = str("route", false);
+      if (isSachet(p) && routeKey && routeKey !== currentSachetRoute)
+        throw new Error(
+          `Unknown or retired production route "${routeKey}". Reload and plan the batch on the current route.`,
+        );
+      const route = sachetRoutes[currentSachetRoute];
       const b: Batch = {
         id: id(),
         code,
         product: p,
         date: str("date"),
+        ...(site ? { siteId: site } : {}),
+        ...(isSachet(p)
+          ? { route: { id: route.id, stages: [...route.stages], at } }
+          : {}),
         target: isSachet(p) ? 0 : num("target", 1),
         actual: 0,
         sent: 0,
         steps: isSachet(p)
-          ? sachetProcesses.map((stage) => ({
+          ? route.stages.map((key) => ({
               ...blankStep(),
-              machine: stage.machine,
-              sachetStage: stage.id,
+              machine: sachetStage(key)!.machine,
+              sachetStage: key,
             }))
           : bottleSteps.map(blankStep),
       };
@@ -779,6 +1116,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
               to: pic,
               at,
               reason: "Assigned during batch planning",
+              recordedBy: recorder,
             },
           ];
         }
@@ -789,23 +1127,88 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         "Batch planned",
         b.code +
           (isSachet(p)
-            ? " · machine and PIC records"
+            ? ` · ${route.en} · machine and PIC records`
             : " · " + b.target + " " + batchUnit(b)),
       );
       break;
     }
-    case "change-step-pic": {
+    case "route-review": {
       allow("production");
-      const b = find(s.batches),
-        index = num("step"),
-        step = b.steps[index];
+      const b = inSite(find(s.batches));
+      if (!isSachet(b.product))
+        throw new Error("Route review applies to sachet batches.");
+      const current = batchRoute(b);
+      if (current.status !== "needs-review")
+        throw new Error(
+          current.status === "historical"
+            ? "Transferred batches keep their actual historical route."
+            : "This batch already has a reviewed route.",
+        );
+      expectVersion(b, b.code);
+      const decision = str("decision"),
+        reason = str("reason");
+      if (decision !== "upgrade" && decision !== "keep-legacy")
+        throw new Error(
+          "Choose whether to upgrade to the five-stage route or keep the recorded four-stage route.",
+        );
+      const next =
+        decision === "upgrade"
+          ? sachetRoutes[currentSachetRoute]
+          : sachetRoutes["sachet-v1"];
+      b.route = {
+        id: next.id,
+        stages: [...next.stages],
+        at,
+        review: { decision, from: current.id, reason, at, recordedBy: recorder },
+      };
+      // Append missing stages as open records. Existing positions and history are untouched;
+      // a Hologram record is never created as completed.
+      for (const key of next.stages)
+        if (!stageStep(b, key))
+          b.steps.push({
+            ...blankStep(),
+            machine: sachetStage(key)!.machine,
+            sachetStage: key,
+          });
+      bump(b);
+      log(
+        b.id,
+        decision === "upgrade"
+          ? "Legacy batch upgraded to five-stage route"
+          : "Legacy four-stage route kept",
+        `${b.code} · ${current.id} → ${next.id} · ${reason}`,
+      );
+      break;
+    }
+    case "change-step-pic": {
+      allow("production", "intake");
+      const b = inSite(find(s.batches));
+      const stageKey = str("stage", false);
+      const index = stageKey
+        ? b.steps.findIndex((step) => step.sachetStage === stageKey)
+        : num("step");
+      const step = b.steps[index];
       if (!step) throw new Error("Choose a valid production process.");
+      if (cmd.role === "intake" && !isSachet(b.product))
+        throw new Error(
+          "Stock-in can edit sachet machine/PIC records only. Ask production to change bottle records.",
+        );
+      expectVersion(step, `${b.code} · ${stepNames(b)[index][0]}`, false, () => ({
+        pic: step.pic,
+        last: step.picHistory?.at(-1),
+      }));
       const kind = str("kind"),
         pic = str("pic"),
         reason = str("reason");
-      if (kind !== "correction" && kind !== "handover")
-        throw new Error("Choose a PIC correction or shift handover.");
+      if (!["correction", "handover", "reassignment"].includes(kind))
+        throw new Error(
+          "Choose a PIC correction, reassignment or shift handover.",
+        );
       if (pic === step.pic) throw new Error("Choose a different PIC.");
+      if (kind === "reassignment" && step.done)
+        throw new Error(
+          "Completed work cannot be reassigned. Use a correction or shift handover.",
+        );
       let effectiveAt: string | undefined;
       if (kind === "handover") {
         if (!step.pic)
@@ -815,18 +1218,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
             "This batch is already transferred; use a correction for mistaken records.",
           );
         const local = str("effectiveAt");
-        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local))
-          throw new Error("Enter the takeover date and time in Malaysia time.");
-        const time = new Date(local + ":00+08:00");
-        if (
-          !Number.isFinite(time.getTime()) ||
-          time.getTime() > Date.now() ||
-          local.slice(0, 10) < b.date
-        )
+        const iso = fromMyt(local);
+        if (!iso || Date.parse(iso) > Date.now() || local.slice(0, 10) < b.date)
           throw new Error(
             "Takeover time must be on or after the batch date and not in the future.",
           );
-        effectiveAt = time.toISOString();
+        effectiveAt = iso;
         const lastHandover = step.picHistory
           ?.filter((h) => h.kind === "handover")
           .at(-1);
@@ -838,61 +1235,287 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       }
       const previous = step.pic;
       (step.picHistory ??= []).push({
-        kind,
+        kind: kind as PicChange["kind"],
         from: previous,
         to: pic,
         at,
         effectiveAt,
         reason,
+        recordedBy: recorder,
       });
       step.pic = pic;
+      bump(step);
+      if (kind === "correction")
+        markRevision(
+          b,
+          step.sachetStage ?? String(index),
+          "pic",
+          previous,
+          pic,
+          reason,
+        );
       log(
         b.id,
         kind === "handover"
           ? "Production shift handover"
-          : "Production PIC corrected",
-        `${stepNames(b)[index][0]} · ${previous || "Unassigned"} → ${pic} · ${effectiveAt ?? at} · ${reason}`,
+          : kind === "reassignment"
+            ? "Production PIC reassigned"
+            : "Production PIC corrected",
+        `${stepNames(b)[index][0]} · ${previous || "Unassigned"} → ${pic} · ${effectiveAt ?? at} · ${reason}` +
+          (batchTransferred(b) ? " · revised after transfer" : ""),
+        { performer: pic, occurredAt: effectiveAt },
       );
       break;
     }
     case "machine": {
-      allow("production");
-      const b = find(s.batches);
+      allow("production", "intake");
+      const b = inSite(find(s.batches));
       if (!isSachet(b.product))
         throw new Error("Machine-only records are for sachet products.");
       if (batchTransferred(b))
         throw new Error("This batch has already been sent to the warehouse.");
-      const stage = sachetProcesses.find((stage) => stage.id === str("stage"));
-      if (!stage)
-        throw new Error("Choose one of the four fixed sachet processes.");
-      const previous = b.steps.find((step) => step.sachetStage === stage.id);
+      const stage = resolveStage(b);
+      const previous = stageStep(b, stage.id);
       if (previous?.done)
-        throw new Error("This process already has a recorded PIC.");
+        throw new Error(
+          "This process already has a recorded PIC. Use a correction or record rework.",
+        );
+      expectVersion(previous, `${b.code} · ${stage.en}`, false, () => ({
+        pic: previous?.pic,
+      }));
       const pic = str("pic");
       if (previous?.pic && previous.pic !== pic)
         throw new Error(
           "Use Edit PIC or Shift handover to change the assigned person first.",
         );
-      const record = {
+      const machine = pickMachine(stage.id);
+      const occurredAt = occurrence("occurredAt", b.date);
+      const record: Step = {
         ...(previous ?? blankStep()),
         machine: stage.machine,
         sachetStage: stage.id,
         pic,
         done: true,
+        occurredAt,
+        recordedAt: at,
+        recordedBy: recorder,
+        ...(machine ? { machineId: machine.id, machineName: machine.name } : {}),
       };
+      bump(record);
       if (previous) b.steps[b.steps.indexOf(previous)] = record;
       else b.steps.push(record);
-
       log(
         b.id,
         "Machine responsibility recorded",
-        b.code + " · " + stage.en + " · " + pic,
+        b.code +
+          " · " +
+          stage.en +
+          (machine ? " · " + machine.name : "") +
+          " · " +
+          pic,
+        { performer: pic, occurredAt },
+      );
+      break;
+    }
+    case "stage-rework": {
+      allow("production", "intake");
+      const b = inSite(find(s.batches));
+      if (!isSachet(b.product) || batchTransferred(b))
+        throw new Error(
+          "Rework can be recorded for sachet batches still in production.",
+        );
+      const stage = resolveStage(b);
+      const step = stageStep(b, stage.id);
+      if (!step?.done)
+        throw new Error("Record the first completion of this stage first.");
+      expectVersion(step, `${b.code} · ${stage.en}`);
+      const pic = str("pic"),
+        reason = str("reason"),
+        machine = pickMachine(stage.id),
+        occurredAt = occurrence("occurredAt", b.date);
+      (step.occurrences ??= []).push({
+        id: id(),
+        kind: "rework",
+        pic,
+        ...(machine ? { machineId: machine.id, machineName: machine.name } : {}),
+        occurredAt,
+        recordedAt: at,
+        recordedBy: recorder,
+        reason,
+      });
+      bump(step);
+      log(
+        b.id,
+        "Stage rework recorded",
+        `${b.code} · ${stage.en}${machine ? " · " + machine.name : ""} · ${pic} · ${reason}`,
+        { performer: pic, occurredAt },
+      );
+      break;
+    }
+    case "stage-correct": {
+      allow("production", "intake");
+      const b = inSite(find(s.batches));
+      if (!isSachet(b.product))
+        throw new Error("Machine corrections apply to sachet batches.");
+      const stage = resolveStage(b);
+      const step = stageStep(b, stage.id);
+      if (!step?.done)
+        throw new Error("Only a recorded stage completion can be corrected.");
+      expectVersion(step, `${b.code} · ${stage.en}`, true, () => ({
+        machine: step.machineName ?? "",
+        occurredAt: step.occurredAt ?? "",
+        lastCorrection: step.corrections?.at(-1),
+      }));
+      const field = str("field"),
+        reason = str("reason");
+      let from: string, to: string;
+      if (field === "machine") {
+        const machine = pickMachine(stage.id, true);
+        if (!machine) throw new Error("Choose the machine actually used.");
+        if (machine.id === step.machineId)
+          throw new Error("Choose a different machine.");
+        from = step.machineName ?? "";
+        to = machine.name;
+        step.machineId = machine.id;
+        step.machineName = machine.name;
+      } else if (field === "occurredAt") {
+        if (!str("occurredAt", false))
+          throw new Error("Enter the actual completion time.");
+        from = step.occurredAt ?? "";
+        to = occurrence("occurredAt", b.date, b.transferredAt);
+        if (to === from) throw new Error("Enter a different time.");
+        step.occurredAt = to;
+      } else throw new Error("Choose the machine or the completion time to correct.");
+      (step.corrections ??= []).push({
+        id: id(),
+        field,
+        from,
+        to,
+        reason,
+        at,
+        recordedBy: recorder,
+      });
+      bump(step);
+      markRevision(b, stage.id, field, from, to, reason);
+      log(
+        b.id,
+        "Stage record corrected",
+        `${b.code} · ${stage.en} · ${field}: ${from || "—"} → ${to} · ${reason}` +
+          (batchTransferred(b) ? " · revised after transfer" : ""),
+      );
+      break;
+    }
+    case "machine-create": {
+      allow("production", "intake");
+      const stage = sachetStage(str("stage"));
+      if (!stage) throw new Error("Choose the stage this machine performs.");
+      const name = str("name"),
+        code = str("code", false);
+      if (name.length > 80 || code.length > 40)
+        throw new Error("Use a shorter machine name or code.");
+      const clash = s.machines?.find(
+        (m) =>
+          (!site || !m.siteId || m.siteId === site) &&
+          m.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (clash)
+        throw new Error(
+          `A machine named "${clash.name}" already exists for this site${clash.active ? "" : " (inactive)"}. Use or reactivate the existing record.`,
+        );
+      const machine: Machine = {
+        id: id(),
+        ...(site ? { siteId: site } : {}),
+        stage: stage.id,
+        name,
+        ...(code ? { code } : {}),
+        active: true,
+        createdAt: at,
+        updatedAt: at,
+        version: 1,
+        history: [
+          { kind: "created", at, changes: { name: ["", name] }, recordedBy: recorder },
+        ],
+      };
+      (s.machines ??= []).unshift(machine);
+      log(machine.id, "Machine added", `${stage.machine} · ${name}`);
+      break;
+    }
+    case "machine-update":
+    case "machine-deactivate":
+    case "machine-reactivate": {
+      allow("production", "intake");
+      const machine = inSite(find(s.machines ?? []));
+      expectVersion(machine, machine.name, true, () => ({
+        name: machine.name,
+        code: machine.code ?? "",
+        active: machine.active,
+      }));
+      const changes: Record<string, [string, string]> = {};
+      let reason: string | undefined;
+      if (cmd.type === "machine-update") {
+        const name = str("name"),
+          code = str("code", false);
+        if (name.length > 80 || code.length > 40)
+          throw new Error("Use a shorter machine name or code.");
+        if (
+          s.machines!.some(
+            (m) =>
+              m.id !== machine.id &&
+              (!site || !m.siteId || m.siteId === site) &&
+              m.name.toLowerCase() === name.toLowerCase(),
+          )
+        )
+          throw new Error("Another machine already uses this name.");
+        if (name !== machine.name) changes.name = [machine.name, name];
+        if (code !== (machine.code ?? ""))
+          changes.code = [machine.code ?? "", code];
+        if (!Object.keys(changes).length)
+          throw new Error("No machine details changed.");
+        reason = str("reason", false) || undefined;
+        machine.name = name;
+        if (code) machine.code = code;
+        else delete machine.code;
+      } else {
+        const active = cmd.type === "machine-reactivate";
+        if (machine.active === active)
+          throw new Error(
+            active ? "This machine is already active." : "This machine is already inactive.",
+          );
+        reason = str("reason");
+        changes.active = [String(machine.active), String(active)];
+        machine.active = active;
+      }
+      machine.updatedAt = at;
+      machine.version += 1;
+      machine.history.push({
+        kind:
+          cmd.type === "machine-update"
+            ? "edited"
+            : cmd.type === "machine-deactivate"
+              ? "deactivated"
+              : "reactivated",
+        at,
+        changes,
+        reason,
+        recordedBy: recorder,
+      });
+      // Historical stage records keep their own machine-name snapshot.
+      log(
+        machine.id,
+        cmd.type === "machine-update"
+          ? "Machine details edited"
+          : cmd.type === "machine-deactivate"
+            ? "Machine deactivated"
+            : "Machine reactivated",
+        Object.entries(changes)
+          .map(([k, [a, b]]) => `${k}: ${a || "—"} → ${b || "—"}`)
+          .join(" · ") + (reason ? " · " + reason : ""),
       );
       break;
     }
     case "step": {
       allow("production");
-      const b = find(s.batches);
+      const b = inSite(find(s.batches));
       if (isSachet(b.product))
         throw new Error(
           "Record the machine and PIC without an output quantity.",
@@ -937,13 +1560,18 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "transfer": {
       allow("production");
-      const b = find(s.batches);
+      const b = inSite(find(s.batches));
       if (isSachet(b.product)) {
         if (batchTransferred(b))
           throw new Error("This batch has already been sent to the warehouse.");
+        const route = batchRoute(b);
+        if (route.status === "needs-review")
+          throw new Error(
+            "This batch was started before the five-stage route. Review its route (upgrade to five stages or keep the recorded four-stage route) before transfer.",
+          );
         if (!batchComplete(b))
           throw new Error(
-            "Record a machine and PIC for all four fixed processes before transfer.",
+            `Record a machine and PIC for all ${countWords[route.stages.length] ?? route.stages.length} stages of this batch's route before transfer.`,
           );
         b.transferredAt = at;
         b.transferPic = str("pic");
@@ -969,7 +1597,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "receive": {
       allow("intake");
-      const b = find(s.batches, "batchId");
+      const b = inSite(find(s.batches, "batchId"));
       if (isSachet(b.product))
         throw new Error(
           "Receive sachets for boxing before confirming its finished boxes.",
@@ -1001,7 +1629,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "receive-ady": {
       allow("intake");
-      const batch = find(s.batches, "batchId");
+      const batch = inSite(find(s.batches, "batchId"));
       if (!isSachet(batch.product) || !batchTransferred(batch))
         throw new Error("Choose a sachet batch sent to the warehouse.");
       const ref = batch.code;
@@ -1071,6 +1699,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "order": {
       allow("admin", "outbound");
+      if (cmd.role === "admin")
+        exception(policy.adminImports, "Office-admin order entry and releases");
       const p = str("product"),
         awb = normalizeAwb(str("awb")),
         expected = num("expected", 1);
@@ -1107,6 +1737,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "edit-order": {
       allow("admin", "outbound");
+      if (cmd.role === "admin")
+        exception(policy.adminImports, "Office-admin order entry and releases");
       const o = find(s.orders);
       if (orderReady(o))
         throw new Error("Reviewed orders require a supervisor correction.");
@@ -1138,6 +1770,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "review-order": {
       allow("admin", "outbound");
+      if (cmd.role === "admin")
+        exception(policy.adminImports, "Office-admin order entry and releases");
       const o = find(s.orders);
       if (orderReady(o)) throw new Error("This order is already reviewed.");
       o.reviewState = "confirmed";
@@ -1254,6 +1888,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "split-order": {
       allow("admin", "outbound");
+      if (cmd.role === "admin")
+        exception(policy.adminImports, "Office-admin order entry and releases");
       const o = find(s.orders);
       if (singleProductOrder(o))
         throw new Error("This record already has one product.");
@@ -1484,7 +2120,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       break;
     }
     case "pack": {
-      allow("packer");
+      // SV-only entry: the stock-out supervisor records the actual packer's count.
+      allow("outbound");
       const o = find(s.orders);
       if (!singleProductOrder(o))
         throw new Error(
@@ -1494,35 +2131,50 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error(
           "Saved parcel quantities require a supervisor correction.",
         );
-      if (
-        !orderReady(o) ||
-        !o.assignedPacker ||
-        o.assignedPacker !== str("pic")
-      )
+      if (!orderReady(o) || !o.assignedPacker)
         throw new Error(
-          "Only the assigned packer can record this AWB. Ask the supervisor to assign it first.",
+          "Only an assigned packer's work can be recorded. Assign this AWB first.",
         );
+      const packer = str("pic");
+      if (
+        s.staffProfiles &&
+        !s.staffProfiles.some((p) => p.id === packer && p.role === "packer")
+      )
+        throw new Error("Choose the actual packer's profile.");
+      const reason = str("reason", false);
+      if (packer !== o.assignedPacker && !reason)
+        throw new Error(
+          "The actual packer differs from the assigned packer. Enter a reason.",
+        );
+      const packedAt = occurrence("occurredAt");
       if (o.lines) {
         o.lines.forEach((l) => {
           l.actual = num("actual_" + l.product);
         });
         o.actual = o.lines.reduce((n, l) => n + l.actual!, 0);
       } else o.actual = num("actual");
-      o.packer = str("pic");
+      o.packer = packer;
       o.labelPic = str("labelPic");
+      o.packedAt = packedAt;
+      o.packRecordedAt = at;
+      o.packRecordedBy = recorder;
       log(
         o.id,
-        "Parcel quantity declared",
+        "Parcel quantity recorded",
         orderLines(o)
           .map(
             (l) =>
               `${product(l.product).name}: ${l.actual} ${product(l.product).unit}`,
           )
           .join(" · ") +
-          " · " +
+          " · packed by " +
           o.packer +
           " · AWB attached by " +
-          o.labelPic,
+          o.labelPic +
+          (packer !== o.assignedPacker
+            ? ` · assigned to ${o.assignedPacker}: ${reason}`
+            : ""),
+        { performer: packer, occurredAt: packedAt },
       );
       break;
     }
@@ -1650,6 +2302,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "review": {
       allow("management");
+      exception(policy.managementComments, "Management comments");
       const text = str("text");
       s.notes.unshift({ id: id(), kind: "review", text, role: cmd.role, at });
       log("workspace", "Management follow-up", text);
@@ -1683,10 +2336,20 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     s.cartons.length > 500 ||
     (s.adypocideReceipts?.length ?? 0) > 500 ||
     (s.sortCounts?.length ?? 0) > 1000 ||
-    s.notes.length > 200
+    s.notes.length > 200 ||
+    (s.machines?.length ?? 0) > 300
   )
     throw new Error(
       "The test workspace is full. Export your review and reset the sample data.",
     );
+  return s;
+}
+
+// Idempotency records commit atomically with the workspace state they describe.
+export const OPERATION_LIMIT = 500;
+export const findOperation = (s: Draft, operationId: string) =>
+  s.operations?.find((op) => op.id === operationId);
+export function recordOperation(s: Draft, op: OperationRecord): Draft {
+  s.operations = [op, ...(s.operations ?? [])].slice(0, OPERATION_LIMIT);
   return s;
 }

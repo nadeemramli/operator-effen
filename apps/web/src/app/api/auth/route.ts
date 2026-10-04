@@ -1,6 +1,6 @@
 import { sameOrigin } from "@/lib/request-origin";
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabase/server";
+import { resolveAccess, supabaseServer } from "@/lib/supabase/server";
 
 export async function POST(request: NextRequest) {
   if (!sameOrigin(request))
@@ -25,12 +25,14 @@ export async function POST(request: NextRequest) {
     email: input.username.trim().toLowerCase(),
     password: input.password,
   });
-  if (error || data.user?.app_metadata?.ui_draft_access !== true) {
+  // Sign-in requires an active workspace membership or the fictional preview flag.
+  const access = error ? null : await resolveAccess(db);
+  if (error || access?.status !== 200) {
     if (data.session) await db.auth.signOut({ scope: "local" });
     return NextResponse.json(
       {
         error:
-          "The username or password is incorrect, or this account does not have draft access.",
+          "The username or password is incorrect, or this account does not have Operator access.",
       },
       { status: 401 },
     );

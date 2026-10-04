@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-export function LoginForm() {
+export function LoginForm({ expired = false }: { expired?: boolean }) {
   const router = useRouter();
   const [lang, setLang] = useState<"en" | "ms">("en");
   const [busy, setBusy] = useState(false);
@@ -116,6 +116,14 @@ export function LoginForm() {
               "Log masuk untuk mencuba ruang kerja baharu pasukan anda.",
             )}
           </p>
+          {expired && (
+            <div className="save-notice mt-6" role="status">
+              {t(
+                "Your session ended. Sign in again; any unsaved entry is kept on this device and can be resubmitted.",
+                "Sesi anda tamat. Log masuk semula; entri yang belum disimpan kekal pada peranti ini dan boleh dihantar semula.",
+              )}
+            </div>
+          )}
           <form onSubmit={submit} className="space-y-5 mt-8">
             <div className="space-y-2">
               <Label htmlFor="username">
