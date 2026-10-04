@@ -110,7 +110,7 @@ optionally the physical machine and actual time, with no sachet quantities. All 
 actual stage records are required before warehouse handoff. Completed four-stage batches
 keep their historical route; unfinished ones need an explicit route review. Production
 and Stock-in edit the same stage records. See
-[SV-only entry and the five-stage route](docs/sv-entry-and-sachet-route.md).
+[role-based entry and the five-stage route](docs/sv-entry-and-sachet-route.md).
 Historical free-form machine records keep their original labels and PICs; they
 are not automatically mapped to the new stages. A factory handoff and warehouse receipt do not create stock.
 After warehouse boxing, the stock-in supervisor finalizes the receipt with the
@@ -154,10 +154,13 @@ other users' changes; optimistic revision checks prevent concurrent overwrites.
 
 #### Staff accounts
 
-Individual sign-in uses workspace memberships (`operator_memberships`, migration
-`20261004090000`). The server derives role and site from the membership; only
-supervisors write. See [SV-only entry](docs/sv-entry-and-sachet-route.md) for setup,
-policy exceptions and rollback. The paragraph below describes the earlier preview boundary.
+Individual sign-in uses workspace memberships (`operator_memberships`, migrations
+`20261004090000` and `20261005090000`). The server derives role, site and capabilities
+from the membership; office admin, HR and management can hold all-sites memberships.
+Operational saves are server-validated, signed and re-checked by the database; source PDFs
+are shared per site. See [role-based entry](docs/sv-entry-and-sachet-route.md) for the
+trust boundary, membership administration, deployment prerequisites and rollback. The
+paragraph below describes the earlier preview boundary.
 
 #### Prepared boundary for staff accounts (preview)
 

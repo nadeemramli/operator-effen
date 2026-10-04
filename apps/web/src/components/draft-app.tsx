@@ -88,6 +88,7 @@ import {
   orderIssued,
   orderLines,
   people,
+  previewCapabilities,
   product,
   products,
   recorderLabel,
@@ -127,7 +128,7 @@ const navigation: {
     en: "Overview",
     ms: "Gambaran",
     icon: LayoutDashboard,
-    roles: ["production", "intake", "outbound", "admin", "management"],
+    roles: ["production", "intake", "outbound", "admin", "hr", "management"],
   },
   {
     id: "production",
@@ -176,14 +177,14 @@ const navigation: {
     en: "Traceability",
     ms: "Jejak rekod",
     icon: ScanLine,
-    roles: ["production", "intake", "outbound", "management"],
+    roles: ["production", "intake", "outbound", "management", "driver", "assistant"],
   },
   {
     id: "reports",
     en: "Reports & people",
     ms: "Laporan & pasukan",
     icon: Activity,
-    roles: ["management"],
+    roles: ["management", "hr"],
   },
   {
     id: "feedback",
@@ -195,7 +196,10 @@ const navigation: {
       "intake",
       "outbound",
       "admin",
+      "hr",
       "packer",
+      "driver",
+      "assistant",
       "management",
     ],
   },
@@ -277,7 +281,8 @@ type Actor = {
   siteId?: string;
   workspaceId?: string;
   workspaceName?: string;
-  policy: { adminImports: boolean; managementComments: boolean };
+  scope?: "site" | "all-sites";
+  capabilities?: string[];
 };
 // A save that has not been acknowledged. Kept on this device until the server confirms it,
 // and only offered back to the same signed-in user and workspace.
@@ -300,7 +305,6 @@ const readPending = (): PendingSave | null => {
 };
 const viewRole = (role?: string): Role =>
   roles.some((r) => r.id === role) ? (role as Role) : "packer";
-const writerRoles: Role[] = ["production", "intake", "outbound"];
 
 export function DraftApp() {
   const revisionRef = useRef(0);
@@ -331,14 +335,14 @@ export function DraftApp() {
     [packingSelection, setPackingSelection] = useState<string[]>([]),
     [trace, setTrace] = useState<string | null>(null);
   const t = (en: string, ms: string) => tr(lang, en, ms);
-  const canWrite =
-    !member ||
-    writerRoles.includes(role) ||
-    (role === "admin" && !!actor?.policy.adminImports) ||
-    (role === "management" && !!actor?.policy.managementComments);
-  const allowed = navigation.filter(
-    (n) => n.roles.includes(role) && (n.id !== "feedback" || canWrite),
-  );
+  // Display only: the server and database decide. Members get their site capabilities;
+  // the fictional preview gets the previewed role's defaults inside the sandbox.
+  const caps: readonly string[] = member
+    ? (actor?.capabilities ?? [])
+    : previewCapabilities(role);
+  const can = (capability: string) => caps.includes(capability);
+  const operational = caps.some((c) => c !== "feedback.post");
+  const allowed = navigation.filter((n) => n.roles.includes(role));
   const requested = (
     params.get("view") === "outbound" ? "orders" : params.get("view")
   ) as View;
@@ -906,6 +910,14 @@ export function DraftApp() {
           name: "text",
           label: t("Your note", "Catatan anda"),
           type: "textarea",
+        },
+        {
+          name: "entity",
+          label: t(
+            "Related batch, AWB or screen",
+            "Kelompok, AWB atau skrin berkaitan",
+          ),
+          required: false,
         },
       ],
     });
@@ -1557,15 +1569,15 @@ export function DraftApp() {
           <SachetProductionRecords
             state={state}
             lang={lang}
-            show={canWrite ? show : undefined}
-            pic={canWrite ? pic : undefined}
+            show={can("stage.record") || can("stage.correct") ? show : undefined}
+            pic={can("stage.record") || can("stage.correct") ? pic : undefined}
             role={role}
             onTrace={(id) => setTrace(id)}
           />
           <MachineRegistry
             state={state}
             lang={lang}
-            show={canWrite ? show : undefined}
+            show={can("machines.manage") ? show : undefined}
           />
           <Panel
             title={t("On the racks", "Di rak")}
@@ -1733,6 +1745,7 @@ export function DraftApp() {
     if (view === "input")
       return (
         <AwbIntake
+          workspaceId={actor?.workspaceId}
           state={state}
           lang={lang}
           role={role}
@@ -2136,9 +2149,16 @@ export function DraftApp() {
                       </span>
                       <p>{n.text}</p>
                       <small>
-                        {new Date(n.at).toLocaleString("en-MY", {
-                          timeZone: "Asia/Kuala_Lumpur",
-                        })}
+                        {[
+                          n.author ? recorderLabel(n.author) : null,
+                          n.siteId,
+                          n.entity,
+                          new Date(n.at).toLocaleString("en-MY", {
+                            timeZone: "Asia/Kuala_Lumpur",
+                          }),
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </small>
                     </article>
                   ))}
@@ -2265,9 +2285,16 @@ export function DraftApp() {
                     </small>
                     <p>{n.text}</p>
                     <small>
-                      {new Date(n.at).toLocaleString("en-MY", {
-                        timeZone: "Asia/Kuala_Lumpur",
-                      })}
+                      {[
+                        n.author ? recorderLabel(n.author) : null,
+                        n.siteId,
+                        n.entity,
+                        new Date(n.at).toLocaleString("en-MY", {
+                          timeZone: "Asia/Kuala_Lumpur",
+                        }),
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
                     </small>
                   </article>
                 ))}
@@ -2443,7 +2470,7 @@ export function DraftApp() {
                   lang === "ms" ? "ms" : "en"
                 ] ?? actor?.role}{" "}
                 · {actor?.workspaceName}
-                {!canWrite &&
+                {!operational &&
                   " · " + t("view only", "lihat sahaja")}
               </span>
             </span>

@@ -196,7 +196,7 @@ test("review and exclusion require notes, roles are enforced and split orders ne
   s = run(s, "import-release", { id: b.id });
   assert.throws(
     () => run(s, "import-receive", { id: b.id, pic: "TEST" }),
-    /stock-out/,
+    /stock-out/i,
   );
   s = run(s, "import-receive", { id: b.id, pic: "TEST" }, "outbound");
   assert.ok(s.awbImports[0].receivedAt);

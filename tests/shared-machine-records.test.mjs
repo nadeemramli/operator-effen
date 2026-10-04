@@ -117,7 +117,7 @@ test("machine registry: create, find, edit and deactivate without rewriting hist
   );
   assert.throws(
     () => as(s, "packer", "machine-create", { stage: "mixing", name: "X" }),
-    /supervisor role|signed-in role/,
+    /supervisor role|signed-in role|does not permit/,
   );
 });
 
@@ -376,5 +376,5 @@ test("post-transfer corrections keep custody and stock facts and are flagged as 
     () => as(next, "production", "stage-rework", { id, stage: "mixing", pic: "Q", reason: "x" }),
     /still in production/,
   );
-  assert.deepEqual(outOfScopeKeys("intake", s, next), []);
+  assert.deepEqual(outOfScopeKeys("stage-correct", s, next), []);
 });

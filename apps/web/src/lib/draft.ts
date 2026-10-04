@@ -1,4 +1,9 @@
 import {
+  commandRules,
+  effectiveCapabilities,
+  type Capability,
+} from "./capabilities.ts";
+import {
   applyImportCommand,
   channels,
   normalizeAwb,
@@ -12,14 +17,20 @@ export type Role =
   | "intake"
   | "outbound"
   | "admin"
+  | "hr"
   | "packer"
+  | "driver"
+  | "assistant"
   | "management";
 export const roles: { id: Role; en: string; ms: string }[] = [
   { id: "production", en: "Production supervisor", ms: "Penyelia pengeluaran" },
   { id: "intake", en: "Stock-in supervisor", ms: "Penyelia stok masuk" },
   { id: "outbound", en: "Stock-out supervisor", ms: "Penyelia stok keluar" },
   { id: "admin", en: "Office admin", ms: "Admin pejabat" },
+  { id: "hr", en: "HR", ms: "Sumber manusia" },
   { id: "packer", en: "Packer", ms: "Pembungkus" },
+  { id: "driver", en: "Driver", ms: "Pemandu" },
+  { id: "assistant", en: "Assistant", ms: "Pembantu" },
   { id: "management", en: "Management", ms: "Pengurusan" },
 ];
 export type Unit = "bottle" | "sachet" | "box";
@@ -157,15 +168,8 @@ export interface Recorder {
   staffProfileId?: string;
   siteId?: string;
 }
-// Office-admin imports and management comments are unresolved exceptions to SV-only entry.
-export interface WritePolicy {
-  adminImports: boolean;
-  managementComments: boolean;
-}
-export const previewPolicy: WritePolicy = {
-  adminImports: true,
-  managementComments: true,
-};
+/** The fictional preview grants a role's default capabilities inside the sandbox only. */
+export const previewCapabilities = (role: Role) => effectiveCapabilities(role);
 export interface PicChange {
   kind: "assignment" | "reassignment" | "correction" | "handover";
   from: string;
@@ -387,6 +391,10 @@ export interface Note {
   text: string;
   role: Role;
   at: string;
+  /** Authenticated author, site and optional record the note refers to. */
+  author?: Recorder;
+  siteId?: string;
+  entity?: string;
 }
 export interface SortCount {
   id: string;
@@ -403,7 +411,7 @@ export interface SortCount {
 export interface StaffProfile {
   id: string;
   name: string;
-  role: Role | "driver" | "assistant";
+  role: Role;
 }
 export interface Draft {
   staffProfiles?: StaffProfile[];
@@ -870,7 +878,8 @@ export type Command = {
   input: Record<string, unknown>;
   /** Server-derived recorder. Absent only in the fictional preview/tests. */
   actor?: Recorder;
-  policy?: WritePolicy;
+  /** Server-derived effective capabilities at this site. Preview: role defaults. */
+  capabilities?: readonly Capability[] | readonly string[];
 };
 /** A stale edit. Carries the current record so the supervisor can review it. */
 export class ConflictError extends Error {
@@ -907,11 +916,25 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     role: cmd.role,
     name: roleLabel(cmd.role) + " (test view)",
   };
-  const policy = cmd.policy ?? previewPolicy;
+  const capabilities: readonly string[] =
+    cmd.capabilities ?? previewCapabilities(cmd.role);
+  const rule = commandRules[cmd.type];
+  if (rule && !capabilities.includes(rule.capability))
+    throw new Error(
+      cmd.actor?.kind === "member"
+        ? "Your role at this site does not permit this action."
+        : `Switch to the responsible ${roles
+            .filter((r) => previewCapabilities(r.id).includes(rule.capability))
+            .map((r) => r.en)
+            .join(" or ")} role for this action.`,
+    );
+  if (!rule && cmd.actor?.kind === "member")
+    throw new Error("This action is not available in operational workspaces.");
   const site = recorder.siteId;
   const s = withBatchReferences(current),
     v = cmd.input,
     at = new Date().toISOString();
+  const eventsBefore = s.events.length;
   const str = (k: string, required = true) => {
     const val = typeof v[k] === "string" ? (v[k] as string).trim() : "";
     if (required && !val) throw new Error("Please complete " + k + ".");
@@ -933,18 +956,20 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         "Switch to the responsible supervisor role for this action.",
       );
   };
-  const exception = (enabled: boolean, what: string) => {
-    if (!enabled)
-      throw new Error(
-        what +
-          " are not enabled for this workspace. Operational entry is supervisor-only until the owner decides this exception.",
-      );
-  };
   const find = <T extends { id: string }>(list: T[], key = "id"): T => {
     const item = list.find((x) => x.id === str(key));
     if (!item)
       throw new Error("This record could not be found. Refresh and try again.");
     return item;
+  };
+  const noteScope = () => {
+    const entity = str("entity", false);
+    if (entity.length > 200) throw new Error("Use a shorter record reference.");
+    return {
+      author: recorder,
+      ...(site ? { siteId: site } : {}),
+      ...(entity ? { entity } : {}),
+    };
   };
   const inSite = <T extends { siteId?: string }>(record: T) => {
     if (site && record.siteId && record.siteId !== site)
@@ -1066,8 +1091,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "import-save":
     case "import-release":
     case "import-receive": {
-      if (cmd.type !== "import-receive")
-        exception(policy.adminImports, "Office-admin imports and releases");
       const detail = applyImportCommand(s, cmd.type, v, cmd.role, at);
       log(String(v.id ?? (v.batch as AwbImport)?.id), cmd.type, detail);
       break;
@@ -1699,8 +1722,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "order": {
       allow("admin", "outbound");
-      if (cmd.role === "admin")
-        exception(policy.adminImports, "Office-admin order entry and releases");
       const p = str("product"),
         awb = normalizeAwb(str("awb")),
         expected = num("expected", 1);
@@ -1737,8 +1758,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "edit-order": {
       allow("admin", "outbound");
-      if (cmd.role === "admin")
-        exception(policy.adminImports, "Office-admin order entry and releases");
       const o = find(s.orders);
       if (orderReady(o))
         throw new Error("Reviewed orders require a supervisor correction.");
@@ -1770,8 +1789,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "review-order": {
       allow("admin", "outbound");
-      if (cmd.role === "admin")
-        exception(policy.adminImports, "Office-admin order entry and releases");
       const o = find(s.orders);
       if (orderReady(o)) throw new Error("This order is already reviewed.");
       o.reviewState = "confirmed";
@@ -1888,8 +1905,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "split-order": {
       allow("admin", "outbound");
-      if (cmd.role === "admin")
-        exception(policy.adminImports, "Office-admin order entry and releases");
       const o = find(s.orders);
       if (singleProductOrder(o))
         throw new Error("This record already has one product.");
@@ -2302,15 +2317,15 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "review": {
       allow("management");
-      exception(policy.managementComments, "Management comments");
       const text = str("text");
-      s.notes.unshift({ id: id(), kind: "review", text, role: cmd.role, at });
+      s.notes.unshift({ id: id(), kind: "review", text, role: cmd.role, at, ...noteScope() });
       log("workspace", "Management follow-up", text);
       break;
     }
     case "feedback": {
+      // Any signed-in role may post feedback; it never edits operational records.
       const text = str("text");
-      s.notes.unshift({ id: id(), kind: "feedback", text, role: cmd.role, at });
+      s.notes.unshift({ id: id(), kind: "feedback", text, role: cmd.role, at, ...noteScope() });
       break;
     }
     case "close": {
@@ -2329,6 +2344,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     default:
       throw new Error("Unknown action.");
   }
+  // Every audit entry created by this command carries the server-derived recorder.
+  for (const e of s.events.slice(0, s.events.length - eventsBefore))
+    if (!e.recorder) {
+      e.recorder = recorder;
+      e.actor = recorderLabel(recorder);
+    }
   if (
     s.events.length > 1500 ||
     s.orders.length > 500 ||

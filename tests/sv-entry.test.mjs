@@ -1,4 +1,5 @@
-// OPER-2: supervisor-only operational entry with separate recorder and performer identity.
+// OPER-2: role-based operational entry with explicit capabilities, and separate recorder
+// and performer identity.
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -9,13 +10,13 @@ import {
   recorderLabel,
 } from "../apps/web/src/lib/draft.ts";
 import {
+  attest,
   authorizeMember,
-  defaultWritePolicy,
+  effectiveCapabilities,
   fingerprint,
   outOfScopeKeys,
-  readWritePolicy,
-  roleStateKeys,
 } from "../apps/web/src/lib/access.ts";
+import { commandRules, roleCapabilities } from "../apps/web/src/lib/capabilities.ts";
 
 const sv = (role, siteId = "site-a", name = "Synthetic SV") => ({
   kind: "member",
@@ -24,8 +25,8 @@ const sv = (role, siteId = "site-a", name = "Synthetic SV") => ({
   userId: "user-" + role + "-" + siteId,
   siteId,
 });
-const asMember = (s, actor, type, input, policy = defaultWritePolicy) =>
-  applyCommand(s, { type, role: actor.role, input, actor, policy });
+const asMember = (s, actor, type, input, capabilities = effectiveCapabilities(actor.role)) =>
+  applyCommand(s, { type, role: actor.role, input, actor, capabilities });
 
 function assignedOrder() {
   let s = createDraft();
@@ -44,63 +45,117 @@ function assignedOrder() {
   return s;
 }
 
-test("packers, drivers, assistants and management cannot write; supervisors can within their command set", () => {
-  for (const role of ["packer", "driver", "assistant"])
-    for (const type of ["pack", "machine", "feedback", "dispatch", "reset"])
-      assert.match(
-        authorizeMember(role, type, defaultWritePolicy),
-        /supervisor|view only/,
-      );
-  assert.match(
-    authorizeMember("management", "review", defaultWritePolicy),
-    /not enabled/,
-  );
-  assert.match(
-    authorizeMember("admin", "import-save", defaultWritePolicy),
-    /not enabled/,
-  );
-  assert.equal(authorizeMember("outbound", "pack", defaultWritePolicy), null);
-  assert.equal(authorizeMember("production", "machine", defaultWritePolicy), null);
-  assert.equal(authorizeMember("intake", "machine", defaultWritePolicy), null);
-  assert.match(
-    authorizeMember("production", "pack", defaultWritePolicy),
-    /does not permit/,
-  );
-  assert.match(authorizeMember("outbound", "reset", defaultWritePolicy), /does not permit/);
+test("view-only staff can only post feedback; supervisors act within their capabilities", () => {
+  for (const role of ["packer", "driver", "assistant"]) {
+    const caps = effectiveCapabilities(role);
+    assert.deepEqual(caps, ["feedback.post"]);
+    assert.equal(authorizeMember("feedback", caps), null);
+    for (const type of ["pack", "machine", "dispatch", "adjust", "stage-correct", "reset"])
+      assert.match(authorizeMember(type, caps), /supervisor|not available/);
+  }
+  assert.equal(authorizeMember("pack", effectiveCapabilities("outbound")), null);
+  assert.equal(authorizeMember("machine", effectiveCapabilities("production")), null);
+  assert.equal(authorizeMember("machine", effectiveCapabilities("intake")), null);
+  assert.match(authorizeMember("pack", effectiveCapabilities("production")), /does not permit/);
+  assert.match(authorizeMember("reset", effectiveCapabilities("outbound")), /not available/);
 });
 
-test("office-admin imports and management comments are explicit, configurable exceptions", () => {
-  const policy = readWritePolicy({ admin_imports: true, management_comments: "true" });
-  assert.deepEqual(policy, { adminImports: true, managementComments: false });
-  assert.equal(authorizeMember("admin", "import-save", policy), null);
-  assert.match(authorizeMember("admin", "machine", policy), /does not permit/);
-  // The domain layer enforces the same policy even if the access check were skipped.
+test("office admin, HR and management: explicit capabilities, never production/stock corrections", () => {
+  const admin = effectiveCapabilities("admin"),
+    hr = effectiveCapabilities("hr"),
+    mgmt = effectiveCapabilities("management");
+  assert.equal(authorizeMember("import-save", admin), null);
+  assert.equal(authorizeMember("import-release", admin), null);
+  assert.equal(authorizeMember("review", mgmt), null);
+  for (const caps of [admin, hr, mgmt])
+    for (const type of ["adjust", "stage-correct", "change-step-pic", "transfer", "batch", "correct"])
+      assert.notEqual(authorizeMember(type, caps), null, type);
+  assert.ok(hr.includes("members.manage"));
+  assert.equal(authorizeMember("feedback", hr), null);
+  // Stock adjustments and production corrections stay with the roles that hold them.
+  assert.deepEqual(
+    Object.entries(roleCapabilities).filter(([, c]) => c.includes("stock.adjust")).map(([r]) => r),
+    ["intake"],
+  );
+  assert.deepEqual(
+    Object.entries(roleCapabilities).filter(([, c]) => c.includes("stage.correct")).map(([r]) => r),
+    ["production", "intake"],
+  );
+});
+
+test("site policy narrows a role's capabilities and can never widen them", () => {
+  const narrowed = effectiveCapabilities("management", {
+    management: ["sources.read", "feedback.post"],
+  });
+  assert.deepEqual(narrowed, ["sources.read", "feedback.post"]);
+  assert.deepEqual(effectiveCapabilities("packer", { packer: ["stock.adjust", "feedback.post"] }), [
+    "feedback.post",
+  ]);
   const s = createDraft();
   assert.throws(
-    () =>
-      asMember(s, sv("management"), "review", { text: "Check line 2" }),
-    /Management comments are not enabled/,
+    () => asMember(s, sv("management"), "review", { text: "Check line 2" }, narrowed),
+    /does not permit/,
   );
-  assert.throws(
-    () =>
-      asMember(s, sv("admin"), "order", {
-        awb: "SYN-AWB-1",
-        product: "cav",
-        channel: "TikTok",
-        package: "P",
-        expected: 1,
-        date: "2026-10-01",
-      }),
-    /Office-admin order entry/,
-  );
-  const allowed = asMember(
-    s,
-    sv("management"),
-    "review",
-    { text: "Check line 2" },
-    { adminImports: false, managementComments: true },
-  );
+  const allowed = asMember(s, sv("management"), "review", { text: "Check line 2" });
   assert.equal(allowed.notes[0].text, "Check line 2");
+  assert.equal(allowed.notes[0].author.userId, "user-management-site-a");
+});
+
+test("feedback from view-only staff keeps its author, site, record and time", () => {
+  const packer = sv("packer", "site-a", "Synthetic Packer");
+  const s = asMember(createDraft(), packer, "feedback", {
+    text: "Label printer jammed twice",
+    entity: "TEST-AWB-1003",
+  });
+  const note = s.notes[0];
+  assert.equal(note.kind, "feedback");
+  assert.equal(note.author.userId, packer.userId);
+  assert.equal(note.siteId, "site-a");
+  assert.equal(note.entity, "TEST-AWB-1003");
+  assert.ok(note.at);
+  assert.deepEqual(outOfScopeKeys("feedback", createDraft(), s), []);
+  assert.throws(
+    () => asMember(createDraft(), packer, "pack", { id: "o-3", actual: 1, pic: "x", labelPic: "x" }),
+    /does not permit/,
+  );
+});
+
+test("events created by helpers are stamped with the server recorder", () => {
+  const actor = sv("outbound", "site-a", "Synthetic Stock-out SV");
+  let s = createDraft();
+  s = asMember(s, actor, "order", {
+    awb: "SYN-AWB-9",
+    product: "cav",
+    channel: "TikTok",
+    package: "P",
+    expected: 1,
+    date: "2026-10-01",
+  });
+  assert.ok(s.events.every((e) => e.id === "seed" || e.recorder?.userId === actor.userId));
+});
+
+test("commit signatures bind user, revision, operation, command and exact state", () => {
+  const secret = Buffer.alloc(32, 7);
+  const base = {
+    workspaceId: "w",
+    revision: 3,
+    userId: "u",
+    operationId: "op",
+    command: "machine",
+    fingerprint: "f".repeat(64),
+    stateText: '{"a":1}',
+  };
+  const sig = attest(secret, base);
+  assert.match(sig, /^[0-9a-f]{64}$/);
+  for (const change of [
+    { userId: "other" },
+    { revision: 4 },
+    { operationId: "op2" },
+    { command: "transfer" },
+    { stateText: '{"a":2}' },
+  ])
+    assert.notEqual(attest(secret, { ...base, ...change }), sig);
+  assert.notEqual(attest(Buffer.alloc(32, 8), base), sig);
 });
 
 test("a client-chosen role cannot override the server-derived member role", () => {
@@ -223,24 +278,23 @@ test("another site's supervisor cannot mutate a site-scoped batch", () => {
     );
 });
 
-test("role state scopes block alternate-path edits outside the role's records", () => {
+test("command scopes block edits outside the command's records", () => {
   const before = createDraft();
   const after = structuredClone(before);
   after.cartons[0].qty = 9999;
-  assert.deepEqual(outOfScopeKeys("production", before, after), ["cartons"]);
-  assert.deepEqual(outOfScopeKeys("intake", before, after), []);
-  assert.deepEqual(outOfScopeKeys("packer", before, after), ["cartons"]);
-  // Every command a role may run must stay inside its scope.
+  assert.deepEqual(outOfScopeKeys("machine", before, after), ["cartons"]);
+  assert.deepEqual(outOfScopeKeys("receive", before, after), []);
+  assert.deepEqual(outOfScopeKeys("feedback", before, after), ["cartons"]);
   let s = createDraft();
   const next = asMember(s, sv("production"), "batch", {
     product: "ady",
     code: "SCOPE-1",
     date: "2026-10-01",
   });
-  assert.deepEqual(outOfScopeKeys("production", s, next), []);
+  assert.deepEqual(outOfScopeKeys("batch", s, next), []);
   s = asMember(next, sv("intake"), "machine-create", { stage: "hologram", name: "Holo 1" });
-  assert.deepEqual(outOfScopeKeys("intake", next, s), []);
-  assert.ok(roleStateKeys.intake.includes("batches"));
+  assert.deepEqual(outOfScopeKeys("machine-create", next, s), []);
+  assert.ok(commandRules["stage-correct"].stateKeys.includes("batches"));
 });
 
 test("operation IDs: same payload replays, a different payload with the same ID is detectable", () => {

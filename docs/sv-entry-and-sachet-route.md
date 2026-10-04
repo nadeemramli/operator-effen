@@ -1,52 +1,116 @@
-# Supervisor-only entry, five-stage sachet route and shared machine records
+# Role-based entry, five-stage sachet route and shared machine records
 
-Status: implemented on a branch for OPER-2, OPER-4 and OPER-5 (2026-10-04). Not deployed. The
-migration below has **not** been applied to any hosted Supabase project.
+Status: implemented on a draft branch for OPER-2, OPER-4 and OPER-5; repaired 2026-10-05 for
+the operational write bypass and membership/file integration. Not deployed. The migrations
+below have **not** been applied to any hosted Supabase project.
 
-## Identity and permissions (OPER-2)
+## Owner policy (confirmed 2026-10-05)
 
-- Sign-in access comes from `public.operator_memberships` (one role per user per site
-  workspace). The server derives recorder identity, role and site from it on every request.
-  Client-sent `role` values are ignored for members.
-- Only production, stock-in and stock-out supervisors write. Packers, drivers, assistants and
-  management are view-only. A performer profile (`staffProfiles` in workspace state) never
-  grants sign-in or write access.
-- Office-admin imports/releases and management comments are **unresolved exceptions**. They
-  are off by default and controlled per workspace by `operator_workspaces.write_policy`
-  (`admin_imports`, `management_comments`). Turning one on is an owner decision.
-- The only database write path is `public.operator_commit_workspace` (security definer). It
-  re-checks the active membership at commit time, limits each role to its own top-level
-  records (`operator_writable_keys`, mirrored by `roleStateKeys` in `apps/web/src/lib/access.ts`)
-  and applies the optimistic revision check. Direct table writes have no RLS policy.
-- Records store the performer (`pic`, `packer`) separately from the recorder (`recordedBy`,
-  `packRecordedBy`, event `recorder`). Occurrence time (`occurredAt`, `packedAt`) is separate
-  from entry time (`recordedAt`, `packRecordedAt`, event `at`).
-- Stock-out supervisors record packing for the actual packer. A packer other than the
-  assigned one needs a reason. Historical packer self-declarations are unchanged.
-- Saves carry an operation ID. A retry after a lost response returns the original result; a
-  reused ID with a different payload is rejected. Unacknowledged saves are kept in the
-  browser (`operator-pending-save`) across an expired session and offered back only to the
-  same user and site.
+Entry is role-based with explicit capabilities, replacing the earlier literal "SV only" rule.
+Actual performer and authenticated recorder stay separate throughout.
 
-### Administrator setup (synthetic example)
+| Role | Scope | Capabilities (defaults; a site policy may only narrow them) |
+|---|---|---|
+| Production SV | one site | plan batches, record and correct stages, machines, day close, staff memberships*, feedback |
+| Stock-in SV | one site | record and correct stages, machines, receive stock, **stock adjustments**, day close, staff memberships*, feedback |
+| Stock-out SV | one site | order entry, fulfilment, outbound corrections, read sources, day close, staff memberships*, feedback |
+| Office admin | site or all sites | order/AWB import and release, order entry, read sources, feedback |
+| HR | site or all sites | memberships (all roles, all sites), site capability policy, feedback |
+| Management | site or all sites | review comments, read sources, feedback |
+| Packer, driver, assistant | one site | view and feedback only |
 
-Run by an administrator after confirming the selected project. Use real values only outside
-this repository.
+\* Supervisors may grant or revoke only packer, driver and assistant memberships at their own
+site. "All access" never includes production corrections, stock adjustments, audit history or
+permission changes; those stay with the capabilities above. The catalogue lives in
+`apps/web/src/lib/capabilities.ts` and the `operator_role_capabilities`,
+`operator_command_rules` and `operator_grantable_roles` tables (a test keeps them identical).
+
+## Write path and trust boundary
+
+`public.operator_commit_workspace` is the only operational write path. Records are still one
+JSON document per site with one revision (normalized per-record storage is #10).
+
+1. The API server derives identity, site and capabilities from the Supabase session and
+   `operator_memberships`, ignores any client role, runs the domain rules (`applyCommand`),
+   stamps the server-derived recorder on every new audit entry, and signs the resulting
+   transition with HMAC-SHA256 (`OPERATOR_COMMIT_SECRET`, server-only).
+2. The database, under the caller's own JWT (`auth.uid()`), re-checks the active membership
+   and the command's capability at that site, verifies the signature over the exact state text,
+   user, revision, operation ID, command and payload fingerprint, limits the change to the
+   command's top-level records, and enforces invariants itself: audit events, notes, stock
+   issues, adjustments and sort counts are append-only; new events, notes and history entries
+   are attributed to the caller; received cartons are immutable; no carton goes below zero;
+   batches, custody (transfer) facts and route snapshots are fixed; stage completion is never
+   undone and PIC/correction/rework history is append-only; a batch with a route snapshot needs
+   every stage completed with a PIC before transfer; machines and their history persist.
+3. The commit, its audit row and the idempotency record (`operator_commits`) are one
+   transaction. A retry with the same operation ID returns the established result; the same ID
+   with different input is rejected.
+
+Consequences: a member calling the RPC directly cannot commit (no signature); a leaked server
+key still cannot act as another user or break the invariants; no service-role key is used.
+Remaining trust: the API server is the authoritative validator for domain rules that are not
+re-expressed in SQL (for example stage-name and route-review semantics, PIC rules).
+
+## Membership administration contract
+
+Database functions (callable with the signed-in user's JWT; ready for the future screen):
+
+- `operator_grant_membership(workspace, user, role, display_name, staff_profile_id, reason, scope)`
+- `operator_revoke_membership(membership, reason)`
+- `operator_set_site_policy(workspace, policy, reason)` — HR only; can only narrow a role.
+
+Rules enforced in SQL: nobody changes their own access; only HR grants all-sites access;
+supervisors act only at their site and only on packer/driver/assistant memberships (both the
+current and the new role must be grantable); every change writes `operator_membership_audit`
+with before/after and reason. Direct table writes are denied.
+
+Temporary provisioning (until the screen exists): an administrator creates Supabase Auth users
+and bootstraps the first all-sites HR membership with SQL on the reviewed project. After that,
+HR and supervisors call the functions above (for example from the SQL editor while signed in
+via an authenticated client, or a small admin script using their own session). SQL provisioning
+does **not** satisfy the membership-admin screen requirement; see the follow-up below.
 
 ```sql
-insert into public.operator_workspaces (site_id, name) values ('site-a', 'Site A') returning id;
-insert into public.operator_memberships (workspace_id, user_id, role, display_name)
-values ('<workspace id>', '<auth user id>', 'production', '<display name>');
--- Revoke: takes effect on the user's next load or save.
-update public.operator_memberships set active = false, revoked_at = now() where id = '<id>';
+-- Bootstrap only (administrator, after confirming the selected project; real values stay
+-- outside the repository).
+insert into public.operator_workspaces (site_id, name) values ('site-a', 'Site A');
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope)
+values (null, '<auth user id>', 'hr', '<display name>', 'all-sites');
 ```
 
-### Fictional preview sandbox
+### Follow-up: HR / site-supervisor membership screen (separate delivery)
 
-An account with `ui_draft_access` and no membership keeps the existing per-account
-`ui_draft_workspaces` sandbox with the role switcher. Role previews never reach an
-operational workspace. Set `OPERATOR_PREVIEW_WRITES=off` to make the sandbox read-only.
-Whether the shared preview account should keep write access at all is an owner decision.
+- HR: list people and memberships across sites, grant/change/revoke with reason, set site
+  capability policy, view the audit trail.
+- Site supervisor: same list filtered to their site and grantable roles only; grant/revoke
+  packer, driver, assistant; link a performer profile (`staff_profile_id`).
+- Built only on the functions and RLS above; no new authorization logic in the UI.
+- Acceptance: denied paths visible (self-change, other site, non-grantable role), audit shown.
+
+## Operational source files
+
+- Bucket `operator-sources`, path `<workspace id>/<sha256>.pdf`. Upload needs `orders.import`
+  at that site; reading needs `sources.read` or `orders.import`. Storage RLS enforces the same
+  rules for direct Storage API calls.
+- `/api/awb-files` authorizes before signing; signed download URLs live 60 seconds. Malformed,
+  guessed, missing or unauthorized paths all return the same 404; storage outages return 503.
+- `import-save` only accepts files already stored under the same site.
+- The fictional sandbox keeps `awb-draft-sources/<account id>/…`; sandbox files are fictional
+  and are not migrated. Operational and sandbox paths are never mixed (the bucket follows the
+  caller's mode).
+
+## Fictional preview sandbox
+
+An account with `ui_draft_access` and no membership keeps the per-account
+`ui_draft_workspaces` sandbox with the role switcher and keeps write access there (owner
+decision). It never reaches operational workspaces or files. `OPERATOR_PREVIEW_WRITES=off`
+makes it read-only.
+
+## Feedback
+
+Every role, including view-only staff, can post feedback. A note stores the authenticated
+author, site, optional record reference and time, and never edits operational records.
 
 ## Five-stage sachet route (OPER-4)
 
@@ -85,24 +149,35 @@ Whether the shared preview account should keep write access at all is an owner d
   reviewable conflict instead of overwriting. Corrections after transfer are flagged as
   batch revisions and never create receipts, transfers or stock movements.
 
-## Verification and rollback
+## Deployment prerequisites (not done; owner/coordinator)
 
-- `pnpm test` — domain and policy tests (`tests/sv-entry`, `tests/sachet-route`,
-  `tests/shared-machine-records` plus existing suites).
-- `scripts/verify-migrations-local.sh` — applies all migrations to a disposable Postgres, runs
-  `supabase/tests/operator_access.test.sql`, rehearses the rollback and re-applies.
-- `tests/e2e/run-local.sh` — production build + browser scenarios against a local Postgres
-  through `tests/e2e/supabase-shim.mjs` (a local stand-in, not Supabase itself).
-- Rollback: `supabase/rollback/20261004090000_operator_memberships.down.sql` (manual;
-  deletes operational workspaces — export first). The application falls back to the preview
-  sandbox when the membership tables are absent. New optional JSON fields are ignored by the
-  previous application version, except that it cannot record the new five-stage route.
+1. Review and apply both migrations to an isolated staging project first.
+2. Generate a 32-byte key; store it as the server-only env var `OPERATOR_COMMIT_SECRET` (hex)
+   and in `operator_private.server_keys` (`id = 'commit'`). Never a `NEXT_PUBLIC_` variable.
+   Without both, operational saves fail closed with a clear 503.
+3. Create Auth users and bootstrap the first HR membership as above.
+
+## Verification
+
+- `pnpm test` — domain, capability-parity and command-scope tests.
+- `scripts/verify-migrations-local.sh` — applies all migrations to a disposable Postgres with
+  stub `auth`/`storage` schemas, runs `supabase/tests/operator_access.test.sql` (bypass,
+  signatures, invariants, capabilities, memberships, storage policies), rehearses rollback and
+  re-applies.
+- `tests/integration/run-real-stack.sh` — real GoTrue, PostgREST and Storage API on a local
+  Postgres behind `router.mjs` (prefix routing and CORS, as Kong does), with the production
+  Next.js build and Chromium. Requires the binaries described in the script header.
+
+## Rollback
+
+Run `supabase/rollback/20261005090000_operator_trusted_commands.down.sql`, then
+`20261004090000_operator_memberships.down.sql`, after exporting operational state,
+`operator_commits` and `operator_membership_audit`. Rolling back the repair alone leaves no
+operational write path (the unsafe replacement-state RPC is intentionally not restored).
 
 ## Known limits
 
-- Workspace state is still one JSON document per site with one revision; normalized records
-  and row-level stock transactions remain issue #10.
-- Supervisors can still commit arbitrary content inside their role's records through the RPC;
-  business rules are enforced in the application server, not yet per row in the database.
-- No offline outbox beyond the single kept pending save (issue #12). AWB PDF upload storage
-  policies still require `ui_draft_access`.
+- One JSON document and revision per site: unrelated saves still conflict (#10).
+- Domain rules not re-expressed in SQL rely on the API server (see trust boundary).
+- No offline outbox beyond the single kept pending save (#12).
+- The membership-admin screen is a separate follow-up.

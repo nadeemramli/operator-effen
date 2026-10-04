@@ -1287,11 +1287,16 @@ td small {
   border-radius: 6px;
   cursor: pointer;
 }
+/* The radio covers its whole card, so a tap anywhere on the visible card selects it. */
 .pic-option input {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
   opacity: 0;
+  cursor: pointer;
+  z-index: 1;
 }
 .pic-option:has(input:checked) {
   border-color: var(--success);

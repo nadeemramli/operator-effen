@@ -1,152 +1,40 @@
-import { createHash } from "node:crypto";
-import type { Role, WritePolicy } from "./draft.ts";
+import { createHash, createHmac } from "node:crypto";
+import {
+  commandRules,
+  effectiveCapabilities,
+  type Capability,
+  type MemberRole,
+} from "./capabilities.ts";
 
 /**
- * Server-side write policy for authenticated workspace members (OPER-2).
- * Membership roles come from `operator_memberships`, never from the client.
- * Keep `roleStateKeys` aligned with `public.operator_writable_keys` in
- * supabase/migrations/20261004090000_operator_memberships.sql.
+ * Server-side authorization and commit signing for workspace members (OPER-2/4/5).
+ * Roles and sites come from `operator_memberships`, never from the client. The database
+ * re-checks everything in `operator_commit_workspace`; this module fails fast and signs
+ * the validated transition.
  */
-export type MemberRole = Role | "driver" | "assistant";
-export const memberRoles: MemberRole[] = [
-  "production",
-  "intake",
-  "outbound",
-  "admin",
-  "management",
-  "packer",
-  "driver",
-  "assistant",
-];
-export const supervisorRoles: Role[] = ["production", "intake", "outbound"];
-/** Default for operational workspaces: the two exceptions stay off until the owner decides. */
-export const defaultWritePolicy: WritePolicy = {
-  adminImports: false,
-  managementComments: false,
-};
-export const readWritePolicy = (raw: unknown): WritePolicy => {
-  const value = (raw ?? {}) as Record<string, unknown>;
-  return {
-    adminImports: value.admin_imports === true,
-    managementComments: value.management_comments === true,
-  };
-};
+export { effectiveCapabilities, type Capability, type MemberRole };
 
-const sachetEntry = [
-  "change-step-pic",
-  "machine",
-  "stage-rework",
-  "stage-correct",
-  "machine-create",
-  "machine-update",
-  "machine-deactivate",
-  "machine-reactivate",
-];
-const memberCommands: Record<Role, string[]> = {
-  production: [
-    "batch",
-    "route-review",
-    "step",
-    "transfer",
-    ...sachetEntry,
-    "close",
-    "feedback",
-  ],
-  intake: [
-    ...sachetEntry,
-    "receive",
-    "receive-ady",
-    "stock-in-ady",
-    "count",
-    "adjust",
-    "close",
-    "feedback",
-  ],
-  outbound: [
-    "order",
-    "edit-order",
-    "review-order",
-    "split-order",
-    "sort-count",
-    "assign-package",
-    "assign-orders",
-    "print-orders",
-    "move-orders",
-    "issue-orders",
-    "print",
-    "issue",
-    "pack",
-    "correct",
-    "dispatch",
-    "import-receive",
-    "close",
-    "feedback",
-  ],
-  admin: [
-    "import-save",
-    "import-release",
-    "order",
-    "edit-order",
-    "review-order",
-    "split-order",
-    "feedback",
-  ],
-  management: ["review", "feedback"],
-  packer: [],
-};
-export const roleStateKeys: Record<string, string[]> = {
-  production: ["batches", "machines", "events", "notes", "closedDays", "operations"],
-  intake: [
-    "batches",
-    "machines",
-    "cartons",
-    "adypocideReceipts",
-    "counts",
-    "adjustments",
-    "events",
-    "notes",
-    "closedDays",
-    "operations",
-  ],
-  outbound: [
-    "orders",
-    "issues",
-    "sortCounts",
-    "awbImports",
-    "events",
-    "notes",
-    "closedDays",
-    "operations",
-  ],
-  admin: ["orders", "awbImports", "events", "notes", "operations"],
-  management: ["notes", "events", "operations"],
-};
-
-/** Returns a denial message, or null when the member may run the command. */
+/** Returns a denial message, or null when the capabilities allow the command. */
 export function authorizeMember(
-  role: MemberRole,
   type: string,
-  policy: WritePolicy,
+  capabilities: readonly string[],
 ): string | null {
-  if (role === "admin" && !policy.adminImports)
-    return "Office-admin imports are not enabled for this workspace. Ask a supervisor to record this.";
-  if (role === "management" && !policy.managementComments)
-    return "Management comments are not enabled for this workspace. Operational entry is supervisor-only.";
-  const allowed = memberCommands[role as Role];
-  if (!allowed?.length)
-    return "Operational records are entered by your supervisor. This account can view only.";
-  if (!allowed.includes(type))
-    return "Your signed-in role does not permit this action.";
+  const rule = commandRules[type];
+  if (!rule) return "This action is not available in operational workspaces.";
+  if (!capabilities.includes(rule.capability))
+    return capabilities.length <= 1
+      ? "Operational records are entered by your supervisor. You can view records and post feedback."
+      : "Your role at this site does not permit this action.";
   return null;
 }
 
-/** Defence in depth: mirrors the database commit guard for the role's state scope. */
+/** Top-level records a command changed outside its declared scope (mirrors the database). */
 export function outOfScopeKeys(
-  role: MemberRole,
+  type: string,
   before: Record<string, unknown>,
   after: Record<string, unknown>,
 ) {
-  const scope = new Set(roleStateKeys[role] ?? []);
+  const scope = new Set(commandRules[type]?.stateKeys ?? []);
   const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
   return [...keys].filter(
     (key) =>
@@ -172,3 +60,40 @@ export const fingerprint = (type: string, input: unknown) =>
     .digest("hex");
 export const OPERATION_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Server key shared with operator_private.server_keys ('commit'); hex, at least 32 bytes. */
+export function commitSecret(): Buffer | null {
+  const hex = process.env.OPERATOR_COMMIT_SECRET ?? "";
+  return /^[0-9a-f]{64,}$/i.test(hex) && hex.length % 2 === 0
+    ? Buffer.from(hex, "hex")
+    : null;
+}
+/**
+ * Signs a validated transition for one user, workspace revision, command and operation.
+ * Must match the message built in public.operator_commit_workspace.
+ */
+export function attest(
+  secret: Buffer,
+  t: {
+    workspaceId: string;
+    revision: number;
+    userId: string;
+    operationId: string;
+    command: string;
+    fingerprint: string;
+    stateText: string;
+  },
+) {
+  const stateHash = createHash("sha256").update(t.stateText, "utf8").digest("hex");
+  const message = [
+    "operator-commit-v1",
+    t.workspaceId,
+    String(t.revision),
+    t.userId,
+    t.operationId,
+    t.command,
+    t.fingerprint,
+    stateHash,
+  ].join("\n");
+  return createHmac("sha256", secret).update(message, "utf8").digest("hex");
+}
