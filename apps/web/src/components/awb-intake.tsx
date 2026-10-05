@@ -34,6 +34,8 @@ import {
 } from "@/lib/awb-import";
 
 type Props = {
+  /** Operational site for uploads; absent in the fictional sandbox. */
+  workspaceId?: string;
   state: Draft;
   lang: Lang;
   role: Role;
@@ -45,6 +47,7 @@ type Props = {
   children: ReactNode;
 };
 export function AwbIntake({
+  workspaceId,
   state,
   lang,
   role,
@@ -157,7 +160,7 @@ export function AwbIntake({
         const res = await fetch("/api/awb-files", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hash, size: file.size }),
+          body: JSON.stringify({ hash, size: file.size, workspace: workspaceId }),
           signal: abort.current.signal,
         });
         const signed = await res.json();

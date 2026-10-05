@@ -12,12 +12,20 @@ import {
   Factory,
   History,
   Plus,
+  Wrench,
   Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PersonBadge } from "./person-profile";
+import {
+  MachineRegistry,
+  ProcessPicHistory,
+  ProcessPicTools,
+  StageRecords,
+} from "./sachet-records";
+export { ProcessPicHistory } from "./sachet-records";
 import {
   Empty,
   Panel,
@@ -32,20 +40,23 @@ import {
   batchFactory,
   batchComplete,
   batchTransferred,
+  batchRoute,
   products,
   product,
   stepNames,
-  sachetProcesses,
+  currentSachetRoute,
+  sachetRoutes,
+  sachetStage,
   isSachet,
-  type Step,
   today,
   tr,
   type Batch,
   type Draft,
   type Lang,
+  type Role,
 } from "@/lib/draft";
 
-type ProductionView = "log" | "plan" | "history";
+type ProductionView = "log" | "plan" | "history" | "machines";
 const qcLabel = (value: string, lang: Lang) =>
   value === "pass"
     ? tr(lang, "Checked — passed", "Diperiksa — lulus")
@@ -84,7 +95,9 @@ export function ProductionWorkspace({
   pic,
   number,
   closeDay,
+  role,
 }: {
+  role: Role;
   state: Draft;
   lang: Lang;
   busy: boolean;
@@ -102,7 +115,9 @@ export function ProductionWorkspace({
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const mode = params.get("production");
   const tab: ProductionView =
-    mode === "plan" || mode === "history" ? mode : "log";
+    mode === "plan" || mode === "history" || mode === "machines"
+      ? mode
+      : "log";
   const rawFactory = params.get("factory");
   const factory =
     rawFactory === "bottle" || rawFactory === "sachet" ? rawFactory : "all";
@@ -234,6 +249,8 @@ export function ProductionWorkspace({
             <AdypocideProductionCard
               key={b.id}
               batch={b}
+              state={state}
+              role={role}
               lang={lang}
               show={show}
               pic={pic}
@@ -473,6 +490,12 @@ export function ProductionWorkspace({
               t("Previous batches", "Kelompok terdahulu"),
               t("Find a saved record", "Cari rekod tersimpan"),
             ],
+            [
+              "machines",
+              Wrench,
+              t("Machines", "Mesin"),
+              t("Find, add or retire machines", "Cari, tambah atau tamatkan mesin"),
+            ],
           ] as const
         ).map(([id, Icon, title, detail]) => (
           <Link
@@ -488,7 +511,9 @@ export function ProductionWorkspace({
           </Link>
         ))}
       </nav>
-      {tab === "plan" ? (
+      {tab === "machines" ? (
+        <MachineRegistry state={state} lang={lang} show={show} />
+      ) : tab === "plan" ? (
         <BatchPlanForm
           lang={lang}
           busy={busy}
@@ -529,7 +554,7 @@ export function ProductionWorkspace({
                   </Link>
                 </Button>
               </div>
-              <BatchRecord batch={selected} lang={lang} />
+              <BatchRecord batch={selected} state={state} lang={lang} />
             </>
           ) : (
             <Empty>
@@ -714,127 +739,18 @@ export function ProductionWorkspace({
   );
 }
 
-export function ProcessPicHistory({ step, lang }: { step: Step; lang: Lang }) {
-  const changes = step.picHistory ?? [];
-  if (!changes.length) return null;
-  return (
-    <details className="pic-history">
-      <summary>
-        {tr(lang, "PIC history", "Sejarah PIC")} ({changes.length})
-      </summary>
-      {changes.map((change, index) => (
-        <p key={index}>
-          <strong>
-            {tr(
-              lang,
-              change.kind === "handover"
-                ? "Shift handover"
-                : change.kind === "correction"
-                  ? "Selection corrected"
-                  : "Planned assignment",
-              change.kind === "handover"
-                ? "Serahan syif"
-                : change.kind === "correction"
-                  ? "Pilihan dibetulkan"
-                  : "Tugasan dirancang",
-            )}
-          </strong>
-          <br />
-          {change.from || "—"} → {change.to}
-          <br />
-          {new Date(change.effectiveAt ?? change.at).toLocaleString(
-            lang === "ms" ? "ms-MY" : "en-MY",
-            { timeZone: "Asia/Kuala_Lumpur" },
-          )}{" "}
-          MYT
-          <br />
-          {change.reason}
-        </p>
-      ))}
-    </details>
-  );
-}
-function ProcessPicTools({
-  batch: b,
-  index,
-  lang,
-  show,
-  pic,
-}: {
-  batch: Batch;
-  index: number;
-  lang: Lang;
-  show: (spec: FormSpec) => void;
-  pic: (name?: string, label?: string) => Field;
-}) {
-  const t = (en: string, ms: string) => tr(lang, en, ms),
-    step = b.steps[index];
-  function change(kind: "correction" | "handover") {
-    show({
-      type: "change-step-pic",
-      title:
-        kind === "handover"
-          ? t("Record shift handover", "Rekod serahan syif")
-          : t("Edit PIC selection", "Sunting pilihan PIC"),
-      description: `${b.code} · ${stepNames(b)[index][lang === "ms" ? 1 : 0]} · ${step.pic || t("Unassigned", "Belum ditugaskan")}`,
-      hidden: { id: b.id, step: index, kind },
-      fields: [
-        { ...pic(), value: step.pic || undefined },
-        ...(kind === "handover"
-          ? [
-              {
-                name: "effectiveAt",
-                label: t(
-                  "Takeover date and time (Malaysia)",
-                  "Tarikh dan masa pengambilalihan (Malaysia)",
-                ),
-                type: "datetime-local" as const,
-              },
-            ]
-          : []),
-        {
-          name: "reason",
-          label:
-            kind === "handover"
-              ? t("Handover reason", "Sebab serahan")
-              : t("Correction reason", "Sebab pembetulan"),
-          type: "textarea",
-        },
-      ],
-    });
-  }
-  return (
-    <div className="process-pic-tools">
-      <Button size="sm" variant="ghost" onClick={() => change("correction")}>
-        {step.pic
-          ? t("Edit PIC", "Sunting PIC")
-          : t("Assign PIC", "Tetapkan PIC")}
-      </Button>
-      {step.pic && !batchTransferred(b) && (
-        <details className="pic-more">
-          <summary>{t("More", "Lagi")}</summary>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => change("handover")}
-          >
-            {t("Shift handover", "Serahan syif")}
-          </Button>
-        </details>
-      )}
-      <ProcessPicHistory step={step} lang={lang} />
-    </div>
-  );
-}
-
 function AdypocideProductionCard({
   batch: b,
+  state,
+  role,
   lang,
   show,
   pic,
   onOpenRecord,
 }: {
   batch: Batch;
+  state: Draft;
+  role: Role;
   lang: Lang;
   show: (spec: FormSpec) => void;
   pic: (name?: string, label?: string) => Field;
@@ -842,6 +758,7 @@ function AdypocideProductionCard({
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const sent = batchTransferred(b);
+  const needsReview = batchRoute(b).status === "needs-review";
   return (
     <section className="batch-card">
       <div className="flex items-start justify-between gap-3">
@@ -855,57 +772,45 @@ function AdypocideProductionCard({
           </button>
         </div>
         <span
-          className={"status-pill " + (sent ? "tone-success" : "tone-info")}
+          className={
+            "status-pill " +
+            (sent ? "tone-success" : needsReview ? "tone-warning" : "tone-info")
+          }
         >
           {sent
             ? t("Sent to warehouse", "Dihantar ke gudang")
-            : t("Machine records", "Rekod mesin")}
+            : needsReview
+              ? t("Route review needed", "Semakan laluan diperlukan")
+              : t("Machine records", "Rekod mesin")}
         </span>
       </div>
       <p className="field-hint mt-4">
         {t(
-          "Record a PIC for each of the four fixed processes. The batch number above applies to every stage. Finished boxes are counted at stock-in.",
-          "Rekod PIC untuk keempat-empat proses tetap. Nombor kelompok di atas digunakan untuk setiap peringkat. Kotak siap dikira semasa stok masuk.",
+          "Record who actually performed each stage of this batch's route. A planned PIC is not completed work. Finished boxes are counted at stock-in.",
+          "Rekod siapa yang sebenarnya melakukan setiap peringkat laluan kelompok ini. PIC dirancang bukan kerja yang siap. Kotak siap dikira semasa stok masuk.",
         )}
       </p>
-      <MachineRecords
+      <StageRecords
         batch={b}
+        state={state}
         lang={lang}
         show={show}
         pic={pic}
-        onRecord={
-          sent
-            ? undefined
-            : (stage) =>
-                show({
-                  type: "machine",
-                  title: t("Record process PIC", "Rekod PIC proses"),
-                  description: `${b.code} · ${t(stage.en, stage.ms)}`,
-                  hidden: { id: b.id, stage: stage.id },
-                  fields: [
-                    {
-                      ...pic(),
-                      value:
-                        b.steps.find((step) => step.sachetStage === stage.id)
-                          ?.pic || undefined,
-                    },
-                  ],
-                })
-        }
+        role={role}
       />
       <div className="batch-footer">
         <small>{b.date}</small>
         <Button
           size="sm"
           variant="outline"
-          disabled={sent || !batchComplete(b)}
+          disabled={sent || needsReview || !batchComplete(b)}
           onClick={() =>
             show({
               type: "transfer",
               title: t("Send batch to warehouse", "Hantar kelompok ke gudang"),
               description: t(
-                "Confirm that all machine and PIC records are complete. Stock-in will count finished boxes after boxing.",
-                "Sahkan semua rekod mesin dan PIC lengkap. Stok masuk akan mengira kotak siap selepas pengkotakan.",
+                "Confirm that every stage in this batch's route has an actual PIC. Stock-in will count finished boxes after boxing.",
+                "Sahkan setiap peringkat dalam laluan kelompok ini mempunyai PIC sebenar. Stok masuk akan mengira kotak siap selepas pengkotakan.",
               ),
               hidden: { id: b.id },
               fields: [pic()],
@@ -917,124 +822,6 @@ function AdypocideProductionCard({
         </Button>
       </div>
     </section>
-  );
-}
-
-function MachineRecords({
-  batch: b,
-  lang,
-  onRecord,
-  show,
-  pic,
-}: {
-  batch: Batch;
-  lang: Lang;
-  onRecord?: (stage: (typeof sachetProcesses)[number]) => void;
-  show?: (spec: FormSpec) => void;
-  pic?: (name?: string, label?: string) => Field;
-}) {
-  const t = (en: string, ms: string) => tr(lang, en, ms);
-  const showFixed =
-    !batchTransferred(b) || b.steps.some((step) => step.sachetStage);
-  const legacy = b.steps
-    .map((step, index) => ({ step, index }))
-    .filter(({ step }) => !step.sachetStage && step.done);
-  return (
-    <div className="table-scroll my-4">
-      <table className="machine-records">
-        <thead>
-          <tr>
-            <th>{t("Process / machine", "Proses / mesin")}</th>
-            <th>
-              {t("Person responsible (PIC)", "Orang bertanggungjawab (PIC)")}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {showFixed &&
-            sachetProcesses.map((stage, index) => {
-              const step = b.steps.find(
-                (step) => step.sachetStage === stage.id,
-              );
-              return (
-                <tr key={stage.id}>
-                  <td data-label={t("Process / machine", "Proses / mesin")}>
-                    {index + 1}. {t(stage.en, stage.ms)}
-                  </td>
-                  <td data-label="PIC">
-                    {step?.pic && (
-                      <PersonBadge
-                        name={step.pic}
-                        lang={lang}
-                        caption={
-                          step.done
-                            ? t("Current / latest PIC", "PIC semasa / terkini")
-                            : t("Planned PIC", "PIC dirancang")
-                        }
-                      />
-                    )}
-                    {!step?.done &&
-                      (onRecord ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => onRecord(stage)}
-                        >
-                          {step?.pic
-                            ? t("Confirm process", "Sahkan proses")
-                            : t("Record PIC", "Rekod PIC")}
-                        </Button>
-                      ) : (
-                        <span className="text-muted-foreground">
-                          {t("Not completed", "Belum selesai")}
-                        </span>
-                      ))}
-                    {step && show && pic ? (
-                      <ProcessPicTools
-                        batch={b}
-                        index={b.steps.indexOf(step)}
-                        lang={lang}
-                        show={show}
-                        pic={pic}
-                      />
-                    ) : (
-                      step && <ProcessPicHistory step={step} lang={lang} />
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          {legacy.map(({ step, index }) => (
-            <tr key={`legacy-${index}`}>
-              <td data-label={t("Historical record", "Rekod terdahulu")}>
-                {stepNames(b)[index][lang === "ms" ? 1 : 0]}
-                <small>
-                  {t("Historical machine record", "Rekod mesin terdahulu")}
-                </small>
-              </td>
-              <td data-label="PIC">
-                <PersonBadge
-                  name={step.pic}
-                  lang={lang}
-                  caption={t("Recorded performer", "Pelaksana direkodkan")}
-                />
-                {show && pic ? (
-                  <ProcessPicTools
-                    batch={b}
-                    index={index}
-                    lang={lang}
-                    show={show}
-                    pic={pic}
-                  />
-                ) : (
-                  <ProcessPicHistory step={step} lang={lang} />
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }
 
@@ -1058,7 +845,10 @@ function BatchPlanForm({
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [productId, setProductId] = useState(defaultProduct);
   const route = isSachet(productId)
-    ? sachetProcesses.map((stage) => [stage.en, stage.ms])
+    ? sachetRoutes[currentSachetRoute].stages.map((key) => {
+        const stage = sachetStage(key)!;
+        return [stage.en, stage.ms];
+      })
     : stepNames({ product: productId } as Batch);
   return (
     <Panel
@@ -1075,6 +865,9 @@ function BatchPlanForm({
           void onSave(Object.fromEntries(new FormData(e.currentTarget)));
         }}
       >
+        {isSachet(productId) && (
+          <input type="hidden" name="route" value={currentSachetRoute} />
+        )}
         <fieldset disabled={busy} className="batch-plan-fields">
           <legend className="sr-only">
             {t("Batch details", "Butiran kelompok")}
@@ -1161,8 +954,8 @@ function BatchPlanForm({
               <p>
                 {isSachet(productId)
                   ? t(
-                      "Assign PICs now or later. Planning does not mark a process complete; confirm the work in the production log. No sachet quantity is required.",
-                      "Empat proses di bawah adalah tetap. Rekod PIC sahaja untuk setiap proses di bawah nombor kelompok ini. Kuantiti hasil tidak diperlukan.",
+                      "Five fixed stages, including Hologram. Assign planned PICs now or later; planning does not mark a stage complete. No sachet quantity is required.",
+                      "Lima peringkat tetap, termasuk Hologram. Tetapkan PIC dirancang sekarang atau kemudian; perancangan tidak menandakan peringkat siap. Kuantiti sachet tidak diperlukan.",
                     )
                   : t(
                       "Assign PICs now or later. Record completed output in the production log when the work takes place.",
@@ -1236,7 +1029,15 @@ function BatchPlanForm({
   );
 }
 
-function BatchRecord({ batch: b, lang }: { batch: Batch; lang: Lang }) {
+function BatchRecord({
+  batch: b,
+  state,
+  lang,
+}: {
+  batch: Batch;
+  state: Draft;
+  lang: Lang;
+}) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   if (isSachet(b.product))
     return (
@@ -1257,7 +1058,7 @@ function BatchRecord({ batch: b, lang }: { batch: Batch; lang: Lang }) {
               : t("Awaiting warehouse handoff", "Menunggu serahan ke gudang")}
           </span>
         </div>
-        <MachineRecords batch={b} lang={lang} />
+        <StageRecords batch={b} state={state} lang={lang} />
         <p className="record-footnote">
           {t(
             "The stock-in supervisor records inventory after counting finished boxes in the warehouse.",
@@ -1365,8 +1166,8 @@ function BatchRecord({ batch: b, lang }: { batch: Batch; lang: Lang }) {
       </div>
       <p className="record-footnote">
         {t(
-          "PIC identifies who performed the process. Records are entered by the supervisor using the shared test account. A recorded process does not imply a QC pass.",
-          "PIC mengenal pasti pelaksana proses. Rekod dimasukkan oleh penyelia melalui akaun ujian bersama. Proses yang direkod tidak bermaksud QC lulus.",
+          "PIC identifies who performed the process; the supervisor who entered it is shown in its history. A recorded process does not imply a QC pass.",
+          "PIC mengenal pasti pelaksana proses; penyelia yang merekod dipaparkan dalam sejarahnya. Proses yang direkod tidak bermaksud QC lulus.",
         )}
       </p>
     </Panel>

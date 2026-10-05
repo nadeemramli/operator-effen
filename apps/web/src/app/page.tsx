@@ -1,9 +1,9 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
-import { tester } from "@/lib/supabase/server";
+import { resolveAccess } from "@/lib/supabase/server";
 import { DraftApp } from "@/components/draft-app";
 export default async function Home() {
-  const { user } = await tester();
+  const { user } = await resolveAccess();
   if (!user) redirect("/login");
   return (
     <Suspense

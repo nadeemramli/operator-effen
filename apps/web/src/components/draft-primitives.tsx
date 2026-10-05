@@ -296,8 +296,10 @@ export function ActionForm({
                     defaultValue={field.value ?? ""}
                     required={field.required !== false}
                   >
-                    <option value="" disabled>
-                      {tr(lang, "Select…", "Pilih…")}
+                    <option value="" disabled={field.required !== false}>
+                      {field.required === false
+                        ? tr(lang, "Not specified", "Tidak dinyatakan")
+                        : tr(lang, "Select…", "Pilih…")}
                     </option>
                     {field.options?.map((o) => (
                       <option key={o.value} value={o.value}>

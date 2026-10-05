@@ -1,8 +1,13 @@
 import { redirect } from "next/navigation";
-import { tester } from "@/lib/supabase/server";
+import { resolveAccess } from "@/lib/supabase/server";
 import { LoginForm } from "@/components/login-form";
-export default async function Login() {
-  const { user } = await tester();
+export default async function Login({
+  searchParams,
+}: {
+  searchParams: Promise<{ expired?: string }>;
+}) {
+  const { user } = await resolveAccess();
   if (user) redirect("/");
-  return <LoginForm />;
+  const { expired } = await searchParams;
+  return <LoginForm expired={expired === "1"} />;
 }

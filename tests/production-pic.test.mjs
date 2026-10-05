@@ -22,6 +22,7 @@ const plan = (product = "cav") =>
     pic_1: "PIC B",
     pic_2: "PIC C",
     pic_3: "PIC D",
+    pic_4: "PIC E",
   });
 test("planning assigns PICs for both factory routes without marking work complete or creating stock", () => {
   for (const product of ["cav", "ady"]) {
@@ -29,7 +30,9 @@ test("planning assigns PICs for both factory routes without marking work complet
       b = s.batches[0];
     assert.deepEqual(
       b.steps.map((s) => s.pic),
-      ["PIC A", "PIC B", "PIC C", "PIC D"],
+      product === "ady"
+        ? ["PIC A", "PIC B", "PIC C", "PIC D", "PIC E"]
+        : ["PIC A", "PIC B", "PIC C", "PIC D"],
     );
     assert.equal(
       b.steps.every((s) => !s.done && s.qty === null),
@@ -172,7 +175,10 @@ test("sachet completion retains planned and corrected PIC history", () => {
     s = run(s, "machine", {
       id,
       stage: stage.id,
-      pic: i === 0 ? "Replacement" : ["PIC A", "PIC B", "PIC C", "PIC D"][i],
+      pic:
+        i === 0
+          ? "Replacement"
+          : ["PIC A", "PIC B", "PIC C", "PIC D", "PIC E"][i],
     });
   assert.equal(batchComplete(s.batches[0]), true);
   assert.equal(s.batches[0].steps[0].picHistory.length, 2);
@@ -272,7 +278,7 @@ test("future catalog sachet products use the fixed route and retain their produc
       date: "2020-01-01",
     });
     const id = s.batches[0].id;
-    assert.equal(s.batches[0].steps.length, 4);
+    assert.equal(s.batches[0].steps.length, 5);
     for (const stage of sachetProcesses)
       s = run(s, "machine", { id, stage: stage.id, pic: "PIC" });
     s = run(s, "transfer", { id, pic: "Factory" });

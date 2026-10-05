@@ -1,0 +1,99 @@
+import { createHash, createHmac } from "node:crypto";
+import {
+  commandRules,
+  effectiveCapabilities,
+  type Capability,
+  type MemberRole,
+} from "./capabilities.ts";
+
+/**
+ * Server-side authorization and commit signing for workspace members (OPER-2/4/5).
+ * Roles and sites come from `operator_memberships`, never from the client. The database
+ * re-checks everything in `operator_commit_workspace`; this module fails fast and signs
+ * the validated transition.
+ */
+export { effectiveCapabilities, type Capability, type MemberRole };
+
+/** Returns a denial message, or null when the capabilities allow the command. */
+export function authorizeMember(
+  type: string,
+  capabilities: readonly string[],
+): string | null {
+  const rule = commandRules[type];
+  if (!rule) return "This action is not available in operational workspaces.";
+  if (!capabilities.includes(rule.capability))
+    return capabilities.length <= 1
+      ? "Operational records are entered by your supervisor. You can view records and post feedback."
+      : "Your role at this site does not permit this action.";
+  return null;
+}
+
+/** Top-level records a command changed outside its declared scope (mirrors the database). */
+export function outOfScopeKeys(
+  type: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+) {
+  const scope = new Set(commandRules[type]?.stateKeys ?? []);
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  return [...keys].filter(
+    (key) =>
+      !scope.has(key) &&
+      JSON.stringify(before[key]) !== JSON.stringify(after[key]),
+  );
+}
+
+const canonical = (value: unknown): unknown =>
+  Array.isArray(value)
+    ? value.map(canonical)
+    : value && typeof value === "object"
+      ? Object.fromEntries(
+          Object.keys(value as object)
+            .sort()
+            .map((k) => [k, canonical((value as Record<string, unknown>)[k])]),
+        )
+      : value;
+/** Stable payload fingerprint so a reused operation ID with different input is rejected. */
+export const fingerprint = (type: string, input: unknown) =>
+  createHash("sha256")
+    .update(JSON.stringify(canonical({ type, input })))
+    .digest("hex");
+export const OPERATION_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Server key shared with operator_private.server_keys ('commit'); hex, at least 32 bytes. */
+export function commitSecret(): Buffer | null {
+  const hex = process.env.OPERATOR_COMMIT_SECRET ?? "";
+  return /^[0-9a-f]{64,}$/i.test(hex) && hex.length % 2 === 0
+    ? Buffer.from(hex, "hex")
+    : null;
+}
+/**
+ * Signs a validated transition for one user, workspace revision, command and operation.
+ * Must match the message built in public.operator_commit_workspace.
+ */
+export function attest(
+  secret: Buffer,
+  t: {
+    workspaceId: string;
+    revision: number;
+    userId: string;
+    operationId: string;
+    command: string;
+    fingerprint: string;
+    stateText: string;
+  },
+) {
+  const stateHash = createHash("sha256").update(t.stateText, "utf8").digest("hex");
+  const message = [
+    "operator-commit-v1",
+    t.workspaceId,
+    String(t.revision),
+    t.userId,
+    t.operationId,
+    t.command,
+    t.fingerprint,
+    stateHash,
+  ].join("\n");
+  return createHmac("sha256", secret).update(message, "utf8").digest("hex");
+}

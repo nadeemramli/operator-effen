@@ -74,7 +74,7 @@ test("100 required, 98 supervisor count and 98 packed remain independent with an
         s,
         "pack",
         { id: ids[0], pic: "Sample Packer B", actual: 50, labelPic: "X" },
-        "packer",
+        "outbound",
       ),
     /assigned packer/,
   );
@@ -87,7 +87,7 @@ test("100 required, 98 supervisor count and 98 packed remain independent with an
       actual: 50,
       labelPic: "Sample Packer A",
     },
-    "packer",
+    "outbound",
   );
   s = run(
     s,
@@ -98,7 +98,7 @@ test("100 required, 98 supervisor count and 98 packed remain independent with an
       actual: 48,
       labelPic: "Sample Packer B",
     },
-    "packer",
+    "outbound",
   );
   const t = dailyTally(s, date).find((t) => t.product === "cav");
   assert.deepEqual(
@@ -325,7 +325,7 @@ test("role, count and assignment gates remain enforced without a printing gate",
         s,
         "pack",
         { id: ids[0], pic: "Sample Packer A", actual: 50, labelPic: "X" },
-        "packer",
+        "outbound",
       ),
     /assigned packer/,
   );
@@ -393,9 +393,9 @@ test("future staff assignments use stable profile IDs and require a packer role"
           pic: "Same display name",
           labelPic: "staff-packer-1",
         },
-        "packer",
+        "outbound",
       ),
-    /assigned packer/,
+    /packer's profile/,
   );
   s = run(
     s,
@@ -406,7 +406,7 @@ test("future staff assignments use stable profile IDs and require a packer role"
       pic: "staff-packer-1",
       labelPic: "staff-packer-1",
     },
-    "packer",
+    "outbound",
   );
   assert.equal(s.orders[0].packer, "staff-packer-1");
 });
