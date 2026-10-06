@@ -124,13 +124,6 @@ const navigation: {
   roles: Role[];
 }[] = [
   {
-    id: "overview",
-    en: "Overview",
-    ms: "Gambaran",
-    icon: LayoutDashboard,
-    roles: ["production", "intake", "outbound", "admin", "hr", "management"],
-  },
-  {
     id: "production",
     en: "Production",
     ms: "Pengeluaran",
@@ -171,6 +164,13 @@ const navigation: {
     ms: "Jumlah akhir hari",
     icon: ClipboardList,
     roles: ["outbound", "management"],
+  },
+  {
+    id: "overview",
+    en: "Overview",
+    ms: "Gambaran",
+    icon: LayoutDashboard,
+    roles: ["production", "intake", "outbound", "admin", "hr", "management"],
   },
   {
     id: "trace",
