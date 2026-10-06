@@ -195,6 +195,8 @@ export async function POST(request: NextRequest) {
             throw new Error("Invalid source file ownership.");
           await requireStored(db, "awb-draft-sources", user.id, file.id);
         }
+      if (type.startsWith("trip") && typeof input.photo === "string" && input.photo)
+        await requireTripPhoto(db, "trip-draft-photos", user.id, input.photo);
       state = applyCommand(current, {
         type,
         role,
@@ -318,6 +320,13 @@ export async function POST(request: NextRequest) {
           throw new Error("This PDF was not uploaded to this site.");
         await requireStored(db, "operator-sources", membership.workspaceId, file.id);
       }
+    if (type.startsWith("trip") && typeof input.photo === "string" && input.photo)
+      await requireTripPhoto(
+        db,
+        "operator-trip-photos",
+        `${membership.workspaceId}/${user.id}`,
+        input.photo,
+      );
     const state = applyCommand(current, {
       type,
       role: recorder.role,
@@ -409,4 +418,19 @@ async function requireStored(
     .list(folder, { search: id + ".pdf", limit: 1 });
   if (listed.error || !listed.data.some((f) => f.name === id + ".pdf"))
     throw new Error("Source PDF was not saved. Upload it again before confirming.");
+}
+// A trip photo must be the signed-in driver's own upload in this site's folder.
+async function requireTripPhoto(
+  db: Awaited<ReturnType<typeof resolveAccess>>["db"],
+  bucket: string,
+  folder: string,
+  path: string,
+) {
+  const name = path.slice(folder.length + 1);
+  const listed =
+    path.startsWith(folder + "/") && /^[a-f0-9]{64}\.jpg$/.test(name)
+      ? await db.storage.from(bucket).list(folder, { search: name, limit: 1 })
+      : null;
+  if (!listed || listed.error || !listed.data.some((f) => f.name === name))
+    throw new Error("The trip photo was not saved. Add it again before saving.");
 }

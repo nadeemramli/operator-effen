@@ -2803,3 +2803,67 @@ td.actions {
   line-height: 1.6;
   color: var(--muted-foreground);
 }
+
+/* Driver trips */
+.trip-photo-input {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.trip-photo-input img {
+  max-height: 180px;
+  width: auto;
+  align-self: flex-start;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.trip-photo-thumb {
+  display: block;
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.trip-photo-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.trip-photo-full {
+  width: 100%;
+  max-height: 75dvh;
+  object-fit: contain;
+  border-radius: 8px;
+}
+.trip-cards {
+  display: flex;
+  flex-direction: column;
+}
+.trip-cards article {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 15px;
+  flex-wrap: wrap;
+  padding: 15px 23px;
+  border-bottom: 1px solid var(--border);
+}
+.trip-cards article:last-child {
+  border-bottom: 0;
+}
+.trip-cards strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.trip-cards small {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  margin-top: 4px;
+}

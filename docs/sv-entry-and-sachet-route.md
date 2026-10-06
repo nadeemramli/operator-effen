@@ -13,14 +13,14 @@ Actual performer and authenticated recorder stay separate throughout.
 |---|---|---|
 | Production SV | one site | plan batches, record and correct stages, machines, day close, staff memberships*, feedback |
 | Stock-in SV | one site | record and correct stages, machines, receive stock, **stock adjustments**, day close, staff memberships*, feedback |
-| Stock-out SV | one site | order entry, fulfilment, outbound corrections, read sources, day close, staff memberships*, feedback |
+| Stock-out SV | one site | order entry, fulfilment, outbound corrections, read sources, read driver trips, day close, staff memberships*, feedback |
 | Office admin | site or all sites | order/AWB import and release, order entry, read sources, feedback |
 | HR | site or all sites | memberships (all roles, all sites), site capability policy, feedback |
-| Management | site or all sites | review comments, read sources, feedback |
-| Packer, driver, assistant | one site | view and feedback only |
+| Management | site or all sites | review comments, read sources, read driver trips, feedback |
+| Driver | one site | log their own trips (see [driver trips](#driver-trips)), view, feedback |
+| Packer | one site | view and feedback only |
 
-\* Supervisors may grant or revoke only packer, driver and assistant memberships at their own
-site. "All access" never includes production corrections, stock adjustments, audit history or
+\* Supervisors may grant or revoke only packer and driver memberships at their own site. "All access" never includes production corrections, stock adjustments, audit history or
 permission changes; those stay with the capabilities above. The catalogue lives in
 `apps/web/src/lib/capabilities.ts` and the `operator_role_capabilities`,
 `operator_command_rules` and `operator_grantable_roles` tables (a test keeps them identical).
@@ -61,7 +61,7 @@ Database functions (callable with the signed-in user's JWT; ready for the future
 - `operator_set_site_policy(workspace, policy, reason)` — HR only; can only narrow a role.
 
 Rules enforced in SQL: nobody changes their own access; only HR grants all-sites access;
-supervisors act only at their site and only on packer/driver/assistant memberships (both the
+supervisors act only at their site and only on packer/driver memberships (both the
 current and the new role must be grantable); every change writes `operator_membership_audit`
 with before/after and reason. Direct table writes are denied. Every guard fails closed: it
 proceeds only when its whole condition is true, so an unknown caller, a revoked or other-site
@@ -87,7 +87,7 @@ values (null, '<auth user id>', 'hr', '<display name>', 'all-sites');
 - HR: list people and memberships across sites, grant/change/revoke with reason, set site
   capability policy, view the audit trail.
 - Site supervisor: same list filtered to their site and grantable roles only; grant/revoke
-  packer, driver, assistant; link a performer profile (`staff_profile_id`).
+  packer, driver; link a performer profile (`staff_profile_id`).
 - Built only on the functions and RLS above; no new authorization logic in the UI.
 - Acceptance: denied paths visible (self-change, other site, non-grantable role), audit shown.
 
@@ -152,9 +152,35 @@ author, site, optional record reference and time, and never edits operational re
   reviewable conflict instead of overwriting. Corrections after transfer are flagged as
   batch revisions and never create receipts, transfers or stock movements.
 
+## Driver trips
+
+Owner decision (2026-10-06): driver and assistant driver are **one role**. The driver signs in
+and logs each trip; the assistant is recorded by name on the trip and does not sign in.
+Migration `20261006090000_operator_driver_trips.sql` converts any existing `assistant`
+memberships to `driver` and removes the separate role.
+
+- **Log a trip** (`trip`, capability `trips.log`): assistant driver name (optional — blank when
+  driving alone), pickup time, arrival time (optional), photo (optional) and a short note.
+  Times are actual Malaysia times and cannot be in the future.
+- **Log arrival / add photo** (`trip-update`): the same driver adds the arrival time or photo
+  later, for example on arrival. Only missing values can be added; recorded values never change.
+- The driver is always the signed-in recorder; nobody can log a trip for another driver.
+- Stock-out supervisors and management (`trips.read`) see every trip and photo at the site.
+  Drivers see their own trips and photos.
+- Database invariants: trips are never removed; recorded trip fields are fixed; only the
+  trip's own driver can add its missing arrival or photo; arrival is never before pickup; a
+  new photo must be in the signed-in driver's folder.
+- Photos are re-encoded in the browser as JPEG (max 1600 px, metadata removed) and stored in
+  the private bucket `operator-trip-photos` at `<workspace id>/<driver user id>/<sha256>.jpg`
+  (5 MB limit). `/api/trip-photos` signs uploads for drivers and 60-second read URLs for the
+  driver or `trips.read` holders; storage RLS enforces the same rules. The fictional sandbox
+  uses `trip-draft-photos/<account id>/…`.
+- Not included: supervisor correction of a mistaken trip time (there is no edit path yet),
+  vehicle or route fields, and links between trips and courier handovers.
+
 ## Deployment prerequisites (not done; owner/coordinator)
 
-1. Review and apply both migrations to an isolated staging project first.
+1. Review and apply the three migrations to an isolated staging project first.
 2. Generate a 32-byte key; store it as the server-only env var `OPERATOR_COMMIT_SECRET` (hex)
    and in `operator_private.server_keys` (`id = 'commit'`). Never a `NEXT_PUBLIC_` variable.
    Without both, operational saves fail closed with a clear 503.
@@ -173,7 +199,8 @@ author, site, optional record reference and time, and never edits operational re
 
 ## Rollback
 
-Run `supabase/rollback/20261005090000_operator_trusted_commands.down.sql`, then
+Run `supabase/rollback/20261006090000_operator_driver_trips.down.sql`, then
+`20261005090000_operator_trusted_commands.down.sql`, then
 `20261004090000_operator_memberships.down.sql`, after exporting operational state,
 `operator_commits` and `operator_membership_audit`. Rolling back the repair alone leaves no
 operational write path (the unsafe replacement-state RPC is intentionally not restored).

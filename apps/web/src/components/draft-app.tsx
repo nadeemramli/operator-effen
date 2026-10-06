@@ -40,6 +40,7 @@ import { ProductionWorkspace, ProcessPicHistory } from "./production-workspace";
 import { SachetProductionRecords } from "./sachet-records";
 import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
+import { DriverTrips } from "./driver-trips";
 import { channels } from "@/lib/awb-import";
 import { PersonBadge } from "./person-profile";
 import { Button } from "@/components/ui/button";
@@ -113,6 +114,7 @@ type View =
   | "tally"
   | "orders"
   | "packing"
+  | "trips"
   | "trace"
   | "reports"
   | "feedback";
@@ -159,6 +161,13 @@ const navigation: {
     roles: ["packer", "outbound"],
   },
   {
+    id: "trips",
+    en: "Driver trips",
+    ms: "Perjalanan pemandu",
+    icon: Truck,
+    roles: ["driver", "outbound", "management"],
+  },
+  {
     id: "tally",
     en: "Daily tally",
     ms: "Jumlah akhir hari",
@@ -177,7 +186,7 @@ const navigation: {
     en: "Traceability",
     ms: "Jejak rekod",
     icon: ScanLine,
-    roles: ["production", "intake", "outbound", "management", "driver", "assistant"],
+    roles: ["production", "intake", "outbound", "management", "driver"],
   },
   {
     id: "reports",
@@ -199,7 +208,6 @@ const navigation: {
       "hr",
       "packer",
       "driver",
-      "assistant",
       "management",
     ],
   },
@@ -253,6 +261,12 @@ const copy: Record<View, [string, string, string, string]> = {
     "Supervisors record what each packer actually packed and who attached the AWB.",
     "Penyelia merekod jumlah sebenar setiap pembungkus dan siapa yang melekatkan AWB.",
   ],
+  trips: [
+    "Driver trips",
+    "Perjalanan pemandu",
+    "Drivers log each trip: assistant driver, pickup and arrival time, and a photo.",
+    "Pemandu merekod setiap perjalanan: pembantu pemandu, masa ambil dan tiba, serta gambar.",
+  ],
   trace: [
     "Follow the record",
     "Jejaki rekod",
@@ -304,8 +318,13 @@ const readPending = (): PendingSave | null => {
   }
 };
 const VIEW_AS_KEY = "operator-view-as";
+// Assistant drivers are drivers now; a server still on the older role list maps across.
 const viewRole = (role?: string): Role =>
-  roles.some((r) => r.id === role) ? (role as Role) : "packer";
+  role === "assistant"
+    ? "driver"
+    : roles.some((r) => r.id === role)
+      ? (role as Role)
+      : "packer";
 
 export function DraftApp() {
   const revisionRef = useRef(0);
@@ -2010,6 +2029,19 @@ export function DraftApp() {
           </div>
         </>
       );
+    if (view === "trips")
+      return (
+        <DriverTrips
+          state={state}
+          lang={lang}
+          canLog={can("trips.log")}
+          canReview={can("trips.read")}
+          userId={actor?.userId}
+          member={member}
+          workspace={member ? actor?.workspaceId : undefined}
+          show={show}
+        />
+      );
     if (view === "trace")
       return (
         <>
@@ -2256,6 +2288,13 @@ export function DraftApp() {
                 t(
                   "Count daily product requirements, issue rack stock and assign packages to packers.",
                   "Kira keperluan produk harian, keluarkan stok rak dan tugaskan pakej kepada pembungkus.",
+                ),
+              ],
+              [
+                t("Driver", "Pemandu"),
+                t(
+                  "Log a trip with the assistant driver's name, pickup and arrival time, and a photo.",
+                  "Rekod perjalanan dengan nama pembantu pemandu, masa ambil dan tiba, serta gambar.",
                 ),
               ],
               [
