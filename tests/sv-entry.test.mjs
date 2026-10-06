@@ -45,11 +45,12 @@ function assignedOrder() {
   return s;
 }
 
-test("view-only staff can only post feedback; supervisors act within their capabilities", () => {
-  for (const role of ["packer", "driver", "assistant"]) {
+test("packers only post feedback, drivers also log trips; supervisors act within their capabilities", () => {
+  for (const role of ["packer", "driver"]) {
     const caps = effectiveCapabilities(role);
-    assert.deepEqual(caps, ["feedback.post"]);
+    assert.deepEqual(caps, role === "driver" ? ["trips.log", "feedback.post"] : ["feedback.post"]);
     assert.equal(authorizeMember("feedback", caps), null);
+    assert.equal(authorizeMember("trip", caps) === null, role === "driver");
     for (const type of ["pack", "machine", "dispatch", "adjust", "stage-correct", "reset"])
       assert.match(authorizeMember(type, caps), /supervisor|not available/);
   }

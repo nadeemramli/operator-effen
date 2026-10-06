@@ -1,5 +1,6 @@
 "use client";
 import { PersonPicker, PersonBadge } from "./person-profile";
+import { TripPhotoInput } from "./trip-photo";
 import type { ReactNode } from "react";
 import { ArrowUpRight, Inbox } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -189,13 +190,16 @@ export type Field = {
     | "time"
     | "textarea"
     | "select"
-    | "person";
+    | "person"
+    | "photo";
   options?: { value: string; label: string }[];
   value?: string | number;
   required?: boolean;
   min?: number;
   hint?: string;
   profile?: { name: string; caption?: string };
+  /** Photo fields: the operational workspace the photo is stored under. */
+  workspace?: string;
 };
 export type FormSpec = {
   type: string;
@@ -279,7 +283,13 @@ export function ActionForm({
                     </small>
                   ) : null}
                 </Label>
-                {field.type === "person" ? (
+                {field.type === "photo" ? (
+                  <TripPhotoInput
+                    name={field.name}
+                    lang={lang}
+                    workspace={field.workspace}
+                  />
+                ) : field.type === "person" ? (
                   <PersonPicker
                     name={field.name}
                     label={field.label}

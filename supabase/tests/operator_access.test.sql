@@ -405,4 +405,122 @@ select pg_temp.expect_denied($q$select * from operator_private.server_keys$q$, '
 select pg_temp.expect_denied($q$update public.operator_workspaces set write_policy = '{}'$q$, 'direct policy change');
 rollback;
 
+-- 8. One driver role and driver trip logs (20261006090000). Drivers log only their own
+--    trips; recorded values are fixed; photos stay in the driver's own folder.
+insert into auth.users (id) values
+  ('00000000-0000-4000-8000-000000000012'), -- site A driver
+  ('00000000-0000-4000-8000-000000000013'); -- site A second driver
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values
+  ('10000000-0000-4000-8000-00000000000a','00000000-0000-4000-8000-000000000012','driver','Driver A','site'),
+  ('10000000-0000-4000-8000-00000000000a','00000000-0000-4000-8000-000000000013','driver','Driver B','site');
+do $$ begin
+  begin
+    insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope)
+    values ('10000000-0000-4000-8000-00000000000a', '00000000-0000-4000-8000-000000000010', 'assistant', 'Old role', 'site');
+    raise exception 'FAIL: a separate assistant role was accepted';
+  exception when check_violation then null;
+  end;
+  if exists (select 1 from public.operator_role_capabilities where role = 'assistant')
+    or exists (select 1 from public.operator_grantable_roles where grantable_role = 'assistant') then
+    raise exception 'FAIL: assistant reference data remains';
+  end if;
+end $$;
+\set DRV '''00000000-0000-4000-8000-000000000012'''
+\set DRV2 '''00000000-0000-4000-8000-000000000013'''
+create function pg_temp.trip(p_id text, p_uid text, p_extra jsonb default '{}') returns jsonb
+language sql as $$
+  select jsonb_build_object('id', p_id, 'siteId', 'site-a', 'date', '2026-10-06', 'driver', 'Driver A',
+    'assistant', 'Assistant A', 'pickupAt', '2026-10-06T01:00:00.000Z', 'recordedAt', '2026-10-06T01:01:00.000Z',
+    'recordedBy', jsonb_build_object('userId', p_uid)) || p_extra $$;
+create function pg_temp.with_trips(p_trips jsonb) returns jsonb language sql as $$
+  select jsonb_set(pg_temp.state(), '{trips}', p_trips) $$;
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip',
+  jsonb_set(pg_temp.with_trips(jsonb_build_array(pg_temp.trip('t1', :DRV))), '{events}',
+    (pg_temp.state() -> 'events') || jsonb_build_array(pg_temp.ev('e-trip', :DRV)))),
+  'ok', 'driver logs own trip');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip',
+  pg_temp.with_trips((pg_temp.state() -> 'trips') || jsonb_build_array(pg_temp.trip('t2', :DRV2)))),
+  '23514', 'driver logs a trip under another driver');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000002', :A, 'trip',
+  pg_temp.with_trips((pg_temp.state() -> 'trips') || jsonb_build_array(pg_temp.trip('t3', '00000000-0000-4000-8000-000000000002')))),
+  '42501', 'packer logs a trip');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'trip',
+  pg_temp.with_trips((pg_temp.state() -> 'trips') || jsonb_build_array(pg_temp.trip('t4', :SV)))),
+  '42501', 'production SV logs a trip');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip',
+  jsonb_set(pg_temp.state(), '{batches,0,code}', '"X"')), '42501', 'trip used to edit batches');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip',
+  pg_temp.with_trips((pg_temp.state() -> 'trips') || jsonb_build_array(pg_temp.trip('t5', :DRV,
+    '{"arriveAt": "2026-10-06T00:30:00.000Z"}')))), '23514', 'arrival before pickup');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip',
+  pg_temp.with_trips((pg_temp.state() -> 'trips') || jsonb_build_array(pg_temp.trip('t1', :DRV)))),
+  '23514', 'duplicate trip id');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-update',
+  jsonb_set(pg_temp.state(), '{trips,0,pickupAt}', '"2026-10-06T00:00:00.000Z"')), '23514', 'rewrite pickup time');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-update',
+  jsonb_set(pg_temp.state(), '{trips,0,assistant}', '"Someone else"')), '23514', 'rewrite assistant name');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-update', pg_temp.with_trips('[]')),
+  '23514', 'remove a trip');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-update',
+  jsonb_set(pg_temp.state(), '{trips,0,driver}', '"Promoted"')), '23514', 'rewrite driver name');
+select pg_temp.expect(pg_temp.commit_as(:DRV2, :A, 'trip-update',
+  jsonb_set(pg_temp.state(), '{trips,0,arriveAt}', '"2026-10-06T02:00:00.000Z"')), '23514',
+  'another driver adds arrival');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-update',
+  jsonb_set(pg_temp.state(), '{trips,0,photo}', to_jsonb(:A || '/' || :DRV2 || '/' || repeat('e', 64) || '.jpg'))),
+  '23514', 'photo from another driver''s folder');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-update',
+  jsonb_set(pg_temp.state(), '{trips,0,approved}', 'true')), '23514', 'unexpected field added to a trip');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-update',
+  jsonb_set(jsonb_set(pg_temp.state(), '{trips,0,arriveAt}', '"2026-10-06T02:00:00.000Z"'),
+    '{trips,0,photo}', to_jsonb(:A || '/' || :DRV || '/' || repeat('e', 64) || '.jpg'))),
+  'ok', 'driver adds arrival and photo to own trip');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-update',
+  jsonb_set(pg_temp.state(), '{trips,0,arriveAt}', '"2026-10-06T03:00:00.000Z"')), '23514',
+  'rewrite recorded arrival');
+-- Photos: drivers write and read only their own folder; trips.read reads the site.
+begin;
+select pg_temp.as_user(:DRV);
+insert into storage.objects (bucket_id, name) values
+  ('operator-trip-photos', '10000000-0000-4000-8000-00000000000a/00000000-0000-4000-8000-000000000012/' || repeat('e', 64) || '.jpg');
+select pg_temp.expect_denied($q$insert into storage.objects (bucket_id, name) values ('operator-trip-photos', '10000000-0000-4000-8000-00000000000a/00000000-0000-4000-8000-000000000013/' || repeat('f', 64) || '.jpg')$q$, 'driver uploads into another driver''s folder');
+select pg_temp.expect_denied($q$insert into storage.objects (bucket_id, name) values ('operator-trip-photos', '10000000-0000-4000-8000-00000000000b/00000000-0000-4000-8000-000000000012/' || repeat('f', 64) || '.jpg')$q$, 'driver uploads at another site');
+commit;
+begin;
+select pg_temp.as_user(:DRV2);
+insert into storage.objects (bucket_id, name) values
+  ('operator-trip-photos', '10000000-0000-4000-8000-00000000000a/00000000-0000-4000-8000-000000000013/' || repeat('d', 64) || '.jpg');
+do $$ begin
+  if (select count(*) from storage.objects where bucket_id = 'operator-trip-photos') <> 1 then
+    raise exception 'FAIL: a driver reads another driver''s trip photos'; end if;
+end $$;
+commit;
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000009');
+do $$ begin
+  if (select count(*) from storage.objects where bucket_id = 'operator-trip-photos') <> 2 then
+    raise exception 'FAIL: site A stock-out should read every site A trip photo'; end if;
+end $$;
+select pg_temp.expect_denied($q$insert into storage.objects (bucket_id, name) values ('operator-trip-photos', '10000000-0000-4000-8000-00000000000a/00000000-0000-4000-8000-000000000009/' || repeat('c', 64) || '.jpg')$q$, 'stock-out SV uploads a trip photo');
+rollback;
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000004');
+do $$ begin
+  -- Section 5 narrowed management at site A to sources.read and feedback.post.
+  if exists (select 1 from storage.objects where bucket_id = 'operator-trip-photos') then
+    raise exception 'FAIL: site policy narrowing did not hide trip photos from management'; end if;
+end $$;
+rollback;
+begin;
+select pg_temp.as_user(:SV);
+do $$ begin
+  if exists (select 1 from storage.objects where bucket_id = 'operator-trip-photos') then
+    raise exception 'FAIL: production SV reads trip photos'; end if;
+end $$;
+rollback;
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000002');
+select pg_temp.expect_denied($q$insert into storage.objects (bucket_id, name) values ('operator-trip-photos', '10000000-0000-4000-8000-00000000000a/00000000-0000-4000-8000-000000000002/' || repeat('c', 64) || '.jpg')$q$, 'packer uploads a trip photo');
+rollback;
+
 select 'operator access tests passed' as result;

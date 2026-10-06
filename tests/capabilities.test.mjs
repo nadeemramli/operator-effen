@@ -8,21 +8,33 @@ import { effectiveCapabilities, outOfScopeKeys } from "../apps/web/src/lib/acces
 import {
   commandRules,
   grantableRoles,
+  memberRoles,
   roleCapabilities,
 } from "../apps/web/src/lib/capabilities.ts";
 
-const sql = readFileSync(
-  new URL("../supabase/migrations/20261005090000_operator_trusted_commands.sql", import.meta.url),
-  "utf8",
-);
-const section = (table) => {
-  const start = sql.indexOf(`insert into public.${table}`);
-  return sql.slice(start, sql.indexOf(";", start));
+const migration = (name) =>
+  readFileSync(new URL(`../supabase/migrations/${name}.sql`, import.meta.url), "utf8");
+const sql = migration("20261005090000_operator_trusted_commands");
+// 20261006: one driver role (assistant reference rows deleted) and driver trip rules.
+const trips = migration("20261006090000_operator_driver_trips");
+const section = (table, source = sql) => {
+  const start = source.indexOf(`insert into public.${table}`);
+  return start < 0 ? "" : source.slice(start, source.indexOf(";", start));
 };
+const merged = (table) => section(table) + section(table, trips);
+
+test("one driver role: the migration removes the separate assistant role", () => {
+  assert.match(trips, /update public\.operator_memberships\s+set role = 'driver', updated_at = now\(\)\s+where role = 'assistant';/);
+  assert.match(trips, /delete from public\.operator_role_capabilities where role = 'assistant';/);
+  assert.match(trips, /delete from public\.operator_grantable_roles where grantable_role = 'assistant';/);
+  assert.match(trips, /check \(role in \('production', 'intake', 'outbound', 'admin', 'hr', 'management',\s+'packer', 'driver'\)\)/);
+  assert.ok(!memberRoles.includes("assistant"));
+});
 
 test("role capabilities match the database seed", () => {
-  const pairs = [...section("operator_role_capabilities").matchAll(/\('([a-z]+)', '([a-z.]+)'\)/g)]
+  const pairs = [...merged("operator_role_capabilities").matchAll(/\('([a-z]+)', '([a-z.]+)'\)/g)]
     .map(([, r, c]) => r + ":" + c)
+    .filter((pair) => !pair.startsWith("assistant:"))
     .sort();
   const ts = Object.entries(roleCapabilities)
     .flatMap(([r, caps]) => caps.map((c) => r + ":" + c))
@@ -32,7 +44,7 @@ test("role capabilities match the database seed", () => {
 
 test("command rules match the database seed", () => {
   const rows = Object.fromEntries(
-    [...section("operator_command_rules").matchAll(/\('([a-z-]+)', '([a-z.]+)', '\{([a-zA-Z,]+)\}'\)/g)].map(
+    [...merged("operator_command_rules").matchAll(/\('([a-z-]+)', '([a-z.]+)', '\{([a-zA-Z,]+)\}'\)/g)].map(
       ([, cmd, cap, keys]) => [cmd, { capability: cap, stateKeys: keys.split(",") }],
     ),
   );
@@ -43,8 +55,10 @@ test("grantable roles match the database seed", () => {
   const block = section("operator_grantable_roles");
   assert.match(block, /select 'hr', r from unnest\(array\['production', 'intake', 'outbound', 'admin', 'hr',\s+'management', 'packer', 'driver', 'assistant'\]\)/);
   assert.match(block, /unnest\(array\['production', 'intake', 'outbound'\]\) g,\s+unnest\(array\['packer', 'driver', 'assistant'\]\) r/);
-  assert.deepEqual(grantableRoles.production, ["packer", "driver", "assistant"]);
-  assert.equal(grantableRoles.hr.length, 9);
+  // ...minus the assistant rows deleted by 20261006.
+  assert.deepEqual(grantableRoles.production, ["packer", "driver"]);
+  assert.deepEqual(grantableRoles.hr, [...memberRoles]);
+  assert.equal(grantableRoles.hr.length, 8);
   assert.equal(grantableRoles.admin, undefined);
   assert.equal(grantableRoles.management, undefined);
 });
@@ -109,6 +123,8 @@ test("every operational command stays inside its database scope", () => {
   run("management", "review", { text: "Check" });
   run("packer", "feedback", { text: "Note" });
   run("production", "close", { date: "2026-10-01", note: "Done" });
+  run("driver", "trip", { assistant: "Sample Assistant", pickupAt: "2026-10-01T09:00" });
+  run("driver", "trip-update", { id: s.trips[0].id, arriveAt: "2026-10-01T10:30" });
   run("production", "route-review", (() => {
     const legacy = s.batches.find((b) => b.id === "b-ady");
     delete legacy.route;

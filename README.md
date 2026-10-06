@@ -176,6 +176,13 @@ server session, and apply assignment restrictions to API responses and database 
 still a shared demo and do not provide private employee access. Keep staff login
 rollout separate until the owner supplies the roster and access administrator.
 
+### Driver trips
+
+Driver and assistant driver are one role. Drivers sign in and log their own trips: the
+assistant driver's name, pickup time, arrival time and a photo; the arrival and photo can be
+added later. Stock-out supervisors and management review every trip at the site. See
+[driver trips](docs/sv-entry-and-sachet-route.md#driver-trips).
+
 ### Production PIC planning and changes
 
 Each batch plan can assign a PIC to every fixed process. These are planned

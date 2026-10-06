@@ -16,6 +16,7 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261006090000_operator_driver_trips.down.sql"
 "${psql[@]}" -f "$root/supabase/rollback/20261005090000_operator_trusted_commands.down.sql"
 "${psql[@]}" -f "$root/supabase/rollback/20261004090000_operator_memberships.down.sql"
 "${psql[@]}" -At -c "select count(*) from pg_tables where tablename like 'operator_%'" | grep -qx 0
@@ -24,4 +25,17 @@ echo "re-apply after rollback"
 "${psql[@]}" -f "$root/supabase/migrations/20261004090000_operator_memberships.sql"
 "${psql[@]}" -c "delete from storage.buckets where id = 'operator-sources'"
 "${psql[@]}" -f "$root/supabase/migrations/20261005090000_operator_trusted_commands.sql"
+"${psql[@]}" -c "delete from storage.buckets where id in ('operator-trip-photos', 'trip-draft-photos')"
+echo "assistant memberships become driver memberships"
+"${psql[@]}" -c "insert into public.operator_workspaces (id, site_id, name, write_policy)
+  values ('10000000-0000-4000-8000-0000000000aa', 'site-x', 'Synthetic site X',
+    '{\"assistant\": [\"feedback.post\"]}');
+  insert into public.operator_memberships (workspace_id, user_id, role, display_name)
+  values ('10000000-0000-4000-8000-0000000000aa', '00000000-0000-4000-8000-000000000002',
+    'assistant', 'Synthetic assistant')"
+"${psql[@]}" -f "$root/supabase/migrations/20261006090000_operator_driver_trips.sql"
+"${psql[@]}" -At -c "select role from public.operator_memberships
+  where user_id = '00000000-0000-4000-8000-000000000002'" | grep -qx driver
+"${psql[@]}" -At -c "select write_policy ? 'assistant' from public.operator_workspaces
+  where site_id = 'site-x'" | grep -qx f
 echo "ok"

@@ -20,7 +20,6 @@ export type Role =
   | "hr"
   | "packer"
   | "driver"
-  | "assistant"
   | "management";
 export const roles: { id: Role; en: string; ms: string }[] = [
   { id: "production", en: "Production supervisor", ms: "Penyelia pengeluaran" },
@@ -30,7 +29,6 @@ export const roles: { id: Role; en: string; ms: string }[] = [
   { id: "hr", en: "HR", ms: "Sumber manusia" },
   { id: "packer", en: "Packer", ms: "Pembungkus" },
   { id: "driver", en: "Driver", ms: "Pemandu" },
-  { id: "assistant", en: "Assistant", ms: "Pembantu" },
   { id: "management", en: "Management", ms: "Pengurusan" },
 ];
 export type Unit = "bottle" | "sachet" | "box";
@@ -407,6 +405,28 @@ export interface SortCount {
   note: string;
   at: string;
 }
+// A driver's own trip log. The driver is the signed-in recorder; the assistant (if any) is
+// recorded by name and does not sign in. Recorded values are fixed: a later entry by the
+// same driver may only add the arrival time or the photo when they are still missing.
+export interface Trip {
+  id: string;
+  siteId?: string;
+  /** Malaysia date of the pickup. */
+  date: string;
+  driver: string;
+  /** Assistant driver's name; empty when driving alone. */
+  assistant: string;
+  pickupAt: string;
+  arriveAt?: string;
+  /** Storage path of the trip photo. */
+  photo?: string;
+  note?: string;
+  recordedAt: string;
+  recordedBy: Recorder;
+  arrivalRecordedAt?: string;
+  photoRecordedAt?: string;
+}
+export const tripPhotoPath = /^([0-9a-f-]{36}\/){1,2}[a-f0-9]{64}\.jpg$/;
 // A performer profile. It never grants sign-in or write permission.
 export interface StaffProfile {
   id: string;
@@ -415,6 +435,7 @@ export interface StaffProfile {
 }
 export interface Draft {
   staffProfiles?: StaffProfile[];
+  trips?: Trip[];
   sortCounts?: SortCount[];
   adypocideReceipts?: AdypocideReceipt[];
   awbImports?: AwbImport[];
@@ -1028,6 +1049,23 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         `${label} was changed by another entry after you opened it. Review the latest record, then save again if your change is still needed.`,
         { record: label, expectedVersion: expected, currentVersion: actual, ...detail() },
       );
+  };
+  /** Required/optional actual trip time in Malaysia time; never in the future. */
+  const tripTime = (key: string, required = true) => {
+    const local = str(key, required);
+    if (!local) return undefined;
+    const iso = fromMyt(local);
+    if (!iso) throw new Error("Enter the trip times as a date and time in Malaysia time.");
+    if (Date.parse(iso) > Date.now() + 5 * 60000)
+      throw new Error("A trip time cannot be in the future.");
+    return iso;
+  };
+  /** Optional uploaded trip photo; the API server checks the site folder and the file. */
+  const tripPhoto = () => {
+    const path = str("photo", false);
+    if (path && !tripPhotoPath.test(path))
+      throw new Error("The trip photo was not uploaded. Add it again.");
+    return path || undefined;
   };
   const bump = (record: { version?: number }) =>
     (record.version = (record.version ?? 0) + 1);
@@ -2328,6 +2366,80 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       s.notes.unshift({ id: id(), kind: "feedback", text, role: cmd.role, at, ...noteScope() });
       break;
     }
+    case "trip": {
+      // Drivers log their own trip; the driver is always the signed-in recorder.
+      const assistant = str("assistant", false);
+      if (assistant.length > 100) throw new Error("Use a shorter assistant name.");
+      const pickupAt = tripTime("pickupAt")!;
+      const arriveAt = tripTime("arriveAt", false);
+      if (arriveAt && arriveAt < pickupAt)
+        throw new Error("The arrival time cannot be before the pickup time.");
+      const photo = tripPhoto();
+      const note = str("note", false);
+      if (note.length > 300) throw new Error("Use a shorter trip note.");
+      const trip: Trip = {
+        id: id(),
+        ...(site ? { siteId: site } : {}),
+        date: toMyt(pickupAt).slice(0, 10),
+        driver: recorder.name,
+        assistant,
+        pickupAt,
+        ...(arriveAt ? { arriveAt, arrivalRecordedAt: at } : {}),
+        ...(photo ? { photo, photoRecordedAt: at } : {}),
+        ...(note ? { note } : {}),
+        recordedAt: at,
+        recordedBy: recorder,
+      };
+      (s.trips ??= []).unshift(trip);
+      log(
+        "trip:" + trip.id,
+        "Trip logged",
+        [
+          "Pickup " + toMyt(pickupAt).replace("T", " "),
+          arriveAt ? "arrival " + toMyt(arriveAt).replace("T", " ") : "arrival pending",
+          assistant ? "assistant " + assistant : "no assistant",
+          photo ? "photo attached" : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        { performer: recorder.name, occurredAt: pickupAt },
+      );
+      break;
+    }
+    case "trip-update": {
+      const trip = inSite(find(s.trips ?? []));
+      if (trip.recordedBy?.userId !== recorder.userId)
+        throw new Error("Only the driver who logged this trip can add to it.");
+      const arriveAt = tripTime("arriveAt", false);
+      const photo = tripPhoto();
+      if (!arriveAt && !photo)
+        throw new Error("Enter the arrival time or add a photo.");
+      if (arriveAt) {
+        if (trip.arriveAt)
+          throw new Error("The arrival time is already recorded for this trip.");
+        if (arriveAt < trip.pickupAt)
+          throw new Error("The arrival time cannot be before the pickup time.");
+        trip.arriveAt = arriveAt;
+        trip.arrivalRecordedAt = at;
+      }
+      if (photo) {
+        if (trip.photo) throw new Error("This trip already has a photo.");
+        trip.photo = photo;
+        trip.photoRecordedAt = at;
+      }
+      log(
+        "trip:" + trip.id,
+        arriveAt ? "Trip arrival logged" : "Trip photo added",
+        [
+          arriveAt ? "Arrival " + toMyt(arriveAt).replace("T", " ") : "",
+          photo ? "photo attached" : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        { performer: trip.driver, ...(arriveAt ? { occurredAt: arriveAt } : {}) },
+      );
+      break;
+    }
     case "close": {
       allow("production", "intake", "outbound");
       const date = str("date"),
@@ -2358,6 +2470,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     (s.adypocideReceipts?.length ?? 0) > 500 ||
     (s.sortCounts?.length ?? 0) > 1000 ||
     s.notes.length > 200 ||
+    (s.trips?.length ?? 0) > 500 ||
     (s.machines?.length ?? 0) > 300
   )
     throw new Error(

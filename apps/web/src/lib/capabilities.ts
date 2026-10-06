@@ -16,7 +16,9 @@ export type Capability =
   | "review.comment"
   | "feedback.post"
   | "day.close"
-  | "members.manage";
+  | "members.manage"
+  | "trips.log"
+  | "trips.read";
 export type MemberRole =
   | "production"
   | "intake"
@@ -25,8 +27,7 @@ export type MemberRole =
   | "hr"
   | "management"
   | "packer"
-  | "driver"
-  | "assistant";
+  | "driver";
 export const memberRoles: MemberRole[] = [
   "production",
   "intake",
@@ -36,7 +37,6 @@ export const memberRoles: MemberRole[] = [
   "management",
   "packer",
   "driver",
-  "assistant",
 ];
 /** Only these roles may hold an all-sites membership. */
 export const crossSiteRoles: MemberRole[] = ["admin", "hr", "management"];
@@ -68,13 +68,15 @@ export const roleCapabilities: Record<MemberRole, Capability[]> = {
     "day.close",
     "feedback.post",
     "members.manage",
+    "trips.read",
   ],
   admin: ["orders.import", "orders.enter", "sources.read", "feedback.post"],
   hr: ["members.manage", "feedback.post"],
-  management: ["review.comment", "sources.read", "feedback.post"],
+  management: ["review.comment", "sources.read", "feedback.post", "trips.read"],
   packer: ["feedback.post"],
-  driver: ["feedback.post"],
-  assistant: ["feedback.post"],
+  // Drivers log their own trips (assistant, pickup/arrival time, photo). One role covers
+  // the whole crew: the assistant is recorded by name on the trip, not as a separate login.
+  driver: ["trips.log", "feedback.post"],
 };
 export const commandRules: Record<
   string,
@@ -127,12 +129,14 @@ export const commandRules: Record<
   review: { capability: "review.comment", stateKeys: ["notes", "events"] },
   feedback: { capability: "feedback.post", stateKeys: ["notes"] },
   close: { capability: "day.close", stateKeys: ["closedDays", "events"] },
+  trip: { capability: "trips.log", stateKeys: ["trips", "events"] },
+  "trip-update": { capability: "trips.log", stateKeys: ["trips", "events"] },
 };
 export const grantableRoles: Partial<Record<MemberRole, MemberRole[]>> = {
   hr: [...memberRoles],
-  production: ["packer", "driver", "assistant"],
-  intake: ["packer", "driver", "assistant"],
-  outbound: ["packer", "driver", "assistant"],
+  production: ["packer", "driver"],
+  intake: ["packer", "driver"],
+  outbound: ["packer", "driver"],
 };
 /** Role ceiling, optionally narrowed by the site's policy for that role. */
 export function effectiveCapabilities(
