@@ -17,8 +17,8 @@ Actual performer and authenticated recorder stay separate throughout.
 | Office admin | site or all sites | order/AWB import and release, order entry, read sources, feedback |
 | HR | site or all sites | memberships (all roles, all sites), site capability policy, feedback |
 | Management | site or all sites | review comments, read sources, read driver trips, feedback |
-| Driver | one site | log their own trips (see [driver trips](#driver-trips)), view, feedback |
-| Packer | one site | view and feedback only |
+| Driver | one site | log trips on the shared driver sign-in, naming the driver (see [driver trips](#driver-trips)), view, feedback |
+| Packer | one site | record their own first packed count after unlocking their profile with a PIN (see [shared packer sign-in](#shared-packer-sign-in-and-pins)), view, feedback |
 
 \* Supervisors may grant or revoke only packer and driver memberships at their own site. "All access" never includes production corrections, stock adjustments, audit history or
 permission changes; those stay with the capabilities above. The catalogue lives in
@@ -159,12 +159,20 @@ and logs each trip; the assistant is recorded by name on the trip and does not s
 Migration `20261006090000_operator_driver_trips.sql` converts any existing `assistant`
 memberships to `driver` and removes the separate role.
 
-- **Log a trip** (`trip`, capability `trips.log`): assistant driver name (optional — blank when
-  driving alone), pickup time, arrival time (optional), photo (optional) and a short note.
-  Times are actual Malaysia times and cannot be in the future.
-- **Log arrival / add photo** (`trip-update`): the same driver adds the arrival time or photo
-  later, for example on arrival. Only missing values can be added; recorded values never change.
-- The driver is always the signed-in recorder; nobody can log a trip for another driver.
+Owner decision (2026-10-06, later): drivers change often, so they **share one driver sign-in**
+per site and type their name on every trip (free text for now; a pick list once there is
+enough data).
+
+- **Log a trip** (`trip`, capability `trips.log`): driver name (required, up to 100
+  characters), assistant driver name (optional — blank when driving alone), pickup time,
+  arrival time (optional), photo (optional) and a short note. Times are actual Malaysia times
+  and cannot be in the future.
+- **Log arrival / add photo** (`trip-update`): the sign-in that logged the trip adds the
+  arrival time or photo later, for example on arrival. Only missing values can be added;
+  recorded values never change.
+- The signed-in account is always the recorder (`recordedBy`); the typed driver name is the
+  performer. On a shared sign-in the name is a declaration, not proof of identity, and any
+  driver using that sign-in can add a missing arrival or photo to its trips.
 - Stock-out supervisors and management (`trips.read`) see every trip and photo at the site.
   Drivers see their own trips and photos.
 - Database invariants: trips are never removed; recorded trip fields are fixed; only the
@@ -175,8 +183,43 @@ memberships to `driver` and removes the separate role.
   (5 MB limit). `/api/trip-photos` signs uploads for drivers and 60-second read URLs for the
   driver or `trips.read` holders; storage RLS enforces the same rules. The fictional sandbox
   uses `trip-draft-photos/<account id>/…`.
-- Not included: supervisor correction of a mistaken trip time (there is no edit path yet),
-  vehicle or route fields, and links between trips and courier handovers.
+- Not included: supervisor correction of a mistaken trip time or driver name (there is no edit
+  path yet), vehicle or route fields, and links between trips and courier handovers.
+
+## Shared packer sign-in and PINs
+
+Owner decision (2026-10-06): packers **share one packer sign-in** per site. The stock-out
+supervisor sets up a profile and a PIN for each packer. On the shared sign-in a packer taps
+their name, enters their own PIN, sees only the AWBs assigned to them and records what they
+packed. The supervisor still corrects saved counts and reviews the daily tally. Migration
+`20261008090000_operator_packer_self_entry.sql`.
+
+- **Profiles** (`staff-profile-create`, `staff-profile-update`; capability `members.manage`,
+  allowed for the stock-out supervisor and HR): name, active flag, created by/at, in workspace
+  state (`staffProfiles`). Active packer names are unique (case-insensitive). Deactivated
+  packers cannot be assigned or unlock; their recorded work stays. Packing station → Packer
+  profiles & PINs.
+- **PINs** (4–6 digits) are never in workspace state, which every member of the site can read.
+  They are bcrypt hashes in `operator_private.staff_pins`, reachable only through
+  `operator_set_staff_pin` (stock-out supervisor or HR at that site), `operator_verify_staff_pin`
+  (`packing.record` holders) and `operator_staff_pin_status` (no hashes). Five wrong PINs in a
+  row lock that profile for 15 minutes; a new PIN from the supervisor clears the lock.
+- **Unlock**: `/api/packer-session` checks the PIN through the database and sets an HttpOnly,
+  SameSite=Strict cookie, signed with a key derived from `OPERATOR_COMMIT_SECRET`, for that
+  profile, account and site. It slides with each save and ends after 10 minutes without one.
+  The phone also locks after 3 minutes without a touch, and on **Done**.
+- **Own count** (`pack-own`, capability `packing.record`, scope `{orders,events}`): the server
+  takes the packer only from the unlocked session, never from the request. It allows a first
+  count only, only for an AWB assigned to that profile; the packer is recorded as packer and AWB
+  attacher, the shared account as recorder. Corrections stay `correct` (stock-out supervisor).
+  The supervisor's own `pack` entry is unchanged.
+- Limits: picking a name plus a PIN shows who claims the work, not a verified identity; a
+  shared PIN is as good as the person's own, so set a new one when it leaks. Anyone with the
+  shared password can lock a profile with wrong PINs (the supervisor unlocks it). All packers
+  saving at once still share one site document and revision (#10): saves made at the same
+  moment get "a teammate saved first" and must be repeated.
+- Rollout: apply the migration before deploying the app. Until then the app fails closed
+  (unlock answers 503; `pack-own` is refused by the database).
 
 ## Factory scope (production supervisors)
 
@@ -279,7 +322,8 @@ commit;
 - `pnpm test` — domain, capability-parity and command-scope tests.
 - `scripts/verify-migrations-local.sh` — applies all migrations to a disposable Postgres with
   stub `auth`/`storage` schemas, runs `supabase/tests/operator_access.test.sql` (bypass,
-  signatures, invariants, capabilities, memberships, storage policies, trips, factory scope),
+  signatures, invariants, capabilities, memberships, storage policies, trips, factory scope,
+  packer PINs),
   rehearses rollback and re-applies.
 - `tests/integration/run-real-stack.sh` — real GoTrue, PostgREST and Storage API on a local
   Postgres behind `router.mjs` (prefix routing and CORS, as Kong does), with the production
@@ -287,7 +331,8 @@ commit;
 
 ## Rollback
 
-Run `supabase/rollback/20261007090000_operator_factory_scope.down.sql`, then
+Run `supabase/rollback/20261008090000_operator_packer_self_entry.down.sql` (deletes every packer
+PIN), then `supabase/rollback/20261007090000_operator_factory_scope.down.sql`, then
 `20261006090000_operator_driver_trips.down.sql`, then
 `20261005090000_operator_trusted_commands.down.sql`, then
 `20261004090000_operator_memberships.down.sql`, after exporting operational state,

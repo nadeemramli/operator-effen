@@ -135,10 +135,11 @@ are never converted into box inventory. Previously counted boxes remain stock.
   Issue stock from a rack carton to selected AWBs, then assign them to a packer.
   Each issue retains carton/batch traceability. Bulk issues fill remaining AWB demand
   in displayed order; they cannot overdraw stock or silently allocate excess units.
-- **Packing station:** The stock-out supervisor selects a packer and records the
-  actual packed count for that packer. Unassigned AWBs are rejected; a different actual
-  packer needs a reason. Packers do not save records. Saved counts require a supervisor
-  correction.
+- **Packing station:** On the shared packer sign-in, each packer taps their name, enters
+  their own PIN and records the actual packed count for the AWBs assigned to them. The
+  stock-out supervisor sets up packer profiles and PINs, can also record for a packer (a
+  different actual packer needs a reason), and corrects saved counts. Unassigned AWBs are
+  rejected. See [shared packer sign-in](docs/sv-entry-and-sachet-route.md#shared-packer-sign-in-and-pins).
 - **Daily tally:** Compare required units, supervisor count, issued stock and actual
   packed units per product and per assigned packer. Missing entries and mismatched
   AWBs remain visible even if opposite errors cancel in the aggregate. Each count
@@ -178,9 +179,9 @@ rollout separate until the owner supplies the roster and access administrator.
 
 ### Driver trips
 
-Driver and assistant driver are one role. Drivers sign in and log their own trips: the
-assistant driver's name, pickup time, arrival time and a photo; the arrival and photo can be
-added later. Stock-out supervisors and management review every trip at the site. See
+Driver and assistant driver are one role. Drivers share one sign-in and log each trip with
+the driver's and assistant driver's names, pickup time, arrival time and a photo; the
+arrival and photo can be added later. Stock-out supervisors and management review every trip at the site. See
 [driver trips](docs/sv-entry-and-sachet-route.md#driver-trips).
 
 ### Production PIC planning and changes
