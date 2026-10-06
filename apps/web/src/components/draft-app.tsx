@@ -37,7 +37,7 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { ProductionWorkspace, ProcessPicHistory } from "./production-workspace";
-import { MachineRegistry, SachetProductionRecords } from "./sachet-records";
+import { SachetProductionRecords } from "./sachet-records";
 import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { channels } from "@/lib/awb-import";
@@ -1735,11 +1735,7 @@ export function DraftApp() {
             pic={can("stage.record") || can("stage.correct") ? pic : undefined}
             role={role}
             onTrace={(id) => setTrace(id)}
-          />
-          <MachineRegistry
-            state={state}
-            lang={lang}
-            show={can("machines.manage") ? show : undefined}
+            machineShow={can("machines.manage") ? show : undefined}
           />
           <div className="page-actions">
             <Button variant="outline" onClick={closeDay}>

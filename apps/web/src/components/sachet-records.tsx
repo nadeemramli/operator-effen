@@ -7,10 +7,19 @@ import {
   ChevronRight,
   Plus,
   Search,
+  Settings,
   Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { PersonBadge } from "./person-profile";
 import { Empty, Panel, ProductName, type Field, type FormSpec } from "./draft-primitives";
 import {
@@ -639,10 +648,13 @@ export function MachineRegistry({
   state,
   lang,
   show,
+  embedded = false,
 }: {
   state: Draft;
   lang: Lang;
   show?: Show;
+  /** Render without the panel frame, for the Stock-in settings sheet. */
+  embedded?: boolean;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [query, setQuery] = useState("");
@@ -688,54 +700,48 @@ export function MachineRegistry({
       hidden: { id: m.id, expectedVersion: m.version },
       fields: [reasonField(lang)],
     });
-  return (
-    <Panel
-      title={t("Sachet machines", "Mesin sachet")}
-      detail={t(
-        "Physical machines at this site, by the stage they perform. Production and Stock-in share this list.",
-        "Mesin fizikal di tapak ini, mengikut peringkat. Pengeluaran dan Stok masuk berkongsi senarai ini.",
-      )}
-      action={
-        show && (
-          <Button
-            variant="outline"
-            onClick={() =>
-              show({
-                type: "machine-create",
-                title: t("Add a machine", "Tambah mesin"),
-                description: t(
-                  "A name is enough. Search the list first to avoid duplicates.",
-                  "Nama sudah memadai. Cari senarai dahulu untuk elak pendua.",
-                ),
-                fields: [
-                  {
-                    name: "stage",
-                    label: t("Stage it performs", "Peringkat"),
-                    type: "select",
-                    options: stageOptions,
-                  },
-                  { name: "name", label: t("Machine name", "Nama mesin") },
-                  {
-                    name: "code",
-                    label: t("Asset code / label", "Kod aset / label"),
-                    required: false,
-                  },
-                ],
-              })
-            }
-          >
-            <Plus size={15} />
-            {t("Add machine", "Tambah mesin")}
-          </Button>
-        )
+  const add = show && (
+    <Button
+      variant="outline"
+      onClick={() =>
+        show({
+          type: "machine-create",
+          title: t("Add a machine", "Tambah mesin"),
+          description: t(
+            "A name is enough. Search the list first to avoid duplicates.",
+            "Nama sudah memadai. Cari senarai dahulu untuk elak pendua.",
+          ),
+          fields: [
+            {
+              name: "stage",
+              label: t("Stage it performs", "Peringkat"),
+              type: "select",
+              options: stageOptions,
+            },
+            { name: "name", label: t("Machine name", "Nama mesin") },
+            {
+              name: "code",
+              label: t("Asset code / label", "Kod aset / label"),
+              required: false,
+            },
+          ],
+        })
       }
     >
-      <PanelSearch
-        value={query}
-        onChange={setQuery}
-        placeholder={t("Find a machine…", "Cari mesin…")}
-        label={t("Find a machine", "Cari mesin")}
-      />
+      <Plus size={15} />
+      {t("Add machine", "Tambah mesin")}
+    </Button>
+  );
+  const search = (
+    <PanelSearch
+      value={query}
+      onChange={setQuery}
+      placeholder={t("Find a machine…", "Cari mesin…")}
+      label={t("Find a machine", "Cari mesin")}
+    />
+  );
+  const list = (
+    <>
       {machines.length ? (
         <div className="table-scroll">
           <table>
@@ -794,7 +800,80 @@ export function MachineRegistry({
           )}
         </Empty>
       )}
+    </>
+  );
+  if (embedded)
+    return (
+      <>
+        <div className="machine-sheet-toolbar">
+          {search}
+          {add}
+        </div>
+        {list}
+      </>
+    );
+  return (
+    <Panel
+      title={t("Sachet machines", "Mesin sachet")}
+      detail={t(
+        "Physical machines at this site, by the stage they perform. Production and Stock-in share this list.",
+        "Mesin fizikal di tapak ini, mengikut peringkat. Pengeluaran dan Stok masuk berkongsi senarai ini.",
+      )}
+      action={add}
+    >
+      {search}
+      {list}
     </Panel>
+  );
+}
+
+/** Compact entry point to the shared machine list, for pages where it is secondary. */
+export function MachineSettings({
+  state,
+  lang,
+  show,
+}: {
+  state: Draft;
+  lang: Lang;
+  show?: Show;
+}) {
+  const t = (en: string, ms: string) => tr(lang, en, ms);
+  const [open, setOpen] = useState(false);
+  const label = t("Sachet machines", "Mesin sachet");
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetTrigger asChild>
+        <Button variant="outline" size="icon-sm" aria-label={label} title={label}>
+          <Settings />
+        </Button>
+      </SheetTrigger>
+      <SheetContent className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
+        <SheetHeader className="border-b px-[23px] py-5 pr-12">
+          <SheetTitle>{label}</SheetTitle>
+          <SheetDescription className="text-xs">
+            {t(
+              "Physical machines at this site, by the stage they perform. Production and Stock-in share this list.",
+              "Mesin fizikal di tapak ini, mengikut peringkat. Pengeluaran dan Stok masuk berkongsi senarai ini.",
+            )}
+          </SheetDescription>
+        </SheetHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <MachineRegistry
+            embedded
+            state={state}
+            lang={lang}
+            show={
+              show &&
+              ((spec) => {
+                // The form dialog opens outside this sheet, so close it first.
+                setOpen(false);
+                show(spec);
+              })
+            }
+          />
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -806,6 +885,7 @@ export function SachetProductionRecords({
   pic,
   role,
   onTrace,
+  machineShow,
 }: {
   state: Draft;
   lang: Lang;
@@ -813,6 +893,8 @@ export function SachetProductionRecords({
   pic?: Pic;
   role?: Role;
   onTrace: (id: string) => void;
+  /** Present when the viewer may add or change machines. */
+  machineShow?: Show;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [query, setQuery] = useState("");
@@ -831,6 +913,7 @@ export function SachetProductionRecords({
         "The same machine and PIC records Production sees. Changes here are saved once, to the shared batch record, and never create stock.",
         "Rekod mesin dan PIC yang sama seperti Pengeluaran. Perubahan disimpan sekali pada rekod kelompok bersama dan tidak mencipta stok.",
       )}
+      action={<MachineSettings state={state} lang={lang} show={machineShow} />}
     >
       <PanelSearch
         value={query}

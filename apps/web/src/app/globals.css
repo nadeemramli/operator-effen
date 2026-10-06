@@ -2744,3 +2744,14 @@ td.actions {
     width: auto;
   }
 }
+.machine-sheet-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 23px;
+  border-bottom: 1px solid var(--border);
+}
+.machine-sheet-toolbar > .panel-search {
+  flex: 1;
+  border-bottom: 0;
+}
