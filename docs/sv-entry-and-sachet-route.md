@@ -259,16 +259,20 @@ commit;
 - Memberships (direct bootstrap inserts, each with an `operator_membership_audit` row):
   Production SV Faris (capsule) and Helmi (sachet); Stock-in SV Nurul; Stock-out SV Nadia;
   Office admin Hadera; Management, all sites: Nadeem and the shared `team@` account.
-- No user yet for HR, Packer or Driver. Without HR, membership changes need the SQL bootstrap.
+- Added later on 2026-10-06 (direct inserts, audit rows backfilled the same day): HR (`hr@`,
+  site scope), Driver (`driver@`) and Packers (`packers@`), all at site `operator`. Driver and
+  Packers are shared accounts, so trips and packer views are not attributed to an individual.
+  HR is site-scoped: it can grant and revoke memberships at `operator`, but setting a factory
+  scope or granting all-sites access needs an all-sites HR membership, so those still need the
+  owner's SQL.
 - The fictional preview flag (`ui_draft_access`) was removed from those seven accounts. Their
   old sandbox rows remain in `ui_draft_workspaces` but are no longer reachable.
 - `OPERATOR_COMMIT_SECRET` is set for Vercel Production only. Vercel Preview and Development
   Supabase variables point at a placeholder, so preview builds cannot reach live data; give
   them a separate staging project to re-enable them.
-- Known limit accepted for go-live: production supervisors are not limited to one factory;
-  Faris and Helmi can both record capsule and sachet batches. Addressed by
-  `20261007090000_operator_factory_scope.sql` (see "Factory scope"); not yet applied to
-  `operator-effen` — awaiting the owner's go-ahead and the scope assignment script.
+- Factory scope: `20261007090000_operator_factory_scope.sql` is applied, and on 2026-10-06 the
+  owner-approved scope assignment (see "Factory scope") limited Faris to the bottle (capsule)
+  factory and Helmi to the sachet factory, each with an audited `change` row.
 
 ## Verification
 
