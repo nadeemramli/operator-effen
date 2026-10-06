@@ -5,6 +5,7 @@ import {
   type Capability,
   type MemberRole,
 } from "./capabilities.ts";
+import { products, type Batch } from "./draft.ts";
 
 /**
  * Server-side authorization and commit signing for workspace members (OPER-2/4/5).
@@ -43,6 +44,70 @@ export function outOfScopeKeys(
       !scope.has(key) &&
       JSON.stringify(before[key]) !== JSON.stringify(after[key]),
   );
+}
+
+export const factories = ["bottle", "sachet"] as const;
+/** A production supervisor's factory scope; absent = both factories. */
+export type Factory = (typeof factories)[number];
+export const asFactory = (value: unknown): Factory | undefined =>
+  factories.find((f) => f === value);
+const productFactory = (productId: unknown) =>
+  products.find((p) => p.id === productId)?.factory;
+const factoryName = (factory: Factory) =>
+  factory === "sachet" ? "sachet" : "bottle (capsule)";
+export class AccessDenied extends Error {}
+
+/**
+ * Fails fast, before the domain rules run, when a factory-scoped member targets the other
+ * factory: the batch being planned (`product`) or changed (`id`), or the machine register
+ * (sachet route equipment). outOfFactory() re-checks the resulting state.
+ */
+export function factoryDenial(
+  factory: Factory | undefined,
+  type: string,
+  input: Record<string, unknown>,
+  batches: readonly Batch[],
+): string | null {
+  if (!factory) return null;
+  const denial = `Your access covers the ${factoryName(factory)} factory only. Ask that factory's supervisor to record this.`;
+  if (commandRules[type]?.stateKeys.includes("machines") && factory !== "sachet")
+    return "Machines belong to the sachet factory. " + denial;
+  if (!commandRules[type]?.stateKeys.includes("batches")) return null;
+  if (type === "batch")
+    return productFactory(input.product) === factory ? null : denial;
+  // An unknown batch is reported by the domain rules ("could not be found").
+  const batch = batches.find((b) => b.id === input.id);
+  return !batch || productFactory(batch.product) === factory ? null : denial;
+}
+
+/**
+ * Batch codes a transition added, changed or removed outside the member's factory, plus
+ * "machines" when a bottle-scoped member changed the machine register. Mirrors
+ * operator_private.assert_factory_scope; fails closed on unknown products.
+ */
+export function outOfFactory(
+  factory: Factory | undefined,
+  before: { batches?: Batch[]; machines?: unknown[] },
+  after: { batches?: Batch[]; machines?: unknown[] },
+): string[] {
+  if (!factory) return [];
+  const versions = (list?: Batch[]) =>
+    new Map((list ?? []).map((b) => [JSON.stringify(b), b]));
+  const old = versions(before.batches),
+    next = versions(after.batches);
+  const changed = [
+    ...[...next].filter(([text]) => !old.has(text)),
+    ...[...old].filter(([text]) => !next.has(text)),
+  ].map(([, b]) => b);
+  const outside = changed
+    .filter((b) => productFactory(b?.product) !== factory)
+    .map((b) => String(b?.code ?? b?.id));
+  if (
+    factory !== "sachet" &&
+    JSON.stringify(before.machines ?? []) !== JSON.stringify(after.machines ?? [])
+  )
+    outside.push("machines");
+  return [...new Set(outside)];
 }
 
 const canonical = (value: unknown): unknown =>

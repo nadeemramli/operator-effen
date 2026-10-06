@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { asFactory, type Factory } from "@/lib/access";
 import { effectiveCapabilities, type Capability } from "@/lib/capabilities";
 import { authCookieOptions, SESSION_ONLY_COOKIE } from "./remember";
 
@@ -40,6 +41,7 @@ type MembershipRow = {
   scope: "site" | "all-sites";
   staff_profile_id: string | null;
   display_name: string;
+  factory?: string | null;
 };
 /** One site the signed-in member can open, with the capabilities they hold there. */
 export type Membership = {
@@ -51,6 +53,8 @@ export type Membership = {
   staffProfileId?: string;
   displayName: string;
   capabilities: Capability[];
+  /** Production supervisors limited to one factory; absent = both factories. */
+  factory?: Factory;
 };
 // The membership tables may not exist yet on a backend that has not had the
 // reviewed migrations applied; that backend only serves the fictional preview.
@@ -79,12 +83,18 @@ export async function resolveAccess(existing?: Db): Promise<
   } = await db.auth.getUser();
   if (!user)
     return { status: 401, db, user: null, error: "Please sign in again." };
-  const result = await db
-    .from("operator_memberships")
-    .select("workspace_id,role,scope,staff_profile_id,display_name")
-    .eq("user_id", user.id)
-    .eq("active", true)
-    .is("revoked_at", null);
+  const columns = "workspace_id,role,scope,staff_profile_id,display_name";
+  const query = (select: string) =>
+    db
+      .from("operator_memberships")
+      .select(select)
+      .eq("user_id", user.id)
+      .eq("active", true)
+      .is("revoked_at", null);
+  let result = await query(columns + ",factory");
+  // Before 20261007090000_operator_factory_scope is applied there is no factory column and
+  // nobody is limited to one factory; the database enforces the scope once it exists.
+  if (result.error?.code === "42703") result = await query(columns);
   if (result.error && !missingRelation(result.error.code))
     return {
       status: 503,
@@ -92,7 +102,7 @@ export async function resolveAccess(existing?: Db): Promise<
       user: null,
       error: "Unable to check your workspace access.",
     };
-  const rows = (result.data ?? []) as MembershipRow[];
+  const rows = (result.data ?? []) as unknown as MembershipRow[];
   let memberships: Membership[] = [];
   if (rows.length) {
     // RLS returns only the workspaces this user may open.
@@ -122,6 +132,7 @@ export async function resolveAccess(existing?: Db): Promise<
               staffProfileId: row.staff_profile_id ?? undefined,
               displayName: row.display_name,
               capabilities: effectiveCapabilities(row.role, w.write_policy),
+              factory: asFactory(row.factory),
             },
           ]
         : [];

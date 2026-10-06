@@ -96,8 +96,11 @@ export function ProductionWorkspace({
   number,
   closeDay,
   role,
+  factoryScope,
 }: {
   role: Role;
+  /** The signed-in supervisor's factory; the view and planning stay inside it. */
+  factoryScope?: "bottle" | "sachet";
   state: Draft;
   lang: Lang;
   busy: boolean;
@@ -120,7 +123,12 @@ export function ProductionWorkspace({
       : "log";
   const rawFactory = params.get("factory");
   const factory =
-    rawFactory === "bottle" || rawFactory === "sachet" ? rawFactory : "all";
+    factoryScope ??
+    (rawFactory === "bottle" || rawFactory === "sachet" ? rawFactory : "all");
+  const factoryLabel =
+    factory === "sachet"
+      ? t("Sachet factory", "Kilang sachet")
+      : t("Bottle factory", "Kilang botol");
   const selectedId = params.get("batch");
   const selected = state.batches.find((b) => b.id === selectedId);
   const workDate = selected?.date ?? params.get("date") ?? today();
@@ -206,21 +214,28 @@ export function ProductionWorkspace({
         </div>
       )}
       <div className="toolbar">
-        <div className="segmented">
-          {[
-            ["all", t("All factories", "Semua kilang")],
-            ["bottle", t("Bottle factory", "Kilang botol")],
-            ["sachet", t("Sachet factory", "Kilang sachet")],
-          ].map(([id, label]) => (
-            <button
-              key={id}
-              className={factory === id ? "selected" : ""}
-              onClick={() => setFactory(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        {factoryScope ? (
+          <div className="inline-label">
+            <Factory size={15} />
+            {factoryLabel}
+          </div>
+        ) : (
+          <div className="segmented">
+            {[
+              ["all", t("All factories", "Semua kilang")],
+              ["bottle", t("Bottle factory", "Kilang botol")],
+              ["sachet", t("Sachet factory", "Kilang sachet")],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                className={factory === id ? "selected" : ""}
+                onClick={() => setFactory(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
         <Button className="action-primary" onClick={newBatch}>
           <Plus size={16} />
           {t("Plan batch", "Rancang kelompok")}
@@ -497,27 +512,33 @@ export function ProductionWorkspace({
               t("Find, add or retire machines", "Cari, tambah atau tamatkan mesin"),
             ],
           ] as const
-        ).map(([id, Icon, title, detail]) => (
-          <Link
-            key={id}
-            href={href(id)}
-            aria-current={tab === id ? "page" : undefined}
-          >
-            <Icon size={19} />
-            <span>
-              <strong>{title}</strong>
-              <small>{detail}</small>
-            </span>
-          </Link>
-        ))}
+        )
+          // The machine register is sachet-route equipment.
+          .filter(([id]) => id !== "machines" || factoryScope !== "bottle")
+          .map(([id, Icon, title, detail]) => (
+            <Link
+              key={id}
+              href={href(id)}
+              aria-current={tab === id ? "page" : undefined}
+            >
+              <Icon size={19} />
+              <span>
+                <strong>{title}</strong>
+                <small>{detail}</small>
+              </span>
+            </Link>
+          ))}
       </nav>
-      {tab === "machines" ? (
+      {tab === "machines" && factoryScope !== "bottle" ? (
         <MachineRegistry state={state} lang={lang} show={show} />
       ) : tab === "plan" ? (
         <BatchPlanForm
           lang={lang}
           busy={busy}
           defaultProduct={factory === "sachet" ? "ady" : "cav"}
+          productIds={products
+            .filter((p) => !factoryScope || p.factory === factoryScope)
+            .map((p) => p.id)}
           backHref={href("log")}
           defaultDate={workDate}
           peopleOptions={pic().options ?? []}
@@ -592,22 +613,24 @@ export function ProductionWorkspace({
                   )}
                 />
               </label>
-              <select
-                className="compact-select"
-                aria-label={t("Factory filter", "Tapis kilang")}
-                value={factory}
-                onChange={(e) => setFactory(e.target.value)}
-              >
-                <option value="all">
-                  {t("All factories", "Semua kilang")}
-                </option>
-                <option value="bottle">
-                  {t("Bottle factory", "Kilang botol")}
-                </option>
-                <option value="sachet">
-                  {t("Sachet factory", "Kilang sachet")}
-                </option>
-              </select>
+              {!factoryScope && (
+                <select
+                  className="compact-select"
+                  aria-label={t("Factory filter", "Tapis kilang")}
+                  value={factory}
+                  onChange={(e) => setFactory(e.target.value)}
+                >
+                  <option value="all">
+                    {t("All factories", "Semua kilang")}
+                  </option>
+                  <option value="bottle">
+                    {t("Bottle factory", "Kilang botol")}
+                  </option>
+                  <option value="sachet">
+                    {t("Sachet factory", "Kilang sachet")}
+                  </option>
+                </select>
+              )}
               <select
                 className="compact-select"
                 aria-label={t("Batch status", "Status kelompok")}
@@ -829,6 +852,7 @@ function BatchPlanForm({
   lang,
   busy,
   defaultProduct,
+  productIds,
   defaultDate,
   peopleOptions,
   backHref,
@@ -837,6 +861,8 @@ function BatchPlanForm({
   lang: Lang;
   busy: boolean;
   defaultProduct: string;
+  /** Products this supervisor may plan. */
+  productIds: string[];
   defaultDate: string;
   peopleOptions: { value: string; label: string }[];
   backHref: string;
@@ -894,11 +920,13 @@ function BatchPlanForm({
                 value={productId}
                 onChange={(e) => setProductId(e.target.value)}
               >
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
+                {products
+                  .filter((p) => productIds.includes(p.id))
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
               </select>
             </div>
             <div>
