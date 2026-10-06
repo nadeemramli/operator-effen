@@ -303,6 +303,7 @@ const readPending = (): PendingSave | null => {
     return null;
   }
 };
+const VIEW_AS_KEY = "operator-view-as";
 const viewRole = (role?: string): Role =>
   roles.some((r) => r.id === role) ? (role as Role) : "packer";
 
@@ -314,6 +315,8 @@ export function DraftApp() {
     >([]),
     [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
   const member = actor?.kind === "member";
+  // Management members may look through any role's screens; their access stays Management.
+  const canViewAs = member && actor?.role === "management";
   const router = useRouter(),
     params = useSearchParams();
   const [lang, setLang] = useState<Lang>("en"),
@@ -343,6 +346,9 @@ export function DraftApp() {
   const can = (capability: string) => caps.includes(capability);
   const operational = caps.some((c) => c !== "feedback.post");
   const allowed = navigation.filter((n) => n.roles.includes(role));
+  const viewingAs = canViewAs && role !== "management";
+  const roleName = (id?: string) =>
+    roles.find((r) => r.id === id)?.[lang === "ms" ? "ms" : "en"] ?? id;
   const requested = (
     params.get("view") === "outbound" ? "orders" : params.get("view")
   ) as View;
@@ -356,7 +362,7 @@ export function DraftApp() {
   };
   const changeRole = (next: Role) => {
     setRole(next);
-    localStorage.setItem("operator-role", next);
+    localStorage.setItem(member ? VIEW_AS_KEY : "operator-role", next);
     setQuery("");
     setTrace(null);
     setForm(null);
@@ -389,7 +395,15 @@ export function DraftApp() {
       setActor(data.actor ?? null);
       setWorkspaces(data.workspaces ?? []);
       // Members act only in their server-assigned role; the preview switcher is ignored.
-      if (data.actor?.kind === "member") setRole(viewRole(data.actor.role));
+      // Management may keep a "view as" lens, which never changes what they can save.
+      if (data.actor?.kind === "member") {
+        const viewAs = localStorage.getItem(VIEW_AS_KEY);
+        setRole(
+          data.actor.role === "management" && roles.some((r) => r.id === viewAs)
+            ? (viewAs as Role)
+            : viewRole(data.actor.role),
+        );
+      }
       setPendingSave(readPending());
       setError("");
     } catch (e) {
@@ -413,6 +427,10 @@ export function DraftApp() {
     input: Record<string, unknown>,
     retry?: PendingSave,
   ) {
+    if (viewingAs) {
+      setError(viewOnlyMessage());
+      return null;
+    }
     setBusy(true);
     setFormError("");
     setError("");
@@ -521,9 +539,18 @@ export function DraftApp() {
       setBusy(false);
     }
   }
+  const viewOnlyMessage = () =>
+    t(
+      `You are viewing as ${roleName(role)}. Switch back to Management to make changes.`,
+      `Anda melihat sebagai ${roleName(role)}. Tukar kembali ke Pengurusan untuk membuat perubahan.`,
+    );
   function show(spec: FormSpec) {
     setFormError("");
     setNotice("");
+    if (viewingAs) {
+      setError(viewOnlyMessage());
+      return;
+    }
     setForm(spec);
   }
   const pic = (
@@ -2468,15 +2495,28 @@ export function DraftApp() {
               <ShieldCheck size={14} />
               {t("SIGNED IN", "LOG MASUK")}
               <span className="strip-detail">
-                {actor?.name} ·{" "}
-                {roles.find((r) => r.id === actor?.role)?.[
-                  lang === "ms" ? "ms" : "en"
-                ] ?? actor?.role}{" "}
-                · {actor?.workspaceName}
-                {!operational &&
+                {actor?.name} · {roleName(actor?.role)} ·{" "}
+                {actor?.workspaceName}
+                {(!operational || viewingAs) &&
                   " · " + t("view only", "lihat sahaja")}
               </span>
             </span>
+            {canViewAs && (
+              <label htmlFor="view-as">
+                {t("View as", "Lihat sebagai")}
+                <select
+                  id="view-as"
+                  value={role}
+                  onChange={(e) => changeRole(e.target.value as Role)}
+                >
+                  {roles.map((r) => (
+                    <option value={r.id} key={r.id}>
+                      {r[lang === "ms" ? "ms" : "en"]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {workspaces.length > 1 && (
               <label htmlFor="site-switch">
                 {t("Site", "Tapak")}
