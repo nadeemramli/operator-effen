@@ -39,13 +39,35 @@ export function LoginForm({ expired = false }: { expired?: boolean }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(values),
       });
-      if (!response.ok)
+      if (!response.ok) {
+        const { reason } = await response.json().catch(() => ({}));
         throw new Error(
-          t(
-            "The username or password is incorrect. Please try again.",
-            "Nama pengguna atau kata laluan tidak betul. Sila cuba lagi.",
-          ),
+          reason === "no-access"
+            ? t(
+                "Your password is correct, but this account has not been given Operator access yet. Ask Nadeem to enable it.",
+                "Kata laluan anda betul, tetapi akaun ini belum diberi akses Operator. Minta Nadeem mengaktifkannya.",
+              )
+            : reason === "unconfirmed"
+              ? t(
+                  "This account's email address has not been confirmed yet. Ask Nadeem to confirm it.",
+                  "Alamat e-mel akaun ini belum disahkan. Minta Nadeem mengesahkannya.",
+                )
+              : reason === "rate-limited"
+                ? t(
+                    "Too many attempts. Wait a minute, then try again.",
+                    "Terlalu banyak cubaan. Tunggu seminit, kemudian cuba lagi.",
+                  )
+                : reason === "unavailable"
+                  ? t(
+                      "Operator could not check your access right now. Please try again shortly.",
+                      "Operator tidak dapat menyemak akses anda sekarang. Sila cuba sebentar lagi.",
+                    )
+                  : t(
+                      "The username or password is incorrect. Please try again.",
+                      "Nama pengguna atau kata laluan tidak betul. Sila cuba lagi.",
+                    ),
         );
+      }
       router.replace("/");
       router.refresh();
     } catch (error) {

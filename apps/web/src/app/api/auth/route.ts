@@ -33,12 +33,20 @@ export async function POST(request: NextRequest) {
   const access = error ? null : await resolveAccess(db);
   if (error || access?.status !== 200) {
     if (data.session) await db.auth.signOut({ scope: "local" });
+    // Only a caller who already proved the password learns why access was refused,
+    // so these reasons do not reveal which accounts exist.
+    const [reason, status] = error
+      ? error.status === 429
+        ? (["rate-limited", 429] as const)
+        : error.code === "email_not_confirmed"
+          ? (["unconfirmed", 403] as const)
+          : (["invalid", 401] as const)
+      : access?.status === 403
+        ? (["no-access", 403] as const)
+        : (["unavailable", 503] as const);
     return NextResponse.json(
-      {
-        error:
-          "The username or password is incorrect, or this account does not have Operator access.",
-      },
-      { status: 401 },
+      { error: "Sign-in was not completed.", reason },
+      { status },
     );
   }
   const jar = await cookies();
