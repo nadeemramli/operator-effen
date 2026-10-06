@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import {
   ArrowRight,
   Boxes,
+  Eye,
+  EyeOff,
   Factory,
   ScanLine,
   ShieldCheck,
@@ -19,12 +21,18 @@ export function LoginForm({ expired = false }: { expired?: boolean }) {
   const [lang, setLang] = useState<"en" | "ms">("en");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [reveal, setReveal] = useState(false);
   const t = (en: string, ms: string) => (lang === "ms" ? ms : en);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     setError("");
-    const values = Object.fromEntries(new FormData(event.currentTarget));
+    const form = new FormData(event.currentTarget);
+    const values = {
+      username: form.get("username"),
+      password: form.get("password"),
+      remember: form.get("remember") === "on",
+    };
     try {
       const response = await fetch("/api/auth", {
         method: "POST",
@@ -140,15 +148,50 @@ export function LoginForm({ expired = false }: { expired?: boolean }) {
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">{t("Password", "Kata laluan")}</Label>
-              <Input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                required
-                minLength={8}
-              />
+              <div className="password-field">
+                <Input
+                  id="password"
+                  name="password"
+                  type={reveal ? "text" : "password"}
+                  autoComplete="current-password"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  required
+                  minLength={8}
+                />
+                <button
+                  type="button"
+                  onClick={() => setReveal(!reveal)}
+                  aria-pressed={reveal}
+                  aria-controls="password"
+                  aria-label={
+                    reveal
+                      ? t("Hide password", "Sembunyikan kata laluan")
+                      : t("Show password", "Tunjukkan kata laluan")
+                  }
+                  title={
+                    reveal
+                      ? t("Hide password", "Sembunyikan kata laluan")
+                      : t("Show password", "Tunjukkan kata laluan")
+                  }
+                >
+                  {reveal ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
             </div>
+            <label className="remember-field">
+              <input type="checkbox" name="remember" />
+              <span>
+                {t("Keep me signed in", "Kekal log masuk")}
+                <small>
+                  {t(
+                    "On your own device only. Leave unticked on shared devices; you will be signed out when the browser closes.",
+                    "Pada peranti anda sendiri sahaja. Biarkan kosong pada peranti dikongsi; anda akan dilog keluar apabila pelayar ditutup.",
+                  )}
+                </small>
+              </span>
+            </label>
             {error && (
               <p role="alert" className="text-sm text-destructive">
                 {error}

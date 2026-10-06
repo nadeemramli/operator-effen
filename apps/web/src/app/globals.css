@@ -2755,3 +2755,51 @@ td.actions {
   flex: 1;
   border-bottom: 0;
 }
+.password-field {
+  position: relative;
+}
+.password-field input {
+  padding-right: 42px;
+}
+.password-field > button {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--muted-foreground);
+}
+.password-field > button:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+.password-field > button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.remember-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.remember-field input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: var(--success);
+  cursor: pointer;
+}
+.remember-field small {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
