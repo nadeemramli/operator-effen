@@ -1474,7 +1474,7 @@ export function DraftApp() {
                       </th>
                       <th>{t("Received by", "Diterima oleh")}</th>
                       <th>{t("Status", "Status")}</th>
-                      <th>{t("Action", "Tindakan")}</th>
+                      <th className="actions">{t("Action", "Tindakan")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1483,15 +1483,13 @@ export function DraftApp() {
                         <td
                           data-label={t("Product / batch", "Produk / kelompok")}
                         >
-                          <span>
-                            {
-                              product(
-                                state.batches.find(
-                                  (b) => b.id === receipt.batchId,
-                                )!.product,
-                              ).name
+                          <ProductName
+                            id={
+                              state.batches.find(
+                                (b) => b.id === receipt.batchId,
+                              )!.product
                             }
-                          </span>
+                          />
                           <small>
                             <button
                               className="record-link"
@@ -1529,7 +1527,10 @@ export function DraftApp() {
                                 )}
                           </span>
                         </td>
-                        <td data-label={t("Action", "Tindakan")}>
+                        <td
+                          className="actions"
+                          data-label={t("Action", "Tindakan")}
+                        >
                           {receipt.stockedAt ? (
                             <Button
                               size="sm"
@@ -1566,19 +1567,6 @@ export function DraftApp() {
               </Empty>
             )}
           </Panel>
-          <SachetProductionRecords
-            state={state}
-            lang={lang}
-            show={can("stage.record") || can("stage.correct") ? show : undefined}
-            pic={can("stage.record") || can("stage.correct") ? pic : undefined}
-            role={role}
-            onTrace={(id) => setTrace(id)}
-          />
-          <MachineRegistry
-            state={state}
-            lang={lang}
-            show={can("machines.manage") ? show : undefined}
-          />
           <Panel
             title={t("On the racks", "Di rak")}
             detail={t(
@@ -1596,7 +1584,7 @@ export function DraftApp() {
                     <th className="num">{t("Received", "Diterima")}</th>
                     <th className="num">{t("Available", "Tersedia")}</th>
                     <th>{t("Unit", "Unit")}</th>
-                    <th />
+                    <th className="actions" />
                   </tr>
                 </thead>
                 <tbody>
@@ -1612,7 +1600,11 @@ export function DraftApp() {
                         <small>
                           {new Date(c.at).toLocaleString(
                             lang === "ms" ? "ms-MY" : "en-MY",
-                            { timeZone: "Asia/Kuala_Lumpur" },
+                            {
+                              timeZone: "Asia/Kuala_Lumpur",
+                              dateStyle: "medium",
+                              timeStyle: "short",
+                            },
                           )}
                         </small>
                       </td>
@@ -1625,7 +1617,7 @@ export function DraftApp() {
                         {fmt(available(state, c))}
                       </td>
                       <td>{units(lang, c.unit)}</td>
-                      <td>
+                      <td className="actions">
                         <Button
                           size="sm"
                           variant="outline"
@@ -1656,7 +1648,7 @@ export function DraftApp() {
                       <th className="num">{t("Book balance", "Baki rekod")}</th>
                       <th className="num">{t("Counted", "Dikira")}</th>
                       <th>{t("Counted by", "Dikira oleh")}</th>
-                      <th />
+                      <th className="actions" />
                     </tr>
                   </thead>
                   <tbody>
@@ -1680,7 +1672,7 @@ export function DraftApp() {
                             caption={t("Received by", "Diterima oleh")}
                           />
                         </td>
-                        <td>
+                        <td className="actions">
                           {c.adjusted ? (
                             <span className="status-pill tone-success">
                               {t("Adjusted", "Dilaras")}
@@ -1736,10 +1728,25 @@ export function DraftApp() {
               </Empty>
             )}
           </Panel>
-          <Button variant="outline" onClick={closeDay}>
-            <ClipboardList size={16} />
-            {t("End-of-day review", "Semakan akhir hari")}
-          </Button>
+          <SachetProductionRecords
+            state={state}
+            lang={lang}
+            show={can("stage.record") || can("stage.correct") ? show : undefined}
+            pic={can("stage.record") || can("stage.correct") ? pic : undefined}
+            role={role}
+            onTrace={(id) => setTrace(id)}
+          />
+          <MachineRegistry
+            state={state}
+            lang={lang}
+            show={can("machines.manage") ? show : undefined}
+          />
+          <div className="page-actions">
+            <Button variant="outline" onClick={closeDay}>
+              <ClipboardList size={16} />
+              {t("End-of-day review", "Semakan akhir hari")}
+            </Button>
+          </div>
         </>
       );
     if (view === "input")

@@ -1,7 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, Plus, Wrench } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  ChevronRight,
+  Plus,
+  Search,
+  Wrench,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PersonBadge } from "./person-profile";
@@ -17,6 +24,7 @@ import {
   sachetProcesses,
   sachetRoutes,
   sachetStage,
+  stageDone,
   stageStep,
   stepNames,
   toMyt,
@@ -78,6 +86,31 @@ export const machineOptions = (
         (m.code ? ` (${m.code})` : "") +
         (m.active ? "" : " · " + tr(lang, "inactive", "tidak aktif")),
     }));
+
+function PanelSearch({
+  value,
+  onChange,
+  placeholder,
+  label,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  label: string;
+}) {
+  return (
+    <div className="panel-search">
+      <Search size={14} aria-hidden />
+      <Input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        aria-label={label}
+      />
+    </div>
+  );
+}
 
 export function ProcessPicHistory({ step, lang }: { step: Step; lang: Lang }) {
   const changes = step.picHistory ?? [],
@@ -505,6 +538,7 @@ export function StageRecords({
                       {t("entered by", "direkod oleh")} {recorderLabel(o.recordedBy)}
                     </small>
                   ))}
+                  <div className="stage-actions">
                   {editable && !step?.done && !sent && (
                     <Button
                       size="sm"
@@ -559,6 +593,7 @@ export function StageRecords({
                   ) : (
                     step && <ProcessPicHistory step={step} lang={lang} />
                   )}
+                  </div>
                 </td>
               </tr>
             );
@@ -577,17 +612,19 @@ export function StageRecords({
                   lang={lang}
                   caption={t("Recorded performer", "Pelaksana direkodkan")}
                 />
-                {editable ? (
-                  <ProcessPicTools
-                    batch={b}
-                    index={index}
-                    lang={lang}
-                    show={show!}
-                    pic={pic!}
-                  />
-                ) : (
-                  <ProcessPicHistory step={step} lang={lang} />
-                )}
+                <div className="stage-actions">
+                  {editable ? (
+                    <ProcessPicTools
+                      batch={b}
+                      index={index}
+                      lang={lang}
+                      show={show!}
+                      pic={pic!}
+                    />
+                  ) : (
+                    <ProcessPicHistory step={step} lang={lang} />
+                  )}
+                </div>
               </td>
             </tr>
           ))}
@@ -693,12 +730,11 @@ export function MachineRegistry({
         )
       }
     >
-      <Input
+      <PanelSearch
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={setQuery}
         placeholder={t("Find a machine…", "Cari mesin…")}
-        aria-label={t("Find a machine", "Cari mesin")}
-        className="mb-3 max-w-sm"
+        label={t("Find a machine", "Cari mesin")}
       />
       {machines.length ? (
         <div className="table-scroll">
@@ -796,42 +832,66 @@ export function SachetProductionRecords({
         "Rekod mesin dan PIC yang sama seperti Pengeluaran. Perubahan disimpan sekali pada rekod kelompok bersama dan tidak mencipta stok.",
       )}
     >
-      <Input
+      <PanelSearch
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={setQuery}
         placeholder={t("Batch number or date…", "Nombor kelompok atau tarikh…")}
-        aria-label={t("Find a sachet batch", "Cari kelompok sachet")}
-        className="mb-3 max-w-sm"
+        label={t("Find a sachet batch", "Cari kelompok sachet")}
       />
-      {batches.map((b) => (
-        <details key={b.id} className="sachet-record">
-          <summary>
-            <ProductName id={b.product} />{" "}
-            <span className="mono">{b.code}</span> · {b.date} ·{" "}
-            {batchTransferred(b)
-              ? t("Sent to warehouse", "Dihantar ke gudang")
+      {!!batches.length && (
+        <div className="sachet-record-list">
+          {batches.map((b) => {
+            const stages = routeStages(b);
+            const done = stages.filter((stage) => stageDone(b, stage.id)).length;
+            const [tone, status] = batchTransferred(b)
+              ? ["tone-success", t("Sent to warehouse", "Dihantar ke gudang")]
               : batchComplete(b)
-                ? t("All stages recorded", "Semua peringkat direkodkan")
-                : t("In production", "Dalam pengeluaran")}
-            {!!b.revisions?.length && (
-              <span className="status-pill tone-warning ml-2">
-                {t("Revised", "Disemak semula")}
-              </span>
-            )}
-          </summary>
-          <StageRecords
-            batch={b}
-            state={state}
-            lang={lang}
-            show={show}
-            pic={pic}
-            role={role}
-          />
-          <Button size="sm" variant="ghost" onClick={() => onTrace(b.id)}>
-            {t("Open trace", "Buka jejak")} · {product(b.product).name}
-          </Button>
-        </details>
-      ))}
+                ? ["tone-info", t("All stages recorded", "Semua peringkat direkodkan")]
+                : ["tone-muted", t("In production", "Dalam pengeluaran")];
+            return (
+              <details key={b.id} className="sachet-record">
+                <summary>
+                  <ChevronRight size={15} className="sachet-record-chevron" />
+                  <span className="sachet-record-id">
+                    <ProductName id={b.product} />
+                    <span className="mono">{b.code}</span>
+                  </span>
+                  <span className="sachet-record-meta">
+                    {b.date} · {done}/{stages.length}{" "}
+                    {t("stages", "peringkat")}
+                  </span>
+                  <span className="sachet-record-status">
+                    {!!b.revisions?.length && (
+                      <span className="status-pill tone-warning">
+                        {t("Revised", "Disemak semula")}
+                      </span>
+                    )}
+                    <span className={"status-pill " + tone}>{status}</span>
+                  </span>
+                </summary>
+                <div className="sachet-record-body">
+                  <StageRecords
+                    batch={b}
+                    state={state}
+                    lang={lang}
+                    show={show}
+                    pic={pic}
+                    role={role}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onTrace(b.id)}
+                  >
+                    {t("Open trace", "Buka jejak")} · {product(b.product).name}
+                    <ArrowUpRight />
+                  </Button>
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      )}
       {!batches.length && (
         <Empty>{t("No sachet batches match.", "Tiada kelompok sachet sepadan.")}</Empty>
       )}
