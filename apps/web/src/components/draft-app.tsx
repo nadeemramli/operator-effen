@@ -297,6 +297,7 @@ type Actor = {
   workspaceName?: string;
   scope?: "site" | "all-sites";
   capabilities?: string[];
+  factory?: "bottle" | "sachet";
 };
 // A save that has not been acknowledged. Kept on this device until the server confirms it,
 // and only offered back to the same signed-in user and workspace.
@@ -1473,6 +1474,7 @@ export function DraftApp() {
           pic={pic}
           number={number}
           closeDay={closeDay}
+          factoryScope={member ? actor?.factory : undefined}
         />
       );
     if (view === "warehouse")

@@ -17,11 +17,14 @@ import {
   type Role,
 } from "@/lib/draft";
 import {
+  AccessDenied,
   attest,
   authorizeMember,
   commitSecret,
+  factoryDenial,
   fingerprint,
   OPERATION_ID,
+  outOfFactory,
   outOfScopeKeys,
 } from "@/lib/access";
 import { validateImport } from "@/lib/awb-import";
@@ -47,6 +50,7 @@ const actorView = (userId: string, m?: Membership) =>
         workspaceId: m.workspaceId,
         workspaceName: m.workspaceName,
         capabilities: m.capabilities,
+        factory: m.factory,
       }
     : { kind: "preview" as const, userId };
 const sandboxPdf = (userId: string, file: { id: string; path: string }) =>
@@ -304,6 +308,10 @@ export async function POST(request: NextRequest) {
       409,
     );
   const current = loaded.data.state as Draft;
+  // A production supervisor limited to one factory never changes the other factory's
+  // batches; the database re-checks the signed state (operator_private.assert_factory_scope).
+  const outside = factoryDenial(membership.factory, type, input, current.batches ?? []);
+  if (outside) return json({ error: outside }, 403);
   const recorder: Recorder = {
     kind: "member",
     role: membership.role as Role,
@@ -342,6 +350,10 @@ export async function POST(request: NextRequest) {
       ).length
     )
       throw new Error("This change is outside your role's records.");
+    if (outOfFactory(membership.factory, current, state).length)
+      throw new AccessDenied(
+        `Your access covers the ${membership.factory} factory only. This change has not been saved.`,
+      );
     stateText = JSON.stringify(state);
     if (new TextEncoder().encode(stateText).length > 1800000)
       throw new Error(
@@ -403,6 +415,7 @@ export async function POST(request: NextRequest) {
 }
 
 function domainError(e: unknown) {
+  if (e instanceof AccessDenied) return json({ error: e.message }, 403);
   if (e instanceof ConflictError)
     return json({ error: e.message, code: "record", conflict: e.conflict }, 409);
   return json({ error: e instanceof Error ? e.message : "Unable to save." }, 400);

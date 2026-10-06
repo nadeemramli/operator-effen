@@ -16,6 +16,7 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261007090000_operator_factory_scope.down.sql"
 "${psql[@]}" -f "$root/supabase/rollback/20261006090000_operator_driver_trips.down.sql"
 "${psql[@]}" -f "$root/supabase/rollback/20261005090000_operator_trusted_commands.down.sql"
 "${psql[@]}" -f "$root/supabase/rollback/20261004090000_operator_memberships.down.sql"
@@ -38,4 +39,6 @@ echo "assistant memberships become driver memberships"
   where user_id = '00000000-0000-4000-8000-000000000002'" | grep -qx driver
 "${psql[@]}" -At -c "select write_policy ? 'assistant' from public.operator_workspaces
   where site_id = 'site-x'" | grep -qx f
+"${psql[@]}" -f "$root/supabase/migrations/20261007090000_operator_factory_scope.sql"
+"${psql[@]}" -At -c "select count(*) from public.operator_memberships where factory is not null" | grep -qx 0
 echo "ok"

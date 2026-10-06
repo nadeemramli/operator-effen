@@ -178,9 +178,68 @@ memberships to `driver` and removes the separate role.
 - Not included: supervisor correction of a mistaken trip time (there is no edit path yet),
   vehicle or route fields, and links between trips and courier handovers.
 
+## Factory scope (production supervisors)
+
+The site has two factories: bottle/capsule (CAV, GLY, LIP, SYN) and sachet (ADY). Migration
+`20261007090000_operator_factory_scope.sql` lets a production membership be limited to one of
+them (`operator_memberships.factory`: `'bottle'`, `'sachet'` or NULL for both). Only
+production memberships can carry a factory.
+
+- **Database** (authoritative): `operator_commit_workspace` refuses, for a scoped member, any
+  commit that adds, changes or removes a batch whose product is in the other factory or in
+  no known factory, and, for a bottle-scoped member, any change to the machine register
+  (machines are sachet-route equipment). It checks the signed state itself, so it covers
+  every command and direct RPC calls. Fails closed (unknown product or missing field = denial).
+- **API server**: refuses before the domain rules run (`factoryDenial`) and re-checks the
+  resulting state (`outOfFactory`) for every operational save, with 403 and a plain message.
+- **Screens**: the production view is locked to the member's factory (no All/Bottle/Sachet
+  toggle), planning offers only that factory's products, and a bottle-scoped member does not
+  see the Machines tab. Unscoped members, intake, management view-as and the fictional
+  preview are unchanged.
+- Not factory records: day close, feedback and staff (packer/driver) memberships.
+- HR sets or clears the scope with
+  `operator_set_membership_factory(membership, factory, reason)` (HR only, never on their own
+  membership, only on an active production site membership; audited as `change`). Changing a
+  scoped member to another role needs the scope cleared first (the check constraint refuses).
+- Rollout order does not matter: the app reads memberships without the column until the
+  migration exists, and every membership starts unscoped. The migration is additive (new
+  column, new functions, `create or replace` of the commit function with the same signature).
+
+Until an HR user exists, the owner assigns the scopes in the SQL Editor (it updates rows, so
+the Supabase tool cannot run it). Confirm the selected project is `operator-effen` first.
+
+```sql
+begin;
+-- 1. Look up the production memberships at site `operator` and note their ids.
+select m.id, m.display_name, m.factory
+from public.operator_memberships m
+join public.operator_workspaces w on w.id = m.workspace_id
+where w.site_id = 'operator' and m.role = 'production' and m.active;
+-- 2. Record the change, then make it. Replace the placeholders; both must be unscoped now.
+create temp table factory_scope (id uuid primary key, factory text not null) on commit drop;
+insert into factory_scope values
+  ('<capsule supervisor membership id>', 'bottle'),
+  ('<sachet supervisor membership id>', 'sachet');
+insert into public.operator_membership_audit (action, workspace_id, membership_id,
+  target_user, actor_user, actor_role, before, after, reason)
+select 'change', m.workspace_id, m.id, m.user_id, '<owner auth user id>', 'owner',
+  to_jsonb(m), to_jsonb(m) || jsonb_build_object('factory', f.factory),
+  'Owner decision: production supervisors limited to their own factory'
+from public.operator_memberships m join factory_scope f on f.id = m.id
+where m.role = 'production' and m.active and m.factory is null;
+update public.operator_memberships m
+set factory = f.factory, updated_at = now()
+from factory_scope f
+where m.id = f.id and m.role = 'production' and m.active and m.factory is null;
+-- 3. Expect exactly the two rows, each with its factory; otherwise run `rollback;`.
+select m.display_name, m.factory from public.operator_memberships m
+join factory_scope f on f.id = m.id;
+commit;
+```
+
 ## Deployment prerequisites
 
-1. Review and apply the three migrations (rehearse with `scripts/verify-migrations-local.sh`).
+1. Review and apply the migrations (rehearse with `scripts/verify-migrations-local.sh`).
 2. Generate a 32-byte key; store it as the server-only env var `OPERATOR_COMMIT_SECRET` (hex)
    and in `operator_private.server_keys` (`id = 'commit'`). Never a `NEXT_PUBLIC_` variable.
    Without both, operational saves fail closed with a clear 503.
@@ -207,22 +266,25 @@ memberships to `driver` and removes the separate role.
   Supabase variables point at a placeholder, so preview builds cannot reach live data; give
   them a separate staging project to re-enable them.
 - Known limit accepted for go-live: production supervisors are not limited to one factory;
-  Faris and Helmi can both record capsule and sachet batches.
+  Faris and Helmi can both record capsule and sachet batches. Addressed by
+  `20261007090000_operator_factory_scope.sql` (see "Factory scope"); not yet applied to
+  `operator-effen` — awaiting the owner's go-ahead and the scope assignment script.
 
 ## Verification
 
 - `pnpm test` — domain, capability-parity and command-scope tests.
 - `scripts/verify-migrations-local.sh` — applies all migrations to a disposable Postgres with
   stub `auth`/`storage` schemas, runs `supabase/tests/operator_access.test.sql` (bypass,
-  signatures, invariants, capabilities, memberships, storage policies), rehearses rollback and
-  re-applies.
+  signatures, invariants, capabilities, memberships, storage policies, trips, factory scope),
+  rehearses rollback and re-applies.
 - `tests/integration/run-real-stack.sh` — real GoTrue, PostgREST and Storage API on a local
   Postgres behind `router.mjs` (prefix routing and CORS, as Kong does), with the production
   Next.js build and Chromium. Requires the binaries described in the script header.
 
 ## Rollback
 
-Run `supabase/rollback/20261006090000_operator_driver_trips.down.sql`, then
+Run `supabase/rollback/20261007090000_operator_factory_scope.down.sql`, then
+`20261006090000_operator_driver_trips.down.sql`, then
 `20261005090000_operator_trusted_commands.down.sql`, then
 `20261004090000_operator_memberships.down.sql`, after exporting operational state,
 `operator_commits` and `operator_membership_audit`. Rolling back the repair alone leaves no

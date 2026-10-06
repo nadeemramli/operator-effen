@@ -523,4 +523,126 @@ select pg_temp.as_user('00000000-0000-4000-8000-000000000002');
 select pg_temp.expect_denied($q$insert into storage.objects (bucket_id, name) values ('operator-trip-photos', '10000000-0000-4000-8000-00000000000a/00000000-0000-4000-8000-000000000002/' || repeat('c', 64) || '.jpg')$q$, 'packer uploads a trip photo');
 rollback;
 
+-- 9. Factory scope (20261007090000). A production supervisor limited to one factory cannot
+--    change the other factory's batches (or, bottle-scoped, the sachet machine register),
+--    even with a valid server signature. Unscoped supervisors keep both factories.
+insert into auth.users (id) values
+  ('00000000-0000-4000-8000-000000000014'), -- site A production SV, sachet factory
+  ('00000000-0000-4000-8000-000000000015'); -- site A production SV, bottle factory
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope, factory) values
+  ('10000000-0000-4000-8000-00000000000a','00000000-0000-4000-8000-000000000014','production','SV Sachet','site','sachet'),
+  ('10000000-0000-4000-8000-00000000000a','00000000-0000-4000-8000-000000000015','production','SV Bottle','site','bottle');
+do $$ begin
+  begin
+    update public.operator_memberships set factory = 'sachet'
+    where user_id = '00000000-0000-4000-8000-000000000006';
+    raise exception 'FAIL: a stock-in membership was limited to a factory';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.operator_memberships set factory = 'capsule'
+    where user_id = '00000000-0000-4000-8000-000000000014';
+    raise exception 'FAIL: an unknown factory was accepted';
+  exception when check_violation then null;
+  end;
+end $$;
+\set SACHET '''00000000-0000-4000-8000-000000000014'''
+\set BOTTLE '''00000000-0000-4000-8000-000000000015'''
+create function pg_temp.with_batch(p_batch jsonb) returns jsonb language sql as $$
+  select jsonb_set(pg_temp.state(), '{batches}', jsonb_build_array(p_batch) || (pg_temp.state() -> 'batches')) $$;
+create function pg_temp.new_batch(p_id text, p_product text) returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'code', upper(p_id), 'product', p_product, 'date', '2026-10-07',
+    'siteId', 'site-a', 'target', 10, 'actual', 0, 'sent', 0, 'steps', '[]'::jsonb) $$;
+-- b1 is the sachet (ady) batch, b-sent the bottle (cav) batch.
+select pg_temp.expect(pg_temp.commit_as(:SACHET, :A, 'step',
+  jsonb_set(pg_temp.state(), '{batches,1,target}', '6')), '42501', 'sachet SV changes a bottle batch');
+select pg_temp.expect(pg_temp.commit_as(:SACHET, :A, 'batch',
+  pg_temp.with_batch(pg_temp.new_batch('f-cav', 'cav'))), '42501', 'sachet SV plans a bottle batch');
+select pg_temp.expect(pg_temp.commit_as(:SACHET, :A, 'batch',
+  pg_temp.with_batch(pg_temp.new_batch('f-unknown', 'xyz'))), '42501', 'scoped SV plans an unknown product');
+select pg_temp.expect(pg_temp.commit_as(:SACHET, :A, 'batch',
+  pg_temp.with_batch(pg_temp.new_batch('f-none', 'ady') - 'product')), '42501', 'scoped SV plans a batch without product');
+select pg_temp.expect(pg_temp.commit_as(:BOTTLE, :A, 'stage-correct',
+  jsonb_set(pg_temp.state(), '{batches,0,target}', '1')), '42501', 'bottle SV changes a sachet batch');
+select pg_temp.expect(pg_temp.commit_as(:BOTTLE, :A, 'batch',
+  pg_temp.with_batch(pg_temp.new_batch('f-ady', 'ady'))), '42501', 'bottle SV plans a sachet batch');
+select pg_temp.expect(pg_temp.commit_as(:BOTTLE, :A, 'machine-create',
+  jsonb_set(pg_temp.state(), '{machines}', '[{"id":"m1","siteId":"site-a","stage":"filling","name":"Filler 1","active":true,"history":[]}]')),
+  '42501', 'bottle SV registers a sachet machine');
+do $$ begin
+  if (select revision from public.operator_workspaces where site_id = 'site-a')
+    <> (select max(result_revision) from public.operator_commits
+        where workspace_id = '10000000-0000-4000-8000-00000000000a') then
+    raise exception 'FAIL: refused factory changes were saved'; end if;
+end $$;
+select pg_temp.expect(pg_temp.commit_as(:SACHET, :A, 'batch',
+  pg_temp.with_batch(pg_temp.new_batch('f-ady-1', 'ady'))), 'ok', 'sachet SV plans a sachet batch');
+select pg_temp.expect(pg_temp.commit_as(:SACHET, :A, 'step',
+  jsonb_set(pg_temp.state(), '{batches,0,target}', '12')), 'ok', 'sachet SV changes a sachet batch');
+select pg_temp.expect(pg_temp.commit_as(:SACHET, :A, 'machine-create',
+  jsonb_set(pg_temp.state(), '{machines}', '[{"id":"m1","siteId":"site-a","stage":"filling","name":"Filler 1","active":true,"history":[]}]')),
+  'ok', 'sachet SV registers a sachet machine');
+select pg_temp.expect(pg_temp.commit_as(:BOTTLE, :A, 'batch',
+  pg_temp.with_batch(pg_temp.new_batch('f-cav-1', 'cav'))), 'ok', 'bottle SV plans a bottle batch');
+select pg_temp.expect(pg_temp.commit_as(:BOTTLE, :A, 'feedback',
+  jsonb_set(pg_temp.state(), '{notes}', (pg_temp.state() -> 'notes') || '[{"id":"n-f","text":"x","author":{"userId":"00000000-0000-4000-8000-000000000015"}}]')),
+  'ok', 'bottle SV posts feedback (no batch change)');
+-- Unscoped supervisors are unchanged: both factories.
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'step',
+  jsonb_set(jsonb_set(pg_temp.state(), '{batches,0,target}', '11'), '{batches,1,target}', '13')),
+  'ok', 'unscoped SV changes both factories');
+-- Only HR sets the scope, only on an active production site membership, never their own;
+-- each change is audited. Clearing the scope restores both factories.
+select id as "SCOPED" from public.operator_memberships
+where user_id = '00000000-0000-4000-8000-000000000014' \gset
+select id as "STOCKIN" from public.operator_memberships
+where user_id = '00000000-0000-4000-8000-000000000006' \gset
+begin;
+select pg_temp.as_user(:SV);
+select pg_temp.expect_denied(format('select public.operator_set_membership_factory(%L, null, %L)', :'SCOPED', 'x'), 'production SV clears a factory scope');
+rollback;
+begin;
+select pg_temp.as_user(:SACHET);
+select pg_temp.expect_denied(format('select public.operator_set_membership_factory(%L, null, %L)', :'SCOPED', 'x'), 'scoped SV clears own factory scope');
+select pg_temp.expect_denied($q$update public.operator_memberships set factory = null where user_id = '00000000-0000-4000-8000-000000000014'$q$, 'direct factory scope update');
+rollback;
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000008');
+select pg_temp.expect_denied(format('select public.operator_set_membership_factory(%L, %L, %L)', :'STOCKIN', 'sachet', 'x'), 'HR scopes a stock-in membership');
+select pg_temp.expect_denied(format('select public.operator_set_membership_factory(%L, %L, %L)', gen_random_uuid(), 'sachet', 'x'), 'HR scopes an unknown membership');
+do $$ begin
+  begin
+    perform public.operator_set_membership_factory(
+      (select id from public.operator_memberships where user_id = '00000000-0000-4000-8000-000000000014'), 'capsule', 'x');
+    raise exception 'FAIL: unknown factory accepted';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.operator_set_membership_factory(
+      (select id from public.operator_memberships where user_id = '00000000-0000-4000-8000-000000000014'), null, ' ');
+    raise exception 'FAIL: factory change without a reason accepted';
+  exception when invalid_parameter_value then null;
+  end;
+end $$;
+create temp table audits_before as select count(*) as n from public.operator_membership_audit;
+do $$ begin
+  perform public.operator_set_membership_factory(
+    (select id from public.operator_memberships where user_id = '00000000-0000-4000-8000-000000000014'), null,
+    'Covering both factories this week');
+end $$;
+commit;
+do $$ begin
+  if (select count(*) from public.operator_membership_audit
+      where action = 'change' and target_user = '00000000-0000-4000-8000-000000000014'
+        and before ->> 'factory' = 'sachet' and after -> 'factory' = 'null'::jsonb) <> 1
+    or (select count(*) from public.operator_membership_audit) <> (select n + 1 from audits_before) then
+    raise exception 'FAIL: factory scope change not audited exactly once'; end if;
+end $$;
+do $$ begin
+  if (select pg_temp.state() -> 'batches' -> 0 ->> 'product') <> 'cav' then
+    raise exception 'FAIL: expected the bottle batch first'; end if;
+end $$;
+select pg_temp.expect(pg_temp.commit_as(:SACHET, :A, 'step',
+  jsonb_set(pg_temp.state(), '{batches,0,target}', '7')), 'ok', 'cleared scope covers the bottle factory');
+
 select 'operator access tests passed' as result;
