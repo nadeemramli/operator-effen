@@ -37,7 +37,7 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { ProductionWorkspace, ProcessPicHistory } from "./production-workspace";
-import { MachineRegistry, SachetProductionRecords } from "./sachet-records";
+import { SachetProductionRecords } from "./sachet-records";
 import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { DriverTrips } from "./driver-trips";
@@ -126,13 +126,6 @@ const navigation: {
   roles: Role[];
 }[] = [
   {
-    id: "overview",
-    en: "Overview",
-    ms: "Gambaran",
-    icon: LayoutDashboard,
-    roles: ["production", "intake", "outbound", "admin", "hr", "management"],
-  },
-  {
     id: "production",
     en: "Production",
     ms: "Pengeluaran",
@@ -180,6 +173,13 @@ const navigation: {
     ms: "Jumlah akhir hari",
     icon: ClipboardList,
     roles: ["outbound", "management"],
+  },
+  {
+    id: "overview",
+    en: "Overview",
+    ms: "Gambaran",
+    icon: LayoutDashboard,
+    roles: ["production", "intake", "outbound", "admin", "hr", "management"],
   },
   {
     id: "trace",
@@ -317,6 +317,7 @@ const readPending = (): PendingSave | null => {
     return null;
   }
 };
+const VIEW_AS_KEY = "operator-view-as";
 // Assistant drivers are drivers now; a server still on the older role list maps across.
 const viewRole = (role?: string): Role =>
   role === "assistant"
@@ -333,6 +334,8 @@ export function DraftApp() {
     >([]),
     [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
   const member = actor?.kind === "member";
+  // Management members may look through any role's screens; their access stays Management.
+  const canViewAs = member && actor?.role === "management";
   const router = useRouter(),
     params = useSearchParams();
   const [lang, setLang] = useState<Lang>("en"),
@@ -362,6 +365,9 @@ export function DraftApp() {
   const can = (capability: string) => caps.includes(capability);
   const operational = caps.some((c) => c !== "feedback.post");
   const allowed = navigation.filter((n) => n.roles.includes(role));
+  const viewingAs = canViewAs && role !== "management";
+  const roleName = (id?: string) =>
+    roles.find((r) => r.id === id)?.[lang === "ms" ? "ms" : "en"] ?? id;
   const requested = (
     params.get("view") === "outbound" ? "orders" : params.get("view")
   ) as View;
@@ -375,7 +381,7 @@ export function DraftApp() {
   };
   const changeRole = (next: Role) => {
     setRole(next);
-    localStorage.setItem("operator-role", next);
+    localStorage.setItem(member ? VIEW_AS_KEY : "operator-role", next);
     setQuery("");
     setTrace(null);
     setForm(null);
@@ -408,7 +414,15 @@ export function DraftApp() {
       setActor(data.actor ?? null);
       setWorkspaces(data.workspaces ?? []);
       // Members act only in their server-assigned role; the preview switcher is ignored.
-      if (data.actor?.kind === "member") setRole(viewRole(data.actor.role));
+      // Management may keep a "view as" lens, which never changes what they can save.
+      if (data.actor?.kind === "member") {
+        const viewAs = localStorage.getItem(VIEW_AS_KEY);
+        setRole(
+          data.actor.role === "management" && roles.some((r) => r.id === viewAs)
+            ? (viewAs as Role)
+            : viewRole(data.actor.role),
+        );
+      }
       setPendingSave(readPending());
       setError("");
     } catch (e) {
@@ -432,6 +446,10 @@ export function DraftApp() {
     input: Record<string, unknown>,
     retry?: PendingSave,
   ) {
+    if (viewingAs) {
+      setError(viewOnlyMessage());
+      return null;
+    }
     setBusy(true);
     setFormError("");
     setError("");
@@ -540,9 +558,18 @@ export function DraftApp() {
       setBusy(false);
     }
   }
+  const viewOnlyMessage = () =>
+    t(
+      `You are viewing as ${roleName(role)}. Switch back to Management to make changes.`,
+      `Anda melihat sebagai ${roleName(role)}. Tukar kembali ke Pengurusan untuk membuat perubahan.`,
+    );
   function show(spec: FormSpec) {
     setFormError("");
     setNotice("");
+    if (viewingAs) {
+      setError(viewOnlyMessage());
+      return;
+    }
     setForm(spec);
   }
   const pic = (
@@ -1493,7 +1520,7 @@ export function DraftApp() {
                       </th>
                       <th>{t("Received by", "Diterima oleh")}</th>
                       <th>{t("Status", "Status")}</th>
-                      <th>{t("Action", "Tindakan")}</th>
+                      <th className="actions">{t("Action", "Tindakan")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1502,15 +1529,13 @@ export function DraftApp() {
                         <td
                           data-label={t("Product / batch", "Produk / kelompok")}
                         >
-                          <span>
-                            {
-                              product(
-                                state.batches.find(
-                                  (b) => b.id === receipt.batchId,
-                                )!.product,
-                              ).name
+                          <ProductName
+                            id={
+                              state.batches.find(
+                                (b) => b.id === receipt.batchId,
+                              )!.product
                             }
-                          </span>
+                          />
                           <small>
                             <button
                               className="record-link"
@@ -1548,7 +1573,10 @@ export function DraftApp() {
                                 )}
                           </span>
                         </td>
-                        <td data-label={t("Action", "Tindakan")}>
+                        <td
+                          className="actions"
+                          data-label={t("Action", "Tindakan")}
+                        >
                           {receipt.stockedAt ? (
                             <Button
                               size="sm"
@@ -1585,19 +1613,6 @@ export function DraftApp() {
               </Empty>
             )}
           </Panel>
-          <SachetProductionRecords
-            state={state}
-            lang={lang}
-            show={can("stage.record") || can("stage.correct") ? show : undefined}
-            pic={can("stage.record") || can("stage.correct") ? pic : undefined}
-            role={role}
-            onTrace={(id) => setTrace(id)}
-          />
-          <MachineRegistry
-            state={state}
-            lang={lang}
-            show={can("machines.manage") ? show : undefined}
-          />
           <Panel
             title={t("On the racks", "Di rak")}
             detail={t(
@@ -1615,7 +1630,7 @@ export function DraftApp() {
                     <th className="num">{t("Received", "Diterima")}</th>
                     <th className="num">{t("Available", "Tersedia")}</th>
                     <th>{t("Unit", "Unit")}</th>
-                    <th />
+                    <th className="actions" />
                   </tr>
                 </thead>
                 <tbody>
@@ -1631,7 +1646,11 @@ export function DraftApp() {
                         <small>
                           {new Date(c.at).toLocaleString(
                             lang === "ms" ? "ms-MY" : "en-MY",
-                            { timeZone: "Asia/Kuala_Lumpur" },
+                            {
+                              timeZone: "Asia/Kuala_Lumpur",
+                              dateStyle: "medium",
+                              timeStyle: "short",
+                            },
                           )}
                         </small>
                       </td>
@@ -1644,7 +1663,7 @@ export function DraftApp() {
                         {fmt(available(state, c))}
                       </td>
                       <td>{units(lang, c.unit)}</td>
-                      <td>
+                      <td className="actions">
                         <Button
                           size="sm"
                           variant="outline"
@@ -1675,7 +1694,7 @@ export function DraftApp() {
                       <th className="num">{t("Book balance", "Baki rekod")}</th>
                       <th className="num">{t("Counted", "Dikira")}</th>
                       <th>{t("Counted by", "Dikira oleh")}</th>
-                      <th />
+                      <th className="actions" />
                     </tr>
                   </thead>
                   <tbody>
@@ -1699,7 +1718,7 @@ export function DraftApp() {
                             caption={t("Received by", "Diterima oleh")}
                           />
                         </td>
-                        <td>
+                        <td className="actions">
                           {c.adjusted ? (
                             <span className="status-pill tone-success">
                               {t("Adjusted", "Dilaras")}
@@ -1755,10 +1774,21 @@ export function DraftApp() {
               </Empty>
             )}
           </Panel>
-          <Button variant="outline" onClick={closeDay}>
-            <ClipboardList size={16} />
-            {t("End-of-day review", "Semakan akhir hari")}
-          </Button>
+          <SachetProductionRecords
+            state={state}
+            lang={lang}
+            show={can("stage.record") || can("stage.correct") ? show : undefined}
+            pic={can("stage.record") || can("stage.correct") ? pic : undefined}
+            role={role}
+            onTrace={(id) => setTrace(id)}
+            machineShow={can("machines.manage") ? show : undefined}
+          />
+          <div className="page-actions">
+            <Button variant="outline" onClick={closeDay}>
+              <ClipboardList size={16} />
+              {t("End-of-day review", "Semakan akhir hari")}
+            </Button>
+          </div>
         </>
       );
     if (view === "input")
@@ -2504,15 +2534,28 @@ export function DraftApp() {
               <ShieldCheck size={14} />
               {t("SIGNED IN", "LOG MASUK")}
               <span className="strip-detail">
-                {actor?.name} ·{" "}
-                {roles.find((r) => r.id === actor?.role)?.[
-                  lang === "ms" ? "ms" : "en"
-                ] ?? actor?.role}{" "}
-                · {actor?.workspaceName}
-                {!operational &&
+                {actor?.name} · {roleName(actor?.role)} ·{" "}
+                {actor?.workspaceName}
+                {(!operational || viewingAs) &&
                   " · " + t("view only", "lihat sahaja")}
               </span>
             </span>
+            {canViewAs && (
+              <label htmlFor="view-as">
+                {t("View as", "Lihat sebagai")}
+                <select
+                  id="view-as"
+                  value={role}
+                  onChange={(e) => changeRole(e.target.value as Role)}
+                >
+                  {roles.map((r) => (
+                    <option value={r.id} key={r.id}>
+                      {r[lang === "ms" ? "ms" : "en"]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {workspaces.length > 1 && (
               <label htmlFor="site-switch">
                 {t("Site", "Tapak")}

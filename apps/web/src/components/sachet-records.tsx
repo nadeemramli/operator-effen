@@ -1,9 +1,25 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, Plus, Wrench } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  ChevronRight,
+  Plus,
+  Search,
+  Settings,
+  Wrench,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { PersonBadge } from "./person-profile";
 import { Empty, Panel, ProductName, type Field, type FormSpec } from "./draft-primitives";
 import {
@@ -17,6 +33,7 @@ import {
   sachetProcesses,
   sachetRoutes,
   sachetStage,
+  stageDone,
   stageStep,
   stepNames,
   toMyt,
@@ -78,6 +95,31 @@ export const machineOptions = (
         (m.code ? ` (${m.code})` : "") +
         (m.active ? "" : " · " + tr(lang, "inactive", "tidak aktif")),
     }));
+
+function PanelSearch({
+  value,
+  onChange,
+  placeholder,
+  label,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  label: string;
+}) {
+  return (
+    <div className="panel-search">
+      <Search size={14} aria-hidden />
+      <Input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        aria-label={label}
+      />
+    </div>
+  );
+}
 
 export function ProcessPicHistory({ step, lang }: { step: Step; lang: Lang }) {
   const changes = step.picHistory ?? [],
@@ -505,6 +547,7 @@ export function StageRecords({
                       {t("entered by", "direkod oleh")} {recorderLabel(o.recordedBy)}
                     </small>
                   ))}
+                  <div className="stage-actions">
                   {editable && !step?.done && !sent && (
                     <Button
                       size="sm"
@@ -559,6 +602,7 @@ export function StageRecords({
                   ) : (
                     step && <ProcessPicHistory step={step} lang={lang} />
                   )}
+                  </div>
                 </td>
               </tr>
             );
@@ -577,17 +621,19 @@ export function StageRecords({
                   lang={lang}
                   caption={t("Recorded performer", "Pelaksana direkodkan")}
                 />
-                {editable ? (
-                  <ProcessPicTools
-                    batch={b}
-                    index={index}
-                    lang={lang}
-                    show={show!}
-                    pic={pic!}
-                  />
-                ) : (
-                  <ProcessPicHistory step={step} lang={lang} />
-                )}
+                <div className="stage-actions">
+                  {editable ? (
+                    <ProcessPicTools
+                      batch={b}
+                      index={index}
+                      lang={lang}
+                      show={show!}
+                      pic={pic!}
+                    />
+                  ) : (
+                    <ProcessPicHistory step={step} lang={lang} />
+                  )}
+                </div>
               </td>
             </tr>
           ))}
@@ -602,10 +648,13 @@ export function MachineRegistry({
   state,
   lang,
   show,
+  embedded = false,
 }: {
   state: Draft;
   lang: Lang;
   show?: Show;
+  /** Render without the panel frame, for the Stock-in settings sheet. */
+  embedded?: boolean;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [query, setQuery] = useState("");
@@ -651,55 +700,48 @@ export function MachineRegistry({
       hidden: { id: m.id, expectedVersion: m.version },
       fields: [reasonField(lang)],
     });
-  return (
-    <Panel
-      title={t("Sachet machines", "Mesin sachet")}
-      detail={t(
-        "Physical machines at this site, by the stage they perform. Production and Stock-in share this list.",
-        "Mesin fizikal di tapak ini, mengikut peringkat. Pengeluaran dan Stok masuk berkongsi senarai ini.",
-      )}
-      action={
-        show && (
-          <Button
-            variant="outline"
-            onClick={() =>
-              show({
-                type: "machine-create",
-                title: t("Add a machine", "Tambah mesin"),
-                description: t(
-                  "A name is enough. Search the list first to avoid duplicates.",
-                  "Nama sudah memadai. Cari senarai dahulu untuk elak pendua.",
-                ),
-                fields: [
-                  {
-                    name: "stage",
-                    label: t("Stage it performs", "Peringkat"),
-                    type: "select",
-                    options: stageOptions,
-                  },
-                  { name: "name", label: t("Machine name", "Nama mesin") },
-                  {
-                    name: "code",
-                    label: t("Asset code / label", "Kod aset / label"),
-                    required: false,
-                  },
-                ],
-              })
-            }
-          >
-            <Plus size={15} />
-            {t("Add machine", "Tambah mesin")}
-          </Button>
-        )
+  const add = show && (
+    <Button
+      variant="outline"
+      onClick={() =>
+        show({
+          type: "machine-create",
+          title: t("Add a machine", "Tambah mesin"),
+          description: t(
+            "A name is enough. Search the list first to avoid duplicates.",
+            "Nama sudah memadai. Cari senarai dahulu untuk elak pendua.",
+          ),
+          fields: [
+            {
+              name: "stage",
+              label: t("Stage it performs", "Peringkat"),
+              type: "select",
+              options: stageOptions,
+            },
+            { name: "name", label: t("Machine name", "Nama mesin") },
+            {
+              name: "code",
+              label: t("Asset code / label", "Kod aset / label"),
+              required: false,
+            },
+          ],
+        })
       }
     >
-      <Input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder={t("Find a machine…", "Cari mesin…")}
-        aria-label={t("Find a machine", "Cari mesin")}
-        className="mb-3 max-w-sm"
-      />
+      <Plus size={15} />
+      {t("Add machine", "Tambah mesin")}
+    </Button>
+  );
+  const search = (
+    <PanelSearch
+      value={query}
+      onChange={setQuery}
+      placeholder={t("Find a machine…", "Cari mesin…")}
+      label={t("Find a machine", "Cari mesin")}
+    />
+  );
+  const list = (
+    <>
       {machines.length ? (
         <div className="table-scroll">
           <table>
@@ -758,7 +800,80 @@ export function MachineRegistry({
           )}
         </Empty>
       )}
+    </>
+  );
+  if (embedded)
+    return (
+      <>
+        <div className="machine-sheet-toolbar">
+          {search}
+          {add}
+        </div>
+        {list}
+      </>
+    );
+  return (
+    <Panel
+      title={t("Sachet machines", "Mesin sachet")}
+      detail={t(
+        "Physical machines at this site, by the stage they perform. Production and Stock-in share this list.",
+        "Mesin fizikal di tapak ini, mengikut peringkat. Pengeluaran dan Stok masuk berkongsi senarai ini.",
+      )}
+      action={add}
+    >
+      {search}
+      {list}
     </Panel>
+  );
+}
+
+/** Compact entry point to the shared machine list, for pages where it is secondary. */
+export function MachineSettings({
+  state,
+  lang,
+  show,
+}: {
+  state: Draft;
+  lang: Lang;
+  show?: Show;
+}) {
+  const t = (en: string, ms: string) => tr(lang, en, ms);
+  const [open, setOpen] = useState(false);
+  const label = t("Sachet machines", "Mesin sachet");
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetTrigger asChild>
+        <Button variant="outline" size="icon-sm" aria-label={label} title={label}>
+          <Settings />
+        </Button>
+      </SheetTrigger>
+      <SheetContent className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
+        <SheetHeader className="border-b px-[23px] py-5 pr-12">
+          <SheetTitle>{label}</SheetTitle>
+          <SheetDescription className="text-xs">
+            {t(
+              "Physical machines at this site, by the stage they perform. Production and Stock-in share this list.",
+              "Mesin fizikal di tapak ini, mengikut peringkat. Pengeluaran dan Stok masuk berkongsi senarai ini.",
+            )}
+          </SheetDescription>
+        </SheetHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <MachineRegistry
+            embedded
+            state={state}
+            lang={lang}
+            show={
+              show &&
+              ((spec) => {
+                // The form dialog opens outside this sheet, so close it first.
+                setOpen(false);
+                show(spec);
+              })
+            }
+          />
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -770,6 +885,7 @@ export function SachetProductionRecords({
   pic,
   role,
   onTrace,
+  machineShow,
 }: {
   state: Draft;
   lang: Lang;
@@ -777,6 +893,8 @@ export function SachetProductionRecords({
   pic?: Pic;
   role?: Role;
   onTrace: (id: string) => void;
+  /** Present when the viewer may add or change machines. */
+  machineShow?: Show;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [query, setQuery] = useState("");
@@ -795,43 +913,68 @@ export function SachetProductionRecords({
         "The same machine and PIC records Production sees. Changes here are saved once, to the shared batch record, and never create stock.",
         "Rekod mesin dan PIC yang sama seperti Pengeluaran. Perubahan disimpan sekali pada rekod kelompok bersama dan tidak mencipta stok.",
       )}
+      action={<MachineSettings state={state} lang={lang} show={machineShow} />}
     >
-      <Input
+      <PanelSearch
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={setQuery}
         placeholder={t("Batch number or date…", "Nombor kelompok atau tarikh…")}
-        aria-label={t("Find a sachet batch", "Cari kelompok sachet")}
-        className="mb-3 max-w-sm"
+        label={t("Find a sachet batch", "Cari kelompok sachet")}
       />
-      {batches.map((b) => (
-        <details key={b.id} className="sachet-record">
-          <summary>
-            <ProductName id={b.product} />{" "}
-            <span className="mono">{b.code}</span> · {b.date} ·{" "}
-            {batchTransferred(b)
-              ? t("Sent to warehouse", "Dihantar ke gudang")
+      {!!batches.length && (
+        <div className="sachet-record-list">
+          {batches.map((b) => {
+            const stages = routeStages(b);
+            const done = stages.filter((stage) => stageDone(b, stage.id)).length;
+            const [tone, status] = batchTransferred(b)
+              ? ["tone-success", t("Sent to warehouse", "Dihantar ke gudang")]
               : batchComplete(b)
-                ? t("All stages recorded", "Semua peringkat direkodkan")
-                : t("In production", "Dalam pengeluaran")}
-            {!!b.revisions?.length && (
-              <span className="status-pill tone-warning ml-2">
-                {t("Revised", "Disemak semula")}
-              </span>
-            )}
-          </summary>
-          <StageRecords
-            batch={b}
-            state={state}
-            lang={lang}
-            show={show}
-            pic={pic}
-            role={role}
-          />
-          <Button size="sm" variant="ghost" onClick={() => onTrace(b.id)}>
-            {t("Open trace", "Buka jejak")} · {product(b.product).name}
-          </Button>
-        </details>
-      ))}
+                ? ["tone-info", t("All stages recorded", "Semua peringkat direkodkan")]
+                : ["tone-muted", t("In production", "Dalam pengeluaran")];
+            return (
+              <details key={b.id} className="sachet-record">
+                <summary>
+                  <ChevronRight size={15} className="sachet-record-chevron" />
+                  <span className="sachet-record-id">
+                    <ProductName id={b.product} />
+                    <span className="mono">{b.code}</span>
+                  </span>
+                  <span className="sachet-record-meta">
+                    {b.date} · {done}/{stages.length}{" "}
+                    {t("stages", "peringkat")}
+                  </span>
+                  <span className="sachet-record-status">
+                    {!!b.revisions?.length && (
+                      <span className="status-pill tone-warning">
+                        {t("Revised", "Disemak semula")}
+                      </span>
+                    )}
+                    <span className={"status-pill " + tone}>{status}</span>
+                  </span>
+                </summary>
+                <div className="sachet-record-body">
+                  <StageRecords
+                    batch={b}
+                    state={state}
+                    lang={lang}
+                    show={show}
+                    pic={pic}
+                    role={role}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onTrace(b.id)}
+                  >
+                    {t("Open trace", "Buka jejak")} · {product(b.product).name}
+                    <ArrowUpRight />
+                  </Button>
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      )}
       {!batches.length && (
         <Empty>{t("No sachet batches match.", "Tiada kelompok sachet sepadan.")}</Empty>
       )}

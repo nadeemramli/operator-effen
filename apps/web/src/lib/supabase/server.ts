@@ -1,9 +1,12 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { effectiveCapabilities, type Capability } from "@/lib/capabilities";
+import { authCookieOptions, SESSION_ONLY_COOKIE } from "./remember";
 
-export async function supabaseServer() {
+/** `sessionOnly` overrides the stored "keep me signed in" choice (used at sign-in). */
+export async function supabaseServer(sessionOnly?: boolean) {
   const jar = await cookies();
+  const temporary = sessionOnly ?? jar.get(SESSION_ONLY_COOKIE)?.value === "1";
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
@@ -13,7 +16,7 @@ export async function supabaseServer() {
         setAll(values) {
           try {
             values.forEach(({ name, value, options }) =>
-              jar.set(name, value, options),
+              jar.set(name, value, authCookieOptions(options, temporary)),
             );
           } catch {
             /* Server Components rely on proxy.ts to refresh cookies. */
