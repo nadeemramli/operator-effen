@@ -1,8 +1,8 @@
 # Role-based entry, five-stage sachet route and shared machine records
 
-Status: implemented on a draft branch for OPER-2, OPER-4 and OPER-5; repaired 2026-10-05 for
-the operational write bypass and membership/file integration. Not deployed. The migrations
-below have **not** been applied to any hosted Supabase project.
+Status: live since 2026-10-06 on the `operator-effen` Supabase project (see "Go-live record"
+below). Implemented for OPER-2, OPER-4 and OPER-5; repaired 2026-10-05 for the operational
+write bypass and membership/file integration.
 
 ## Owner policy (confirmed 2026-10-05)
 
@@ -178,13 +178,35 @@ memberships to `driver` and removes the separate role.
 - Not included: supervisor correction of a mistaken trip time (there is no edit path yet),
   vehicle or route fields, and links between trips and courier handovers.
 
-## Deployment prerequisites (not done; owner/coordinator)
+## Deployment prerequisites
 
-1. Review and apply the three migrations to an isolated staging project first.
+1. Review and apply the three migrations (rehearse with `scripts/verify-migrations-local.sh`).
 2. Generate a 32-byte key; store it as the server-only env var `OPERATOR_COMMIT_SECRET` (hex)
    and in `operator_private.server_keys` (`id = 'commit'`). Never a `NEXT_PUBLIC_` variable.
    Without both, operational saves fail closed with a clear 503.
-3. Create Auth users and bootstrap the first HR membership as above.
+3. Create Auth users and bootstrap the first memberships as above.
+
+## Go-live record (2026-10-06, owner-approved)
+
+- Project `operator-effen` became the live database. No separate staging project was used; the
+  three migrations were rehearsed on a disposable local Postgres (access tests and rollback
+  passed) and the live catalog was compared object-by-object with a reference build of the
+  committed files (functions, policies, constraints, columns, grants and reference data
+  identical). The Supabase tool needs an interactive confirmation for destructive statements,
+  so the drops, deletes, rename and no-op updates are run once by the owner in the SQL Editor;
+  that script also records the repository versions in the migration history.
+- One site: `operator` ("Operator"), created with the empty default state (no sample data).
+- Memberships (direct bootstrap inserts, each with an `operator_membership_audit` row):
+  Production SV Faris (capsule) and Helmi (sachet); Stock-in SV Nurul; Stock-out SV Nadia;
+  Office admin Hadera; Management, all sites: Nadeem and the shared `team@` account.
+- No user yet for HR, Packer or Driver. Without HR, membership changes need the SQL bootstrap.
+- The fictional preview flag (`ui_draft_access`) was removed from those seven accounts. Their
+  old sandbox rows remain in `ui_draft_workspaces` but are no longer reachable.
+- `OPERATOR_COMMIT_SECRET` is set for Vercel Production only. Vercel Preview and Development
+  Supabase variables point at a placeholder, so preview builds cannot reach live data; give
+  them a separate staging project to re-enable them.
+- Known limit accepted for go-live: production supervisors are not limited to one factory;
+  Faris and Helmi can both record capsule and sachet batches.
 
 ## Verification
 

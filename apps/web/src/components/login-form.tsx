@@ -136,14 +136,11 @@ export function LoginForm({ expired = false }: { expired?: boolean }) {
           {lang === "en" ? "Bahasa Melayu" : "English"}
         </Button>
         <div className="login-card">
-          <span className="status-pill tone-warning">
-            {t("TEAM TESTING", "UJIAN PASUKAN")}
-          </span>
           <h2>{t("Welcome to Operator", "Selamat datang ke Operator")}</h2>
           <p className="text-muted-foreground">
             {t(
-              "Sign in to explore your team's new workspace.",
-              "Log masuk untuk mencuba ruang kerja baharu pasukan anda.",
+              "Sign in with your own Operator account.",
+              "Log masuk dengan akaun Operator anda sendiri.",
             )}
           </p>
           {expired && (
@@ -157,14 +154,14 @@ export function LoginForm({ expired = false }: { expired?: boolean }) {
           <form onSubmit={submit} className="space-y-5 mt-8">
             <div className="space-y-2">
               <Label htmlFor="username">
-                {t("Team username", "Nama pengguna pasukan")}
+                {t("Work email", "E-mel kerja")}
               </Label>
               <Input
                 id="username"
                 name="username"
                 type="email"
                 autoComplete="username"
-                placeholder="team@effengroup.com"
+                placeholder="name@effengroup.com"
                 required
               />
             </div>
@@ -235,8 +232,8 @@ export function LoginForm({ expired = false }: { expired?: boolean }) {
             <ShieldCheck size={19} />
             <p>
               {t(
-                "A safe place to test. All records are fictional and separate from live operations. Use the shared credentials provided by Nadeem.",
-                "Ruang selamat untuk ujian. Semua rekod ialah contoh rekaan dan berasingan daripada operasi sebenar. Gunakan maklumat log masuk daripada Nadeem.",
+                "Live operations. What you can see and record follows your role. Ask Nadeem if your role is wrong or you need a password reset.",
+                "Operasi sebenar. Apa yang anda boleh lihat dan rekod mengikut peranan anda. Hubungi Nadeem jika peranan anda salah atau anda perlu tetapkan semula kata laluan.",
               )}
             </p>
           </div>
