@@ -252,8 +252,9 @@ commit;
   passed) and the live catalog was compared object-by-object with a reference build of the
   committed files (functions, policies, constraints, columns, grants and reference data
   identical). The Supabase tool needs an interactive confirmation for destructive statements,
-  so the drops, deletes, rename and no-op updates are run once by the owner in the SQL Editor;
-  that script also records the repository versions in the migration history.
+  so the drops, deletes, rename and no-op updates were run once by the owner in the SQL Editor;
+  that script also recorded the repository versions in the migration history. After it ran,
+  all 61 live functions, policies, constraints and reference-data sets matched the reference.
 - One site: `operator` ("Operator"), created with the empty default state (no sample data).
 - Memberships (direct bootstrap inserts, each with an `operator_membership_audit` row):
   Production SV Faris (capsule) and Helmi (sachet); Stock-in SV Nurul; Stock-out SV Nadia;
