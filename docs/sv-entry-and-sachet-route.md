@@ -283,8 +283,9 @@ commit;
   callable; `factory` is readable, not writable). Security advisor: only the expected
   "signed-in users can execute" note for `operator_set_membership_factory`, like the other
   administration functions.
-- No supervisor is scoped yet. Next: the owner runs the "Factory scope" assignment script in
-  the SQL Editor (capsule supervisor → `bottle`, sachet supervisor → `sachet`).
+- 2026-10-06 07:11 UTC: the owner ran the "Factory scope" assignment script in the SQL
+  Editor. Faris (capsule) is scoped to `bottle` and Helmi to `sachet`, each with a `change`
+  row in `operator_membership_audit` (actor role `owner-bootstrap`, as at go-live).
 
 ## Verification
 
