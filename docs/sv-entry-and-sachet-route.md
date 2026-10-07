@@ -220,6 +220,9 @@ packed. The supervisor still corrects saved counts and reviews the daily tally. 
   moment get "a teammate saved first" and must be repeated.
 - Rollout: apply the migration before deploying the app. Until then the app fails closed
   (unlock answers 503; `pack-own` is refused by the database).
+- Applied to `operator-effen` on 2026-10-07 (owner-approved), recorded as version
+  `20261008090000` in the migration history; no packer profiles or PINs exist yet. The
+  stock-out supervisor adds them after the app is deployed.
 
 ## Factory scope (production supervisors)
 
