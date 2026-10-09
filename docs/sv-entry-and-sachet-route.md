@@ -213,6 +213,10 @@ packed. The supervisor still corrects saved counts and reviews the daily tally. 
   count only, only for an AWB assigned to that profile; the packer is recorded as packer and AWB
   attacher, the shared account as recorder. Corrections stay `correct` (stock-out supervisor).
   The supervisor's own `pack` entry is unchanged.
+- **Who keyed it** (since 2026-10-09): the daily tally's "Tally by assigned packer" has an
+  **Entered by** column (counts keyed by the packer with their PIN vs by a supervisor, from the
+  recorder's role), and the parcel record shows **Count entered by**. Older counts without a
+  recorder show "not recorded".
 - Limits: picking a name plus a PIN shows who claims the work, not a verified identity; a
   shared PIN is as good as the person's own, so set a new one when it leaks. Anyone with the
   shared password can lock a profile with wrong PINs (the supervisor unlocks it). All packers

@@ -16,6 +16,7 @@ import {
 } from "./draft-primitives";
 import { channels } from "@/lib/awb-import";
 import {
+  packEntrySource,
   dailyTally,
   packageGroups,
   singleProductOrder,
@@ -1070,6 +1071,7 @@ export function OrderWorkspace({
                     t("Required", "Diperlukan"),
                     t("Packed", "Dibungkus"),
                     t("Unrecorded", "Belum direkod"),
+                    t("Entered by", "Direkod oleh"),
                   ].map((h) => (
                     <th key={h}>{h}</th>
                   ))}
@@ -1114,6 +1116,20 @@ export function OrderWorkspace({
                           {lines.reduce((n, l) => n + (l.actual ?? 0), 0)}
                         </td>
                         <td>{lines.filter((l) => l.actual === null).length}</td>
+                        <td>
+                          {(() => {
+                            const by = (k: string) =>
+                              orders.filter((o) => packEntrySource(o) === k).length;
+                            const parts = [
+                              [by("packer"), t("packer (PIN)", "pembungkus (PIN)")],
+                              [by("supervisor"), t("supervisor", "penyelia")],
+                              [by("unknown"), t("not recorded", "tidak direkod")],
+                            ].filter(([n]) => n);
+                            return parts.length
+                              ? parts.map(([n, label]) => `${n} ${label}`).join(" · ")
+                              : "—";
+                          })()}
+                        </td>
                       </tr>
                     );
                   }),

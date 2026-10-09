@@ -391,65 +391,25 @@ page / 200 row limits. Docs: README "Input orders".
 
 ## WP8 — Packers record their own parcel counts
 
+**Update 2026-10-09: delivered by PR #20, residual items only.** PR #20 ("Shared packer
+sign-in with PINs; drivers name themselves on trips", migration `20261008090000`, already
+applied to `operator-effen`) delivers the owner's request: packers share one packer sign-in,
+unlock their own profile with a PIN and record their own first count (`pack-own`, capability
+`packing.record`), and the declaring packer is also recorded as "AWB attached by" (owner
+decision 6). The identity bridge, `packing.declare` capability and migration planned here are
+therefore **not built**.
+
 **Request.** "Packers should do the count-in: when they complete a parcel they key in the
 product number."
 
-**Today.** `pack` (`draft.ts:2175-2233`) is `allow("outbound")`: the stock-out supervisor
-records the actual packer's count. Packer role has only `feedback.post` (and the DB seed
-agrees). The packing screen (`draft-app.tsx:1809-1995`) makes a packer **choose a packer
-profile from a dropdown** and shows "Your supervisor records this count." Assignments use
-`assignedPacker` = a staff profile id when `state.staffProfiles` exists, else a name from the
-sample `people` list — and the live site has no `staffProfiles`, so today's live assignments
-use the sample names. A signed-in packer has `membership.display_name` and an optional
-`staff_profile_id` (`supabase/server.ts`), neither of which the packing screen uses.
-
-**Decision.** Packers get a capability `packing.declare` and a command `pack-own` that records
-the count for a parcel **assigned to them**. Identity is bridged on the server: a member's
-packer id is `staff_profile_id ?? user_id`; the server exposes the site's packer memberships to
-supervisors so assignments use the same ids. The supervisor path (`pack`, `correct`) stays.
-
-**Changes.**
-- `capabilities.ts`: `packer: ["packing.declare", "feedback.post"]`; `"pack-own": {
-  capability: "packing.declare", stateKeys: ["orders", "events"] }`. Update
-  `authorizeMember` in `access.ts` so a packer's denial text mentions their own parcels.
-- Server, `GET /api/draft` (`route.ts`): for members, add `actor.packerId` (`staffProfileId ??
-  userId`) and `staff: { id, name, role }[]` = active packer (and driver) memberships of the
-  workspace that RLS lets the caller read (supervisors can; packers get an empty list). Client
-  `packerOptions` (`draft-app.tsx:933-939`, `order-workspace.tsx:88-94`) prefer `staff` over
-  `state.staffProfiles` over `people`. The domain's packer validation (`assign-package`,
-  `assign-orders`, `pack`) must accept ids from `cmd.staff` passed by the server (add
-  `Command.staff?: { id, role }[]`; validation order: `staff` → `staffProfiles` → `people`).
-- `draft.ts` `pack-own`: `allow("packer")`; order must be reviewed, single-product, not
-  dispatched, `actual === null`, and `o.assignedPacker === recorder.packerId` (add
-  `Recorder.packerId`; in the preview sandbox fall back to the `pic` input so the demo keeps
-  working); reads `actual` (or `actual_<product>` for line orders) and optional `occurredAt`;
-  sets `actual`, `packer = assignedPacker`, `labelPic = packer` (one person packs and attaches
-  the label unless the supervisor says otherwise), `packedAt`, `packRecordedAt`,
-  `packRecordedBy`. Log "Parcel quantity declared by packer".
-- Migration `20261009090004_operator_packer_declarations.sql`: seed the capability and command
-  rows; in `assert_core_transition` add an **orders** rule that applies when the caller's active
-  role is `packer` (pass `v_role` into the assertion or read it inside): every order that
-  differs between old and new must (a) have `assignedPacker` equal to the caller's
-  `coalesce(staff_profile_id, user_id::text)` at that workspace, (b) have had `actual` null
-  before, and (c) differ only in `actual`, `lines[*].actual`, `packer`, `labelPic`, `packedAt`,
-  `packRecordedAt`, `packRecordedBy`. SQL tests: packer declares own parcel (`ok`), another
-  packer's parcel (`23514`), re-declares (`23514`), edits `expected` (`23514`), supervisor path
-  unchanged (`ok`).
-- UI, packing screen: for a packer member, no dropdown — the screen opens on their own
-  parcels (`assignedPacker === actor.packerId`), each card has **Record my count** → `pack-own`
-  with one number per product line and the optional "when" field; after saving the card shows
-  the count and "Entered by you". Supervisors keep the current screen and can still record or
-  correct. Packer summary (`PackerPackageSummary`) unchanged.
-- Daily tally "Tally by assigned packer": add a column "Entered by" (packer / supervisor) from
-  `packRecordedBy.role`.
-- Tests: `tests/draft.test.mjs:398` family, new `tests/packer-count.test.mjs` (own parcel ok;
-  other packer refused; unassigned refused; cannot overwrite; `outOfScopeKeys` empty; sandbox
-  fallback), `tests/capabilities.test.mjs` parity with the new migration.
-- Docs: README "Packing station" and "Prepared boundary for staff accounts" (now partly
-  delivered), role table in `sv-entry-and-sachet-route.md` (Packer: declare own parcel counts).
-- **Owner action after deploy:** packer accounts must exist (none today) and be granted at the
-  site; if the owner wants assignment names to differ from login names, set
-  `staff_profile_id` on the packer memberships.
+**Residual scope (no migration).**
+- Daily tally "Tally by assigned packer": an **Entered by** column summarising, per packer
+  and product, how many counts the packer keyed with their PIN and how many a supervisor
+  keyed (from `order.packRecordedBy.role`; older records without a recorder are shown as
+  "not recorded", never guessed).
+- Parcel record (trace sheet): a **Count entered by** line (packer with PIN or supervisor,
+  plus the recorder).
+- Helper `packEntrySource(order)` in `draft.ts`, tested in `tests/packer-self-entry.test.mjs`.
 
 ---
 
@@ -547,8 +507,11 @@ are kept for the record only.
 | WP4 drop-off time vs arrival | Drop-offs may be logged before or after arrival, never in the future | Require drop-offs before arrival |
 | WP8 label PIC | The packer who declares the count is also "AWB attached by" | Ask for a second name |
 
-Also confirmed: no packer or driver accounts exist yet; WP8 ships with the identity bridge and
-the owner creates packer logins and memberships afterwards.
+Correction (2026-10-09): an earlier version of this plan said no packer or driver accounts
+exist. They do: the shared `driver@` and `packers@` sign-ins were added on 2026-10-06 (see the
+go-live record in `sv-entry-and-sachet-route.md`), and PR #20 built packer self-entry and the
+shared driver sign-in on them. WP8 is reduced to the residual items in its section; WP4 builds
+on PR #20's trip shape.
 
 ## Verification checklist (every PR)
 

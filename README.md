@@ -154,6 +154,8 @@ are never converted into box inventory. Previously counted boxes remain stock.
   AWBs remain visible even if opposite errors cancel in the aggregate. Each count
   preserves the demand snapshot, PIC, timestamp and reason. New/changed orders mark
   the earlier count stale and require a fresh count before more allocation/assignment.
+  Since 9 October 2026 "Tally by assigned packer" shows who keyed each count (packer with PIN
+  or supervisor), and a parcel's record shows "Count entered by".
 - The day changes at midnight in Asia/Kuala_Lumpur. Supervisors can manually carry
   unpacked AWBs forward; stock allocations and assignments follow the AWB, and the
   old day's checkpoint is flagged because its order set changed.
