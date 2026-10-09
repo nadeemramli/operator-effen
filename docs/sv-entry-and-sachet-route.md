@@ -14,7 +14,7 @@ Actual performer and authenticated recorder stay separate throughout.
 | Production SV | one site | plan batches, record and correct stages, machines, day close, staff memberships*, feedback |
 | Stock-in SV | one site | record and correct stages, machines, receive stock, **stock adjustments**, day close, staff memberships*, feedback |
 | Stock-out SV | one site | order entry, fulfilment, outbound corrections, read sources, read driver trips, day close, staff memberships*, feedback |
-| Office admin | site or all sites | order/AWB import and release, order entry, read sources, feedback |
+| Office admin | site or all sites | order/AWB import and release, order entry, read sources, feedback; reads the Stock-in, Packing station and Daily tally screens (view only, since 2026-10-09) |
 | HR | site or all sites | memberships (all roles, all sites), site capability policy, feedback |
 | Management | site or all sites | review comments, read sources, read driver trips, feedback |
 | Driver | one site | log their own trips (see [driver trips](#driver-trips)), view, feedback |

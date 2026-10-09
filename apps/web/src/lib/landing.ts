@@ -22,12 +22,13 @@ export type View =
 /** Sidebar order and the roles that may open each screen. */
 export const views: { id: View; roles: Role[] }[] = [
   { id: "production", roles: ["production"] },
-  { id: "warehouse", roles: ["intake"] },
+  // Office admin reads Stock-in, Packing and Daily tally (view only: no stock capabilities).
+  { id: "warehouse", roles: ["intake", "admin"] },
   { id: "input", roles: ["admin", "outbound"] },
   { id: "orders", roles: ["admin", "outbound"] },
-  { id: "packing", roles: ["packer", "outbound"] },
+  { id: "packing", roles: ["packer", "outbound", "admin"] },
   { id: "trips", roles: ["driver", "outbound", "management"] },
-  { id: "tally", roles: ["outbound", "management"] },
+  { id: "tally", roles: ["outbound", "management", "admin"] },
   {
     id: "overview",
     roles: ["production", "intake", "outbound", "admin", "hr", "management"],
@@ -56,7 +57,10 @@ export const views: { id: View; roles: Role[] }[] = [
 const aliases: Record<string, View> = { outbound: "orders" };
 
 /** Roles whose home is not their first sidebar entry. */
-const homes: Partial<Record<Role, View>> = { management: "overview" };
+const homes: Partial<Record<Role, View>> = {
+  management: "overview",
+  admin: "input",
+};
 
 export const allowedViews = (role: Role): View[] =>
   views.filter((v) => v.roles.includes(role)).map((v) => v.id);

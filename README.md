@@ -248,6 +248,14 @@ records without stock or packing activity can be explicitly separated in Order
 management with a reason and actual AWBs. Historical activity is preserved and
 requires supervisor reconciliation; it is never silently split or duplicated.
 
+### Office admin on stock screens (9 October 2026)
+
+Office admin can open **Stock in & inventory**, **Packing station** and **Daily tally** in
+addition to Input orders and Order management, and still opens on Input orders. Access is
+view only (owner decision 2026-10-09): no stock or fulfilment capability was added, so the
+record buttons on those screens are hidden and the server and database refuse those
+commands as before.
+
 ### Landing screen and return after sign-in (9 October 2026)
 
 The screen comes from `?view=` when the signed-in role may open it; otherwise the
