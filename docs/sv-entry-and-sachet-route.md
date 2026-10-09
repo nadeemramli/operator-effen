@@ -42,7 +42,9 @@ JSON document per site with one revision (normalized per-record storage is #10).
    are attributed to the caller; received cartons are immutable; no carton goes below zero;
    batches, custody (transfer) facts and route snapshots are fixed; stage completion is never
    undone and PIC/correction/rework history is append-only; a batch with a route snapshot needs
-   every stage completed with a PIC before transfer; machines and their history persist.
+   its factory stages (mixing, filling) completed with a PIC before transfer, and every route
+   stage completed with a PIC before a box carton is created for it (two gates since
+   2026-10-09, migration `20261009090001`); machines and their history persist.
 3. The commit, its audit row and the idempotency record (`operator_commits`) are one
    transaction. A retry with the same operation ID returns the established result; the same ID
    with different input is rejected.
@@ -125,9 +127,22 @@ author, site, optional record reference and time, and never edits operational re
 | `hologram` | Hologram machine | Mesin hologram |
 | `wrapping` | Shrink machine (plastic wrapping) | Mesin shrink (balutan plastik) |
 
-- New sachet batches snapshot route `sachet-v2` (above). Transfer needs an actual completion
-  with PIC for every stage in the snapshot. Planned PICs are not completions. QC is never
-  inferred.
+- New sachet batches snapshot route `sachet-v2` (above). Planned PICs are not completions. QC
+  is never inferred.
+- **Factory and warehouse stages (since 2026-10-09).** `mixing` and `filling` are factory
+  stages; every later stage of a route is a warehouse stage. Production records the factory
+  stages and **Send to warehouse** needs both completed with a PIC. Stock-in records
+  batching, hologram and wrapping on the receipt awaiting boxing; **Finalize box count**
+  needs every stage of the route completed with a PIC ("n/3 warehouse stages" until then).
+  Production may still record any stage; its screen shows the warehouse stages read-only.
+  Warehouse-stage records and corrections after transfer are the normal flow and are not
+  flagged as revisions until the box count is finalized; factory-stage corrections after
+  transfer still are. The split is defined once in TypeScript (`factoryStages`) and once in
+  SQL (`operator_private.factory_stage`), and a test keeps them identical. A four-stage
+  (`sachet-v1`) batch follows the same split. Historical batches without a route snapshot
+  are not re-checked at the box count. Batches already transferred with all five stages are
+  unchanged; a batch in production with some stages done transfers once mixing and filling
+  are done.
 - Batches without a snapshot: transferred ones keep their historical route (`sachet-v1`
   four-stage, or free-form legacy records). Untransferred ones need an explicit production
   route review: upgrade to five stages (adds an open Hologram stage) or keep the four-stage
@@ -138,6 +153,10 @@ author, site, optional record reference and time, and never edits operational re
   enforced on timestamps.
 
 ## Shared machine/PIC records (OPER-5)
+
+(Since 2026-10-09 the stock-in receipt row shows the warehouse stages inline; the full
+five-stage view below stays for history and corrections.)
+
 
 - Production and Stock-in edit the same batch stage records. Stock-in shows them under
   "Sachet production records"; both screens share the site machine registry.
@@ -283,7 +302,8 @@ commit;
 
 ## Rollback
 
-Run `supabase/rollback/20261007090000_operator_factory_scope.down.sql`, then
+Run `supabase/rollback/20261009090001_operator_warehouse_stages.down.sql` (restores the
+all-stages transfer gate), then `supabase/rollback/20261007090000_operator_factory_scope.down.sql`, then
 `20261006090000_operator_driver_trips.down.sql`, then
 `20261005090000_operator_trusted_commands.down.sql`, then
 `20261004090000_operator_memberships.down.sql`, after exporting operational state,
