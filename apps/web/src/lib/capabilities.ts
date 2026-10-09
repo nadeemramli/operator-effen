@@ -18,7 +18,8 @@ export type Capability =
   | "day.close"
   | "members.manage"
   | "trips.log"
-  | "trips.read";
+  | "trips.read"
+  | "packing.record";
 export type MemberRole =
   | "production"
   | "intake"
@@ -73,7 +74,9 @@ export const roleCapabilities: Record<MemberRole, Capability[]> = {
   admin: ["orders.import", "orders.enter", "sources.read", "feedback.post"],
   hr: ["members.manage", "feedback.post"],
   management: ["review.comment", "sources.read", "feedback.post", "trips.read"],
-  packer: ["feedback.post"],
+  // Packers share one sign-in per site and record their own packed counts after unlocking
+  // their profile with a PIN (see apps/web/src/lib/packer-session.ts).
+  packer: ["feedback.post", "packing.record"],
   // Drivers log their own trips (assistant, pickup/arrival time, photo). One role covers
   // the whole crew: the assistant is recorded by name on the trip, not as a separate login.
   driver: ["trips.log", "feedback.post"],
@@ -125,6 +128,7 @@ export const commandRules: Record<
   "issue-orders": { capability: "outbound.fulfil", stateKeys: ["issues", "events"] },
   issue: { capability: "outbound.fulfil", stateKeys: ["issues", "events"] },
   pack: { capability: "outbound.fulfil", stateKeys: ["orders", "events"] },
+  "pack-own": { capability: "packing.record", stateKeys: ["orders", "events"] },
   dispatch: { capability: "outbound.fulfil", stateKeys: ["orders", "events"] },
   correct: { capability: "outbound.correct", stateKeys: ["orders", "events"] },
   review: { capability: "review.comment", stateKeys: ["notes", "events"] },
@@ -132,6 +136,14 @@ export const commandRules: Record<
   close: { capability: "day.close", stateKeys: ["closedDays", "events"] },
   trip: { capability: "trips.log", stateKeys: ["trips", "events"] },
   "trip-update": { capability: "trips.log", stateKeys: ["trips", "events"] },
+  "staff-profile-create": {
+    capability: "members.manage",
+    stateKeys: ["staffProfiles", "events"],
+  },
+  "staff-profile-update": {
+    capability: "members.manage",
+    stateKeys: ["staffProfiles", "events"],
+  },
 };
 export const grantableRoles: Partial<Record<MemberRole, MemberRole[]>> = {
   hr: [...memberRoles],
