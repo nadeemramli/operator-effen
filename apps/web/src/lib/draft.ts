@@ -528,6 +528,12 @@ export function batchRoute(b: Batch): {
 }
 export const routeStages = (b: Batch) =>
   batchRoute(b).stages.map((key) => sachetStage(key)!);
+/**
+ * Bottle (capsule) batches record one QC count at the end: the last step's quantity is the
+ * finished bottles. Earlier steps record their PIC only (older records may carry a quantity).
+ */
+export const isQcStep = (b: Pick<Batch, "product" | "steps">, index: number) =>
+  !isSachet(b.product) && index === b.steps.length - 1;
 export const batchComplete = (b: Batch) => {
   if (!isSachet(b.product)) return b.steps.every((step) => step.done);
   const { stages } = batchRoute(b);
@@ -1616,34 +1622,40 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error(
           "This step is already recorded; use a correction workflow.",
         );
-      const qc = str("qc");
+      // Only the last step (Batching, Sticker & QC) records a count: the QC count of
+      // finished bottles. Earlier machine steps record who did the work, never an output.
+      const qcStep = isQcStep(b, index);
+      const qc = qcStep ? str("qc") : "not-recorded";
       if (!["not-recorded", "pass", "issue"].includes(qc))
         throw new Error("Choose a QC result.");
       if (st.pic && st.pic !== str("pic"))
         throw new Error(
           "Use Edit PIC or Shift handover to change the assigned person first.",
         );
+      const qty = qcStep ? num("qty") : null;
       b.steps[index] = {
         ...st,
         pic: str("pic"),
-        qty: num("qty"),
+        qty,
         start: str("start", false),
         end: str("end", false),
         done: true,
         qc: qc as Step["qc"],
       };
-      if (index === b.steps.length - 1) b.actual = num("qty");
+      if (qcStep) b.actual = qty!;
       log(
         b.id,
         "Process recorded",
-        stepNames(b)[index][0] +
-          " · " +
-          str("pic") +
-          " · " +
-          num("qty") +
-          " " +
-          batchUnit(b) +
-          (qc === "not-recorded" ? " · QC not recorded" : " · QC: " + qc),
+        qcStep
+          ? "QC count " +
+              qty +
+              " " +
+              batchUnit(b) +
+              "s" +
+              (qc === "not-recorded" ? " · QC not recorded" : " · QC: " + qc) +
+              " · " +
+              str("pic")
+          : stepNames(b)[index][0] + " · " + str("pic"),
       );
       break;
     }
