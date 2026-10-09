@@ -238,3 +238,14 @@ rows stay in review until separated using the actual labels. Existing mixed-bran
 records without stock or packing activity can be explicitly separated in Order
 management with a reason and actual AWBs. Historical activity is preserved and
 requires supervisor reconciliation; it is never silently split or duplicated.
+
+### Landing screen and return after sign-in (9 October 2026)
+
+The screen comes from `?view=` when the signed-in role may open it; otherwise the
+role's home screen (`apps/web/src/lib/landing.ts`). Management's home is Overview,
+even though Driver trips is its first sidebar entry; every other role opens on its
+working screen. No screen is chosen until the server has said who is signed in, so a
+refresh never passes through another role's screens. Management's "view as" lens lasts
+for the browser tab, refreshes included, and ends with it. Signing in again after a
+refresh or an expired session returns to the screen that was open; only paths on this
+site are accepted as the return address.

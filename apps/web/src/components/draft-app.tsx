@@ -42,6 +42,12 @@ import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { DriverTrips } from "./driver-trips";
 import { channels } from "@/lib/awb-import";
+import {
+  allowedViews,
+  homeView,
+  resolveView,
+  type View,
+} from "@/lib/landing";
 import { PersonBadge } from "./person-profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -105,113 +111,28 @@ import {
   type Role,
 } from "@/lib/draft";
 
-type View =
-  | "overview"
-  | "production"
-  | "warehouse"
-  | "outbound"
-  | "input"
-  | "tally"
-  | "orders"
-  | "packing"
-  | "trips"
-  | "trace"
-  | "reports"
-  | "feedback";
-const navigation: {
-  id: View;
-  en: string;
-  ms: string;
-  icon: typeof Factory;
-  roles: Role[];
-}[] = [
-  {
-    id: "production",
-    en: "Production",
-    ms: "Pengeluaran",
-    icon: Factory,
-    roles: ["production"],
-  },
-  {
-    id: "warehouse",
+/** Sidebar labels and icons; which roles see each screen lives in lib/landing. */
+const navigation: Record<View, { en: string; ms: string; icon: typeof Factory }> = {
+  production: { en: "Production", ms: "Pengeluaran", icon: Factory },
+  warehouse: {
     en: "Stock in & inventory",
     ms: "Stok masuk & inventori",
     icon: Boxes,
-    roles: ["intake"],
   },
-  {
-    id: "input",
-    en: "Input orders",
-    ms: "Masukkan pesanan",
-    icon: FileText,
-    roles: ["admin", "outbound"],
-  },
-  {
-    id: "orders",
-    en: "Order management",
-    ms: "Pengurusan pesanan",
-    icon: FileText,
-    roles: ["admin", "outbound"],
-  },
-  {
-    id: "packing",
-    en: "Packing station",
-    ms: "Stesen pembungkusan",
-    icon: PackageCheck,
-    roles: ["packer", "outbound"],
-  },
-  {
-    id: "trips",
-    en: "Driver trips",
-    ms: "Perjalanan pemandu",
-    icon: Truck,
-    roles: ["driver", "outbound", "management"],
-  },
-  {
-    id: "tally",
-    en: "Daily tally",
-    ms: "Jumlah akhir hari",
-    icon: ClipboardList,
-    roles: ["outbound", "management"],
-  },
-  {
-    id: "overview",
-    en: "Overview",
-    ms: "Gambaran",
-    icon: LayoutDashboard,
-    roles: ["production", "intake", "outbound", "admin", "hr", "management"],
-  },
-  {
-    id: "trace",
-    en: "Traceability",
-    ms: "Jejak rekod",
-    icon: ScanLine,
-    roles: ["production", "intake", "outbound", "management", "driver"],
-  },
-  {
-    id: "reports",
-    en: "Reports & people",
-    ms: "Laporan & pasukan",
-    icon: Activity,
-    roles: ["management", "hr"],
-  },
-  {
-    id: "feedback",
+  input: { en: "Input orders", ms: "Masukkan pesanan", icon: FileText },
+  orders: { en: "Order management", ms: "Pengurusan pesanan", icon: FileText },
+  packing: { en: "Packing station", ms: "Stesen pembungkusan", icon: PackageCheck },
+  trips: { en: "Driver trips", ms: "Perjalanan pemandu", icon: Truck },
+  tally: { en: "Daily tally", ms: "Jumlah akhir hari", icon: ClipboardList },
+  overview: { en: "Overview", ms: "Gambaran", icon: LayoutDashboard },
+  trace: { en: "Traceability", ms: "Jejak rekod", icon: ScanLine },
+  reports: { en: "Reports & people", ms: "Laporan & pasukan", icon: Activity },
+  feedback: {
     en: "Testing & feedback",
     ms: "Ujian & maklum balas",
     icon: MessageSquare,
-    roles: [
-      "production",
-      "intake",
-      "outbound",
-      "admin",
-      "hr",
-      "packer",
-      "driver",
-      "management",
-    ],
   },
-];
+};
 const copy: Record<View, [string, string, string, string]> = {
   overview: [
     "Your operations, at a glance",
@@ -248,12 +169,6 @@ const copy: Record<View, [string, string, string, string]> = {
     "Pengurusan pesanan",
     "Review orders by day, product and package.",
     "Semak pesanan mengikut hari, produk dan pakej.",
-  ],
-  outbound: [
-    "Incoming orders for the day",
-    "Pesanan masuk hari ini",
-    "Review daily packages, count stock requirements and assign packers.",
-    "Kira label bercetak, keluarkan stok rak dan tugaskan AWB kepada pembungkus.",
   ],
   packing: [
     "One parcel. An honest count.",
@@ -318,7 +233,19 @@ const readPending = (): PendingSave | null => {
     return null;
   }
 };
+// Management's "view as" lens lasts for this tab, refreshes included, and ends with it:
+// nobody reopens Operator days later still looking through another role's screens.
 const VIEW_AS_KEY = "operator-view-as";
+// The fictional preview keeps the last role chosen on this device.
+const PREVIEW_ROLE_KEY = "operator-role";
+const storedRole = (storage: () => Storage, key: string): Role | undefined => {
+  try {
+    const value = storage().getItem(key);
+    return roles.some((r) => r.id === value) ? (value as Role) : undefined;
+  } catch {
+    return undefined;
+  }
+};
 // Assistant drivers are drivers now; a server still on the older role list maps across.
 const viewRole = (role?: string): Role =>
   role === "assistant"
@@ -326,6 +253,15 @@ const viewRole = (role?: string): Role =>
     : roles.some((r) => r.id === role)
       ? (role as Role)
       : "packer";
+/** The sign-in address that brings the person back to the screen open in this tab. */
+const signInHref = (expired: boolean) => {
+  const q = new URLSearchParams();
+  if (expired) q.set("expired", "1");
+  const here = window.location.pathname + window.location.search;
+  if (here !== "/") q.set("next", here);
+  const query = q.toString();
+  return "/login" + (query ? "?" + query : "");
+};
 
 export function DraftApp() {
   const revisionRef = useRef(0);
@@ -365,16 +301,11 @@ export function DraftApp() {
     : previewCapabilities(role);
   const can = (capability: string) => caps.includes(capability);
   const operational = caps.some((c) => c !== "feedback.post");
-  const allowed = navigation.filter((n) => n.roles.includes(role));
+  const allowed = allowedViews(role).map((id) => ({ id, ...navigation[id] }));
   const viewingAs = canViewAs && role !== "management";
   const roleName = (id?: string) =>
     roles.find((r) => r.id === id)?.[lang === "ms" ? "ms" : "en"] ?? id;
-  const requested = (
-    params.get("view") === "outbound" ? "orders" : params.get("view")
-  ) as View;
-  const view = allowed.some((n) => n.id === requested)
-    ? requested
-    : allowed[0].id;
+  const view = resolveView(role, params.get("view"));
   const go = (next: View) => {
     router.push("/?view=" + next);
     setQuery("");
@@ -382,7 +313,14 @@ export function DraftApp() {
   };
   const changeRole = (next: Role) => {
     setRole(next);
-    localStorage.setItem(member ? VIEW_AS_KEY : "operator-role", next);
+    try {
+      if (member) sessionStorage.setItem(VIEW_AS_KEY, next);
+      else localStorage.setItem(PREVIEW_ROLE_KEY, next);
+    } catch {
+      /* Storage can be unavailable; the choice still applies to this page. */
+    }
+    // Keep the address and the screen in step when the new role cannot open this one.
+    if (!allowedViews(next).includes(view)) go(homeView(next));
     setQuery("");
     setTrace(null);
     setForm(null);
@@ -402,7 +340,7 @@ export function DraftApp() {
         { cache: "no-store" },
       );
       if (res.status === 401) {
-        router.replace("/login");
+        router.replace(signInHref(false));
         router.refresh();
         return;
       }
@@ -416,14 +354,15 @@ export function DraftApp() {
       setWorkspaces(data.workspaces ?? []);
       // Members act only in their server-assigned role; the preview switcher is ignored.
       // Management may keep a "view as" lens, which never changes what they can save.
-      if (data.actor?.kind === "member") {
-        const viewAs = localStorage.getItem(VIEW_AS_KEY);
-        setRole(
-          data.actor.role === "management" && roles.some((r) => r.id === viewAs)
-            ? (viewAs as Role)
-            : viewRole(data.actor.role),
-        );
-      }
+      // The role is applied only now, once the server has said who this is: a guessed
+      // role would choose the screen, and a refresh would open on the wrong one.
+      setRole(
+        data.actor?.kind === "member"
+          ? data.actor.role === "management"
+            ? (storedRole(() => sessionStorage, VIEW_AS_KEY) ?? "management")
+            : viewRole(data.actor.role)
+          : (storedRole(() => localStorage, PREVIEW_ROLE_KEY) ?? "management"),
+      );
       setPendingSave(readPending());
       setError("");
     } catch (e) {
@@ -432,16 +371,39 @@ export function DraftApp() {
   }, [router]);
   useEffect(() => {
     void Promise.resolve().then(() => {
-      const savedRole = localStorage.getItem("operator-role");
-      if (roles.some((r) => r.id === savedRole)) setRole(savedRole as Role);
-      const savedLang = localStorage.getItem("operator-language");
-      if (savedLang === "ms") {
-        setLang("ms");
-        document.documentElement.lang = "ms";
+      try {
+        if (localStorage.getItem("operator-language") === "ms") {
+          setLang("ms");
+          document.documentElement.lang = "ms";
+        }
+        // Earlier builds kept the lens on the device; it now lives with the tab.
+        localStorage.removeItem(VIEW_AS_KEY);
+      } catch {
+        /* Storage can be unavailable; defaults apply. */
       }
       void load();
     });
   }, [load]);
+  // Until the server says who is signed in, no screen is chosen: the role decides the
+  // screen, and a guessed role sent every refresh to that guess's first screen.
+  if (!actor)
+    return (
+      <main className="loading-state min-h-dvh" aria-live="polite">
+        {error ? (
+          <>
+            <p role="alert">{error}</p>
+            <Button variant="outline" size="sm" onClick={() => void load()}>
+              {t("Try again", "Cuba lagi")}
+            </Button>
+          </>
+        ) : (
+          <>
+            <LoaderCircle className="animate-spin" />
+            <p>{t("Opening your workspace…", "Membuka ruang kerja anda…")}</p>
+          </>
+        )}
+      </main>
+    );
   async function command(
     type: string,
     input: Record<string, unknown>,
@@ -504,7 +466,7 @@ export function DraftApp() {
         );
       }
       if (res.status === 401) {
-        router.replace("/login?expired=1");
+        router.replace(signInHref(true));
         router.refresh();
         throw new Error(
           t(
@@ -1828,7 +1790,7 @@ export function DraftApp() {
           </Panel>
         </AwbIntake>
       );
-    if (view === "orders" || view === "outbound" || view === "tally")
+    if (view === "orders" || view === "tally")
       return (
         <OrderWorkspace
           key={view}
@@ -2490,13 +2452,7 @@ export function DraftApp() {
             </Button>
             <span>{t("Workspace", "Ruang kerja")}</span>
             <ChevronRight size={13} />
-            <strong>
-              {
-                navigation.find((n) => n.id === view)?.[
-                  lang === "ms" ? "ms" : "en"
-                ]
-              }
-            </strong>
+            <strong>{navigation[view][lang === "ms" ? "ms" : "en"]}</strong>
           </div>
           <div className="topbar-controls">
             <Button
