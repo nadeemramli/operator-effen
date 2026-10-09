@@ -374,6 +374,26 @@ commit;
   Editor. Faris (capsule) is scoped to `bottle` and Helmi to `sachet`, each with a `change`
   row in `operator_membership_audit` (actor role `owner-bootstrap`, as at go-live).
 
+## Floor improvements rollout (2026-10-09, owner-approved)
+
+- The ten floor improvement PRs (#21–#28, #30, #31; plan and CI job in #29) merged into
+  `main` in the agreed order after each was green on both CI jobs (`check`, and `integration`:
+  migration rehearsal with rollback plus the real-stack browser scenarios).
+- Migrations applied to `operator-effen` on 2026-10-09 (UTC morning) under the owner's
+  instruction, each run unchanged in one transaction through the Supabase MCP connection and
+  recorded in the migration history under its repository version, before its PR merged:
+  `20261009090001_operator_warehouse_stages` (before #24), `20261009090002_operator_stock_returns`
+  (before #25), `20261009090003_operator_trip_dropoffs` (before #30).
+- Pre-checks: `assert_core_transition` still carried the all-stages transfer gate and no
+  `factory_stage`, `returns` or `dropoffs` text; `assert_trip_transition` was the 20261006
+  body; no `return` or `trip-dropoff` command rule existed.
+- Verified afterwards: `factory_stage` exists; `assert_core_transition` carries the factory
+  transfer gate, the box-count gate and `returns`; `assert_trip_transition` carries
+  `dropoffs`; the `return` and `trip-dropoff` rules exist with the expected capability and
+  scope; the three versions appear in `supabase_migrations.schema_migrations`.
+- Between each migration and its PR's deployment the live app was stricter than the database
+  (it still required all five stages before transfer), so no live record was affected.
+
 ## Verification
 
 - `pnpm test` — domain, capability-parity and command-scope tests.
@@ -388,7 +408,8 @@ commit;
 
 ## Rollback
 
-Run `supabase/rollback/20261009090002_operator_stock_returns.down.sql`, then
+Run `supabase/rollback/20261009090003_operator_trip_dropoffs.down.sql`, then
+`supabase/rollback/20261009090002_operator_stock_returns.down.sql`, then
 `supabase/rollback/20261009090001_operator_warehouse_stages.down.sql` (restores the
 all-stages transfer gate), then
 `supabase/rollback/20261008090000_operator_packer_self_entry.down.sql` (deletes every packer
