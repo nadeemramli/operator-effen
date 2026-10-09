@@ -1607,17 +1607,25 @@ export function DraftApp() {
               {t("Carton-level balances", "Baki setiap karton")}
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={receiveAdypocide}>
-                <Boxes size={16} />
-                {t(
-                  "Receive sachets for boxing",
-                  "Terima sachet untuk pengkotakan",
-                )}
-              </Button>
-              <Button className="action-primary" onClick={receive}>
-                <Plus size={16} />
-                {t("Receive bottle carton", "Terima karton botol")}
-              </Button>
+              {can("stock.receive") ? (
+                <>
+                  <Button variant="outline" onClick={receiveAdypocide}>
+                    <Boxes size={16} />
+                    {t(
+                      "Receive sachets for boxing",
+                      "Terima sachet untuk pengkotakan",
+                    )}
+                  </Button>
+                  <Button className="action-primary" onClick={receive}>
+                    <Plus size={16} />
+                    {t("Receive bottle carton", "Terima karton botol")}
+                  </Button>
+                </>
+              ) : (
+                <span className="status-pill tone-muted">
+                  {t("View only", "Lihat sahaja")}
+                </span>
+              )}
             </div>
           </div>
           <Panel
@@ -1708,6 +1716,8 @@ export function DraftApp() {
                             >
                               {t("View stock", "Lihat stok")}
                             </Button>
+                          ) : !can("stock.receive") ? (
+                            <span className="text-muted-foreground">—</span>
                           ) : (
                             <Button
                               size="sm"
@@ -1787,13 +1797,15 @@ export function DraftApp() {
                       </td>
                       <td>{units(lang, c.unit)}</td>
                       <td className="actions">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => count(c)}
-                        >
-                          {t("Count stock", "Kira stok")}
-                        </Button>
+                        {can("stock.receive") && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => count(c)}
+                          >
+                            {t("Count stock", "Kira stok")}
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1849,6 +1861,10 @@ export function DraftApp() {
                           ) : c.actual === c.book ? (
                             <span className="status-pill tone-muted">
                               {t("Balanced", "Seimbang")}
+                            </span>
+                          ) : !can("stock.adjust") ? (
+                            <span className="status-pill tone-warning">
+                              {t("Difference", "Perbezaan")}
                             </span>
                           ) : (
                             <Button
@@ -1906,12 +1922,14 @@ export function DraftApp() {
             onTrace={(id) => setTrace(id)}
             machineShow={can("machines.manage") ? show : undefined}
           />
-          <div className="page-actions">
-            <Button variant="outline" onClick={closeDay}>
-              <ClipboardList size={16} />
-              {t("End-of-day review", "Semakan akhir hari")}
-            </Button>
-          </div>
+          {can("day.close") && (
+            <div className="page-actions">
+              <Button variant="outline" onClick={closeDay}>
+                <ClipboardList size={16} />
+                {t("End-of-day review", "Semakan akhir hari")}
+              </Button>
+            </div>
+          )}
         </>
       );
     if (view === "input")
@@ -2179,10 +2197,15 @@ export function DraftApp() {
                     )
                   ) : role !== "outbound" ? (
                     <p className="text-xs text-muted-foreground">
-                      {t(
-                        "The packer or their supervisor records this count.",
-                        "Pembungkus atau penyelia mereka merekod kiraan ini.",
-                      )}
+                      {role === "packer"
+                        ? t(
+                            "The packer or their supervisor records this count.",
+                            "Pembungkus atau penyelia mereka merekod kiraan ini.",
+                          )
+                        : t(
+                            "View only. The stock-out supervisor records packed counts.",
+                            "Lihat sahaja. Penyelia stok keluar merekod kiraan dibungkus.",
+                          )}
                     </p>
                   ) : o.actual === null ? (
                     <Button
