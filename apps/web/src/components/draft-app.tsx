@@ -70,6 +70,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   ActionForm,
+  ErrorToast,
+  FormError,
+  fieldMessage,
   Empty,
   Metric,
   Panel,
@@ -283,7 +286,9 @@ export function DraftApp() {
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [form, setForm] = useState<FormSpec | null>(null),
-    [formError, setFormError] = useState("");
+    [formError, setFormError] = useState(""),
+    [formField, setFormField] = useState<string | undefined>(),
+    [toast, setToast] = useState("");
   const [mobile, setMobile] = useState(false),
     [light, setLight] = useState(false),
     [reset, setReset] = useState(false),
@@ -366,9 +371,12 @@ export function DraftApp() {
       setPendingSave(readPending());
       setError("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Connection error.");
+      const message = e instanceof Error ? e.message : "Connection error.";
+      setError(message);
+      setToast(message);
     }
   }, [router]);
+  const dismissToast = useCallback(() => setToast(""), []);
   useEffect(() => {
     void Promise.resolve().then(() => {
       try {
@@ -404,18 +412,31 @@ export function DraftApp() {
         )}
       </main>
     );
+  /** A page-level error: shown under the heading and as a toast at the bottom. */
+  const fail = (message: string) => {
+    setError(message);
+    setToast(message);
+  };
   async function command(
     type: string,
     input: Record<string, unknown>,
-    retry?: PendingSave,
+    options: {
+      retry?: PendingSave;
+      /** Show the error next to the caller's own button instead of at page level. */
+      onError?: (message: string) => void;
+    } = {},
   ) {
+    const { retry, onError } = options;
     if (viewingAs) {
-      setError(viewOnlyMessage());
+      if (onError) onError(viewOnlyMessage());
+      else fail(viewOnlyMessage());
       return null;
     }
     setBusy(true);
     setFormError("");
+    setFormField(undefined);
     setError("");
+    setToast("");
     // One operation ID per intended change; retries reuse it so the server applies it once.
     const pending: PendingSave = retry ?? {
       operationId: crypto.randomUUID(),
@@ -513,9 +534,13 @@ export function DraftApp() {
       );
       return data.state as Draft;
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Unable to save.";
-      if (form) setFormError(message);
-      else setError(message);
+      const raw = e instanceof Error ? e.message : "Unable to save.";
+      if (onError) onError(fieldMessage(raw, null, lang).message);
+      else if (form) {
+        const mapped = fieldMessage(raw, form, lang);
+        setFormError(mapped.message);
+        setFormField(mapped.field);
+      } else fail(raw);
       return null;
     } finally {
       setBusy(false);
@@ -528,9 +553,10 @@ export function DraftApp() {
     );
   function show(spec: FormSpec) {
     setFormError("");
+    setFormField(undefined);
     setNotice("");
     if (viewingAs) {
-      setError(viewOnlyMessage());
+      fail(viewOnlyMessage());
       return;
     }
     setForm(spec);
@@ -2415,7 +2441,13 @@ export function DraftApp() {
               if (res.ok) {
                 router.replace("/login");
                 router.refresh();
-              } else setError("Unable to sign out. Please retry.");
+              } else
+                fail(
+                  t(
+                    "Unable to sign out. Please retry.",
+                    "Tidak dapat log keluar. Sila cuba lagi.",
+                  ),
+                );
             }}
           >
             <LogOut size={16} />
@@ -2598,18 +2630,19 @@ export function DraftApp() {
               <span>{t("Refresh", "Muat semula")}</span>
             </Button>
           </div>
-          {error && (
-            <div className="form-error mb-5" role="alert">
-              {error}{" "}
+          <FormError
+            className="mb-5"
+            message={error}
+            action={
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
                 onClick={() => void load(actor?.workspaceId)}
               >
                 {t("Refresh records", "Muat semula rekod")}
               </Button>
-            </div>
-          )}
+            }
+          />
           {pendingSave && !busy && (
             <div className="form-error mb-5" role="status">
               {pendingSave.userId &&
@@ -2633,7 +2666,9 @@ export function DraftApp() {
                     variant="ghost"
                     size="sm"
                     onClick={() =>
-                      void command(pendingSave.type, pendingSave.input, pendingSave)
+                      void command(pendingSave.type, pendingSave.input, {
+                        retry: pendingSave,
+                      })
                     }
                   >
                     {t("Resubmit", "Hantar semula")}
@@ -2686,9 +2721,11 @@ export function DraftApp() {
         lang={lang}
         busy={busy}
         error={formError}
+        invalidField={formField}
         onClose={() => setForm(null)}
-        onSubmit={command}
+        onSubmit={(type, values) => command(type, values)}
       />
+      <ErrorToast message={toast} lang={lang} onDismiss={dismissToast} />
       <AlertDialog open={reset} onOpenChange={setReset}>
         <AlertDialogContent>
           <AlertDialogHeader>

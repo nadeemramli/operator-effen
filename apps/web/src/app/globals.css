@@ -82,6 +82,9 @@
   --accent-foreground: #232833;
   --destructive: #d13d3d;
   --destructive-foreground: #ffffff;
+  /* Error text and borders that stay readable on a tinted error surface (WCAG AA). */
+  --error-ink: #a3221f;
+  --error-surface: #fdecea;
   --success: #0e8a5f;
   --success-foreground: #ffffff;
   --warning: #b06000;
@@ -126,6 +129,8 @@
   --accent-foreground: #eeede9;
   --destructive: #ef6f66;
   --destructive-foreground: #1a1013;
+  --error-ink: #ffb4ab;
+  --error-surface: #3a1a1c;
   --success: #3ecf94;
   --success-foreground: #071812;
   --warning: #e5a83b;
@@ -1395,6 +1400,92 @@ td small {
   background: color-mix(in srgb, var(--destructive) 7%, transparent);
   color: var(--destructive);
   border-radius: 5px;
+}
+/* Errors that cannot be missed: strong border, tinted surface, icon, next to the button. */
+.form-error-strong {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.55;
+  padding: 13px 15px;
+  border: 2px solid var(--error-ink);
+  background: var(--error-surface);
+  color: var(--error-ink);
+  border-radius: 6px;
+  scroll-margin: 24px;
+}
+.form-error-strong:focus {
+  outline: 3px solid color-mix(in srgb, var(--error-ink) 45%, transparent);
+  outline-offset: 2px;
+}
+.form-error-strong > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.form-error-strong .form-error-body {
+  flex: 1;
+  min-width: 0;
+}
+.form-error-strong .form-error-action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.form-error-strong .form-error-action button {
+  border-color: var(--error-ink);
+  color: var(--error-ink);
+  background: transparent;
+}
+.submit-invalid,
+.submit-invalid:hover {
+  outline: 3px solid var(--error-ink);
+  outline-offset: 2px;
+}
+[aria-invalid="true"] {
+  border-color: var(--error-ink) !important;
+  box-shadow: 0 0 0 1px var(--error-ink);
+}
+.field-missing {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--error-ink);
+}
+.toast-error {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  z-index: 60;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--error-ink);
+  background: var(--error-surface);
+  border: 2px solid var(--error-ink);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+}
+.toast-error > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.toast-error p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+.toast-error button {
+  flex: none;
+  padding: 2px;
+  color: inherit;
 }
 .save-notice {
   display: flex;
