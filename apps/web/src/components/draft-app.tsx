@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Fragment,
   useCallback,
   useEffect,
   useRef,
@@ -37,7 +38,7 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { ProductionWorkspace, ProcessPicHistory } from "./production-workspace";
-import { SachetProductionRecords } from "./sachet-records";
+import { SachetProductionRecords, StageRecords } from "./sachet-records";
 import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { DriverTrips } from "./driver-trips";
@@ -92,6 +93,8 @@ import {
   isSachet,
   batchComplete,
   batchTransferred,
+  stageDone,
+  warehouseStages,
   isQcStep,
   adypocideReceipts,
   stockCartons,
@@ -1656,8 +1659,20 @@ export function DraftApp() {
                     </tr>
                   </thead>
                   <tbody>
-                    {receipts.map((receipt) => (
-                      <tr key={receipt.id}>
+                    {receipts.map((receipt) => {
+                      const batch = state.batches.find(
+                        (b) => b.id === receipt.batchId,
+                      );
+                      // Batches planned with a route need their warehouse stages first.
+                      const gated = !!batch?.route && !receipt.stockedAt;
+                      const stages = batch ? warehouseStages(batch) : [];
+                      const recorded = batch
+                        ? stages.filter((k) => stageDone(batch, k)).length
+                        : 0;
+                      const ready = !gated || batchComplete(batch!);
+                      return (
+                      <Fragment key={receipt.id}>
+                      <tr>
                         <td
                           data-label={t("Product / batch", "Produk / kelompok")}
                         >
@@ -1704,6 +1719,17 @@ export function DraftApp() {
                                   "Menunggu kiraan kotak",
                                 )}
                           </span>
+                          {gated && (
+                            <span
+                              className={
+                                "status-pill ml-1 " +
+                                (ready ? "tone-success" : "tone-info")
+                              }
+                            >
+                              {recorded}/{stages.length}{" "}
+                              {t("warehouse stages", "peringkat gudang")}
+                            </span>
+                          )}
                         </td>
                         <td
                           className="actions"
@@ -1720,21 +1746,54 @@ export function DraftApp() {
                           ) : !can("stock.receive") ? (
                             <span className="text-muted-foreground">—</span>
                           ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={busy}
-                              onClick={() => finalizeAdypocide(receipt)}
-                            >
-                              {t(
-                                "Finalize box count",
-                                "Muktamadkan kiraan kotak",
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={busy || !ready}
+                                aria-describedby={
+                                  ready ? undefined : "box-gate-" + receipt.id
+                                }
+                                onClick={() => finalizeAdypocide(receipt)}
+                              >
+                                {t(
+                                  "Finalize box count",
+                                  "Muktamadkan kiraan kotak",
+                                )}
+                              </Button>
+                              {!ready && (
+                                <small
+                                  id={"box-gate-" + receipt.id}
+                                  className="field-hint block"
+                                >
+                                  {t(
+                                    `${recorded} of ${stages.length} warehouse stages recorded. Record the rest below first.`,
+                                    `${recorded} daripada ${stages.length} peringkat gudang direkod. Rekod selebihnya di bawah dahulu.`,
+                                  )}
+                                </small>
                               )}
-                            </Button>
+                            </>
                           )}
                         </td>
                       </tr>
-                    ))}
+                      {gated && batch && (
+                        <tr className="receipt-stages">
+                          <td colSpan={4}>
+                            <StageRecords
+                              batch={batch}
+                              state={state}
+                              lang={lang}
+                              show={can("stage.record") ? show : undefined}
+                              pic={can("stage.record") ? pic : undefined}
+                              role={role}
+                              stageFilter="warehouse"
+                            />
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

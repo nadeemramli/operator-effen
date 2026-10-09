@@ -42,6 +42,12 @@ import {
   batchComplete,
   batchTransferred,
   batchRoute,
+  factoryStagesDone,
+  isFactoryStage,
+  routeStages,
+  stageDone,
+  stageStep,
+  warehouseStages,
   isQcStep,
   products,
   product,
@@ -827,8 +833,8 @@ function AdypocideProductionCard({
       </div>
       <p className="field-hint mt-4">
         {t(
-          "Record who actually performed each stage of this batch's route. A planned PIC is not completed work. Finished boxes are counted at stock-in.",
-          "Rekod siapa yang sebenarnya melakukan setiap peringkat laluan kelompok ini. PIC dirancang bukan kerja yang siap. Kotak siap dikira semasa stok masuk.",
+          "Record the mixing and filling PICs, then send the batch to the warehouse. Batching, hologram and wrapping are recorded by stock-in before the box count.",
+          "Rekod PIC pengadunan dan pengisian, kemudian hantar kelompok ke gudang. Nombor kelompok, hologram dan balutan direkod oleh stok masuk sebelum kiraan kotak.",
         )}
       </p>
       <StageRecords
@@ -838,20 +844,50 @@ function AdypocideProductionCard({
         show={show}
         pic={pic}
         role={role}
+        stageFilter="factory"
       />
+      {warehouseStages(b).length > 0 && (
+        <div className="warehouse-stage-list">
+          <small className="text-muted-foreground">
+            {t("Recorded at stock-in", "Direkod semasa stok masuk")}
+          </small>
+          <ul>
+            {routeStages(b)
+              .filter((stage) => !isFactoryStage(stage.id))
+              .map((stage) => {
+                const step = stageStep(b, stage.id);
+                return (
+                  <li key={stage.id}>
+                    <span>{t(stage.en, stage.ms)}</span>
+                    <span
+                      className={
+                        "status-pill " +
+                        (stageDone(b, stage.id) ? "tone-success" : "tone-muted")
+                      }
+                    >
+                      {stageDone(b, stage.id)
+                        ? step!.pic
+                        : t("Not yet", "Belum")}
+                    </span>
+                  </li>
+                );
+              })}
+          </ul>
+        </div>
+      )}
       <div className="batch-footer">
         <small>{b.date}</small>
         <Button
           size="sm"
           variant="outline"
-          disabled={sent || needsReview || !batchComplete(b)}
+          disabled={sent || needsReview || !factoryStagesDone(b)}
           onClick={() =>
             show({
               type: "transfer",
               title: t("Send batch to warehouse", "Hantar kelompok ke gudang"),
               description: t(
-                "Confirm that every stage in this batch's route has an actual PIC. Stock-in will count finished boxes after boxing.",
-                "Sahkan setiap peringkat dalam laluan kelompok ini mempunyai PIC sebenar. Stok masuk akan mengira kotak siap selepas pengkotakan.",
+                "Confirm that mixing and filling have an actual PIC. Stock-in records batching, hologram and wrapping, then counts finished boxes.",
+                "Sahkan pengadunan dan pengisian mempunyai PIC sebenar. Stok masuk merekod nombor kelompok, hologram dan balutan, kemudian mengira kotak siap.",
               ),
               hidden: { id: b.id },
               fields: [pic()],
@@ -1005,8 +1041,8 @@ function BatchPlanForm({
               <p>
                 {isSachet(productId)
                   ? t(
-                      "Five fixed stages, including Hologram. Assign planned PICs now or later; planning does not mark a stage complete. No sachet quantity is required.",
-                      "Lima peringkat tetap, termasuk Hologram. Tetapkan PIC dirancang sekarang atau kemudian; perancangan tidak menandakan peringkat siap. Kuantiti sachet tidak diperlukan.",
+                      "Five fixed stages. Production records mixing and filling; the warehouse records batching, hologram and wrapping during stock-in. Planning does not mark a stage complete. No sachet quantity is required.",
+                      "Lima peringkat tetap. Pengeluaran merekod pengadunan dan pengisian; gudang merekod nombor kelompok, hologram dan balutan semasa stok masuk. Perancangan tidak menandakan peringkat siap. Kuantiti sachet tidak diperlukan.",
                     )
                   : t(
                       "Assign PICs now or later. The QC count is recorded on the last step.",
@@ -1055,8 +1091,8 @@ function BatchPlanForm({
           <p className="field-hint">
             {isSachet(productId)
               ? t(
-                  "Save the batch, record every machine and PIC involved, then send the batch to the warehouse for boxing.",
-                  "Simpan kelompok, rekod setiap mesin dan PIC terlibat, kemudian hantar kelompok ke gudang untuk pengkotakan.",
+                  "Save the batch, record the mixing and filling machines and PICs, then send the batch to the warehouse.",
+                  "Simpan kelompok, rekod mesin dan PIC pengadunan dan pengisian, kemudian hantar kelompok ke gudang.",
                 )
               : t(
                   "Planning does not create finished stock. Actual output and sending stock to fulfilment are recorded after the work takes place.",

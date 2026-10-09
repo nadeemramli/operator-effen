@@ -2958,3 +2958,27 @@ td.actions {
   font-size: 11px;
   margin-top: 4px;
 }
+/* Production card: warehouse stages shown read-only, recorded at stock-in. */
+.warehouse-stage-list {
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.warehouse-stage-list ul {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+.warehouse-stage-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+/* Stock-in: warehouse stages of a receipt awaiting its box count. */
+.ady-receipts tr.receipt-stages > td {
+  padding-top: 0;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}

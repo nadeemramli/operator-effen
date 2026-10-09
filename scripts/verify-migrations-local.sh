@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261009090001_operator_warehouse_stages.down.sql"
+"${psql[@]}" -At -c "select to_regprocedure('operator_private.factory_stage(text)') is null" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261008090000_operator_packer_self_entry.down.sql"
 "${psql[@]}" -f "$root/supabase/rollback/20261007090000_operator_factory_scope.down.sql"
 "${psql[@]}" -f "$root/supabase/rollback/20261006090000_operator_driver_trips.down.sql"
@@ -44,4 +46,6 @@ echo "assistant memberships become driver memberships"
 "${psql[@]}" -At -c "select count(*) from public.operator_memberships where factory is not null" | grep -qx 0
 "${psql[@]}" -f "$root/supabase/migrations/20261008090000_operator_packer_self_entry.sql"
 "${psql[@]}" -At -c "select count(*) from operator_private.staff_pins" | grep -qx 0
+"${psql[@]}" -f "$root/supabase/migrations/20261009090001_operator_warehouse_stages.sql"
+"${psql[@]}" -At -c "select operator_private.factory_stage('filling') and not operator_private.factory_stage('hologram')" | grep -qx t
 echo "ok"

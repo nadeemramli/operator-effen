@@ -150,7 +150,13 @@ export const sachetRoutes: Record<
   },
 };
 export const currentSachetRoute = "sachet-v2";
-const countWords = ["zero", "one", "two", "three", "four", "five", "six"];
+/**
+ * Factory stages are recorded by production and gate the transfer to the warehouse; every
+ * later stage of a route is a warehouse stage, recorded by stock-in before the box count.
+ * Mirrored in SQL by operator_private.factory_stage(text) (a test keeps them identical).
+ */
+export const factoryStages = ["mixing", "filling"];
+export const isFactoryStage = (key: string) => factoryStages.includes(key);
 // Labels for historical records created before the fixed sachet route.
 export const sachetSteps = [
   ["Filling & sealing", "Pengisian & pengedapan"],
@@ -539,6 +545,18 @@ export const batchComplete = (b: Batch) => {
   const { stages } = batchRoute(b);
   return !!stages.length && stages.every((key) => stageDone(b, key));
 };
+/** The batch's route stages recorded in the factory (mixing, filling). */
+export const factoryStagesOf = (b: Batch) =>
+  batchRoute(b).stages.filter(isFactoryStage);
+/** The batch's route stages recorded at stock-in (batching, hologram, wrapping, …). */
+export const warehouseStages = (b: Batch) =>
+  batchRoute(b).stages.filter((key) => !isFactoryStage(key));
+export const factoryStagesDone = (b: Batch) => {
+  const stages = factoryStagesOf(b);
+  return !!stages.length && stages.every((key) => stageDone(b, key));
+};
+export const warehouseStagesDone = (b: Batch) =>
+  warehouseStages(b).every((key) => stageDone(b, key));
 export const batchRevised = (b: Batch) => !!b.revisions?.length;
 export const batchTransferred = (b: Batch) => !!b.transferredAt || b.sent > 0;
 export const stockCartons = (s: Draft) =>
@@ -1152,7 +1170,13 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
     return machine;
   };
-  // Post-transfer corrections are flagged so downstream views/reports show a revision.
+  // Changes after transfer are flagged as revisions, except warehouse-stage records made
+  // before the box count: those stages are recorded at stock-in by design.
+  const isRevision = (b: Batch, stage: string) =>
+    batchTransferred(b) &&
+    (!sachetStage(stage) ||
+      isFactoryStage(stage) ||
+      adypocideReceipts(s).some((r) => r.batchId === b.id && !!r.stockedAt));
   const markRevision = (
     b: Batch,
     stage: string,
@@ -1161,7 +1185,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     to: string,
     reason: string,
   ) => {
-    if (!batchTransferred(b)) return;
+    if (!isRevision(b, stage)) return;
     (b.revisions ??= []).push({
       id: id(),
       stage,
@@ -1322,7 +1346,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (kind === "handover") {
         if (!step.pic)
           throw new Error("Assign the first PIC before recording a handover.");
-        if (batchTransferred(b))
+        if (
+          batchTransferred(b) &&
+          !(step.sachetStage && !isFactoryStage(step.sachetStage) && !step.done)
+        )
           throw new Error(
             "This batch is already transferred; use a correction for mistaken records.",
           );
@@ -1371,7 +1398,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
             ? "Production PIC reassigned"
             : "Production PIC corrected",
         `${stepNames(b)[index][0]} · ${previous || "Unassigned"} → ${pic} · ${effectiveAt ?? at} · ${reason}` +
-          (batchTransferred(b) ? " · revised after transfer" : ""),
+          (kind === "correction" && isRevision(b, step.sachetStage ?? String(index))
+            ? " · revised after transfer"
+            : ""),
         { performer: pic, occurredAt: effectiveAt },
       );
       break;
@@ -1381,9 +1410,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const b = inSite(find(s.batches));
       if (!isSachet(b.product))
         throw new Error("Machine-only records are for sachet products.");
-      if (batchTransferred(b))
-        throw new Error("This batch has already been sent to the warehouse.");
       const stage = resolveStage(b);
+      // Factory stages close at transfer; warehouse stages are recorded after it.
+      if (batchTransferred(b) && isFactoryStage(stage.id))
+        throw new Error("This batch has already been sent to the warehouse.");
       const previous = stageStep(b, stage.id);
       if (previous?.done)
         throw new Error(
@@ -1429,11 +1459,20 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "stage-rework": {
       allow("production", "intake");
       const b = inSite(find(s.batches));
-      if (!isSachet(b.product) || batchTransferred(b))
+      if (!isSachet(b.product))
         throw new Error(
           "Rework can be recorded for sachet batches still in production.",
         );
       const stage = resolveStage(b);
+      // Factory-stage rework ends at transfer; warehouse-stage rework ends at the box count.
+      if (
+        batchTransferred(b) &&
+        (isFactoryStage(stage.id) ||
+          adypocideReceipts(s).some((r) => r.batchId === b.id && !!r.stockedAt))
+      )
+        throw new Error(
+          "Rework can be recorded for sachet batches still in production.",
+        );
       const step = stageStep(b, stage.id);
       if (!step?.done)
         throw new Error("Record the first completion of this stage first.");
@@ -1491,7 +1530,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         if (!str("occurredAt", false))
           throw new Error("Enter the actual completion time.");
         from = step.occurredAt ?? "";
-        to = occurrence("occurredAt", b.date, b.transferredAt);
+        to = occurrence(
+          "occurredAt",
+          b.date,
+          isFactoryStage(stage.id) ? b.transferredAt : undefined,
+        );
         if (to === from) throw new Error("Enter a different time.");
         step.occurredAt = to;
       } else throw new Error("Choose the machine or the completion time to correct.");
@@ -1510,7 +1553,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         b.id,
         "Stage record corrected",
         `${b.code} · ${stage.en} · ${field}: ${from || "—"} → ${to} · ${reason}` +
-          (batchTransferred(b) ? " · revised after transfer" : ""),
+          (isRevision(b, stage.id) ? " · revised after transfer" : ""),
       );
       break;
     }
@@ -1684,9 +1727,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           throw new Error(
             "This batch was started before the five-stage route. Review its route (upgrade to five stages or keep the recorded four-stage route) before transfer.",
           );
-        if (!batchComplete(b))
+        if (!factoryStagesDone(b))
           throw new Error(
-            `Record a machine and PIC for all ${countWords[route.stages.length] ?? route.stages.length} stages of this batch's route before transfer.`,
+            "Record a machine and PIC for the mixing and filling stages before sending to the warehouse.",
           );
         b.transferredAt = at;
         b.transferPic = str("pic");
@@ -1780,6 +1823,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const batch = s.batches.find((b) => b.id === receipt.batchId);
       if (!batch || !isSachet(batch.product))
         throw new Error("Choose a sachet batch.");
+      // Batches planned with a route need every stage recorded before box stock exists.
+      // Historical batches without a route snapshot are not re-checked.
+      if (batch.route && !batchComplete(batch))
+        throw new Error(
+          "Record the warehouse stages (batching, hologram, wrapping) with their PICs before finalizing the box count.",
+        );
       const boxes = num("boxes"),
         pic = str("pic"),
         ref = batch.code;

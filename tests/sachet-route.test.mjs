@@ -72,7 +72,7 @@ test("new sachet batches snapshot the five-stage route with stable keys and bili
   }
 });
 
-test("a planned Hologram PIC is not completed work, and transfer needs all five actual records", () => {
+test("a planned Hologram PIC is not completed work; the box count needs all five actual records", () => {
   let s = planned({ pic_3: "Planned Holo PIC" });
   const id = s.batches[0].id;
   assert.equal(stageStep(s.batches[0], "hologram").pic, "Planned Holo PIC");
@@ -80,18 +80,22 @@ test("a planned Hologram PIC is not completed work, and transfer needs all five 
   for (const stage of ["mixing", "filling", "batching", "wrapping"])
     s = record(s, id, stage);
   assert.equal(batchComplete(s.batches[0]), false);
+  // Transfer needs the factory stages only; the warehouse stages may still be open.
+  s = run(s, "transfer", { id, pic: "Factory" });
+  assert.ok(s.batches[0].transferredAt);
+  s = run(s, "receive-ady", { batchId: id, pic: "Receiver" }, "intake");
+  const receiptId = s.adypocideReceipts[0].id;
   assert.throws(
-    () => run(s, "transfer", { id, pic: "Factory" }),
-    /all five stages/,
+    () => run(s, "stock-in-ady", { receiptId, boxes: 10, rack: "R", pic: "SV" }, "intake"),
+    /warehouse stages/,
   );
   // QC is never inferred from completion.
   assert.ok(s.batches[0].steps.every((st) => st.qc === "not-recorded"));
   assert.throws(() => record(s, id, "hologram", ""), /pic/);
-  s = record(s, id, "hologram", "Planned Holo PIC");
+  s = run(s, "machine", { id, stage: "hologram", pic: "Planned Holo PIC" }, "intake");
   assert.equal(batchComplete(s.batches[0]), true);
-  s = run(s, "transfer", { id, pic: "Factory" });
-  assert.ok(s.batches[0].transferredAt);
-  assert.equal(s.cartons.filter((c) => c.batchId === id).length, 0);
+  s = run(s, "stock-in-ady", { receiptId, boxes: 10, rack: "R", pic: "SV" }, "intake");
+  assert.equal(s.cartons.filter((c) => c.batchId === id).length, 1);
 });
 
 test("unknown stages and incorrect route keys fail clearly", () => {
@@ -229,7 +233,16 @@ test("an in-progress legacy batch needs an explicit reviewed upgrade; Hologram i
   assert.equal(stageStep(u, "hologram").done, false);
   assert.equal(stageStep(u, "hologram").pic, "");
   assert.equal(batchComplete(u), false);
-  assert.throws(() => run(upgraded, "transfer", { id: b.id, pic: "F" }), /all five/);
+  // The upgraded batch transfers once mixing and filling are done; Hologram stays open
+  // until stock-in records it before the box count.
+  let sentUp = run(upgraded, "transfer", { id: b.id, pic: "F" });
+  assert.ok(sentUp.batches.find((x) => x.id === b.id).transferredAt);
+  sentUp = run(sentUp, "receive-ady", { batchId: b.id, pic: "R" }, "intake");
+  assert.throws(
+    () =>
+      run(sentUp, "stock-in-ady", { receiptId: sentUp.adypocideReceipts[0].id, boxes: 5, rack: "R", pic: "SV" }, "intake"),
+    /warehouse stages/,
+  );
   // Alternatively keep the recorded four-stage route, explicitly and with a reason.
   const kept = run(s, "route-review", {
     id: b.id,

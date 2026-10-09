@@ -115,8 +115,11 @@ are evidence of recorded work, not a physical guarantee of parcel contents.
 New sachet batches use the versioned five-stage route under one batch number: Mixer
 machine (mixing), Sachet filling machine (filling), Inkjet printer (batching), Hologram
 machine, and Shrink machine (plastic wrapping). Each stage records its actual PIC and
-optionally the physical machine and actual time, with no sachet quantities. All five
-actual stage records are required before warehouse handoff. Completed four-stage batches
+optionally the physical machine and actual time, with no sachet quantities. Since 9 October
+2026 production records the two factory stages (mixing, filling) and sends the batch to the
+warehouse once both have a PIC; stock-in records batching, hologram and wrapping on the
+receipt, and the box count can be finalized only when all five stages have a PIC (migration
+`20261009090001_operator_warehouse_stages.sql`). Completed four-stage batches
 keep their historical route; unfinished ones need an explicit route review. Production
 and Stock-in edit the same stage records. See
 [role-based entry and the five-stage route](docs/sv-entry-and-sachet-route.md).

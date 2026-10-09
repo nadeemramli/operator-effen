@@ -128,9 +128,8 @@ select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch',
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch',
   jsonb_set(pg_temp.state(), '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(
     pg_temp.ev('e2', '00000000-0000-4000-8000-000000000006')))), '23514', 'forged recorder');
-select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'transfer',
-  jsonb_set(pg_temp.state(), '{batches,0,transferredAt}', '"2026-10-04T00:00:00Z"')), '23514',
-  'five-stage transfer without Hologram');
+-- (The former "five-stage transfer without Hologram" refusal is allowed since 20261009090001:
+-- transfer needs the factory stages only. Its replacement cases are in section 9.)
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'machine',
   jsonb_set(pg_temp.state(), '{batches,0,steps,0,done}', 'false')), '23514', 'un-complete a stage');
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'change-step-pic',
@@ -743,5 +742,55 @@ select pg_temp.expect(pg_temp.commit_as(:PK, :A, 'pack-own',
   jsonb_set(pg_temp.state(), '{staffProfiles}', '[]')), '42501', 'pack-own outside its scope');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'staff-profile-update',
   jsonb_set(pg_temp.state(), '{staffProfiles,0,name}', '"Synthetic Ali B"')), 'ok', 'stock-out SV renames a packer profile');
+
+-- 9. Factory and warehouse stages (20261009090001). Transfer needs mixing and filling; a new
+--    box carton of a batch with a route snapshot needs every route stage.
+\set W '''10000000-0000-4000-8000-0000000000c1'''
+insert into public.operator_workspaces (id, site_id, name, state) values
+  (:W, 'site-w', 'Synthetic site W', $${
+    "version":1,
+    "batches":[{"id":"w1","code":"SYN-W-1","product":"ady","date":"2026-10-01","target":0,"actual":0,"sent":0,
+      "route":{"id":"sachet-v2","stages":["mixing","filling","batching","hologram","wrapping"],"at":"t"},
+      "steps":[
+        {"sachetStage":"mixing","pic":"P1","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"filling","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"batching","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"hologram","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"wrapping","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"}]}],
+    "cartons":[],"adypocideReceipts":[],"orders":[],"issues":[],"boxing":[],"counts":[],"adjustments":[],
+    "events":[],"notes":[],"closedDays":[]}$$::jsonb);
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values
+  (:W, '00000000-0000-4000-8000-000000000001', 'production', 'SV W', 'site'),
+  (:W, '00000000-0000-4000-8000-000000000006', 'intake', 'SI W', 'site');
+create function pg_temp.done(p_state jsonb, p_pos int, p_pic text) returns jsonb language sql as $$
+  select jsonb_set(jsonb_set(p_state, array['batches','0','steps',p_pos::text,'pic'], to_jsonb(p_pic)),
+    array['batches','0','steps',p_pos::text,'done'], 'true') $$;
+create function pg_temp.boxed(p_state jsonb) returns jsonb language sql as $$
+  select jsonb_set(p_state, '{cartons}', '[{"id":"cw1","ref":"SYN-W-1","batchId":"w1","product":"ady","unit":"box","qty":40,"rack":"B","pic":"SI","at":"t"}]') $$;
+select pg_temp.expect(pg_temp.commit_as(:SV, :W, 'transfer',
+  jsonb_set(pg_temp.state(:W), '{batches,0,transferredAt}', '"2026-10-04T00:00:00Z"')), '23514',
+  'transfer without filling');
+select pg_temp.expect(pg_temp.commit_as(:SV, :W, 'machine', pg_temp.done(pg_temp.state(:W), 1, 'P2')),
+  'ok', 'production records filling');
+select pg_temp.expect(pg_temp.commit_as(:SV, :W, 'transfer',
+  jsonb_set(pg_temp.state(:W), '{batches,0,transferredAt}', '"2026-10-04T00:00:00Z"')), 'ok',
+  'transfer once mixing and filling are recorded (warehouse stages open)');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :W, 'stock-in-ady',
+  pg_temp.boxed(pg_temp.state(:W))), '23514', 'box carton before warehouse stages');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :W, 'machine',
+  pg_temp.done(pg_temp.done(pg_temp.state(:W), 2, 'P3'), 4, 'P5')), 'ok',
+  'stock-in records batching and wrapping after transfer');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :W, 'stock-in-ady',
+  pg_temp.boxed(pg_temp.state(:W))), '23514', 'box carton with Hologram still open');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :W, 'machine',
+  pg_temp.done(pg_temp.state(:W), 3, 'P4')), 'ok', 'stock-in records Hologram');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :W, 'stock-in-ady',
+  pg_temp.boxed(pg_temp.state(:W))), 'ok', 'box carton after all stages');
+do $$ begin
+  if not operator_private.factory_stage('mixing') or not operator_private.factory_stage('filling')
+    or operator_private.factory_stage('batching') or operator_private.factory_stage('hologram')
+    or operator_private.factory_stage('wrapping') then
+    raise exception 'FAIL: factory_stage split'; end if;
+end $$;
 
 select 'operator access tests passed' as result;
