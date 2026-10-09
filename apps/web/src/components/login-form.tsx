@@ -16,7 +16,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-export function LoginForm({ expired = false }: { expired?: boolean }) {
+export function LoginForm({
+  expired = false,
+  next = "/",
+}: {
+  expired?: boolean;
+  /** Where to go after sign-in; already checked by the server to be a path on this site. */
+  next?: string;
+}) {
   const router = useRouter();
   const [lang, setLang] = useState<"en" | "ms">("en");
   const [busy, setBusy] = useState(false);
@@ -68,7 +75,7 @@ export function LoginForm({ expired = false }: { expired?: boolean }) {
                     ),
         );
       }
-      router.replace("/");
+      router.replace(next);
       router.refresh();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Unable to sign in.");
