@@ -1,5 +1,5 @@
-// One driver role: drivers log their own trips (assistant name, pickup and arrival time,
-// photo). The assistant is recorded by name and never signs in.
+// One driver role on a shared sign-in: each trip names its driver and assistant (typed),
+// pickup and arrival time, photo. The assistant is recorded by name and never signs in.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { applyCommand, createDraft, roles } from "../apps/web/src/lib/draft.ts";
@@ -38,6 +38,7 @@ test("driver and assistant are one role; there is no separate assistant login", 
 test("a driver logs a trip with assistant, pickup, arrival and photo", () => {
   const d = driver();
   const s = run(createDraft(), d, "trip", {
+    driver: "  Sample Driver Ali  ",
     assistant: "  Sample Assistant  ",
     pickupAt: "2026-10-01T08:15",
     arriveAt: "2026-10-01T09:40",
@@ -45,7 +46,7 @@ test("a driver logs a trip with assistant, pickup, arrival and photo", () => {
     note: "Courier hub",
   });
   const [trip] = s.trips;
-  assert.equal(trip.driver, "Synthetic Driver 1");
+  assert.equal(trip.driver, "Sample Driver Ali");
   assert.equal(trip.assistant, "Sample Assistant");
   assert.equal(trip.date, "2026-10-01");
   assert.equal(trip.pickupAt, "2026-10-01T00:15:00.000Z");
@@ -56,12 +57,13 @@ test("a driver logs a trip with assistant, pickup, arrival and photo", () => {
   assert.equal(trip.recordedBy.userId, d.userId);
   assert.equal(s.events[0].entity, "trip:" + trip.id);
   assert.equal(s.events[0].recorder.userId, d.userId);
-  assert.equal(s.events[0].performer, "Synthetic Driver 1");
+  assert.equal(s.events[0].performer, "Sample Driver Ali");
+  assert.match(s.events[0].detail, /^Driver Sample Driver Ali · pickup /);
 });
 
 test("pickup first, then arrival and photo later; recorded values are fixed", () => {
   const d = driver();
-  let s = run(createDraft(), d, "trip", { pickupAt: "2026-10-01T08:00" });
+  let s = run(createDraft(), d, "trip", { driver: "Sample Driver", pickupAt: "2026-10-01T08:00" });
   const id = s.trips[0].id;
   assert.equal(s.trips[0].assistant, "");
   assert.equal(s.trips[0].arriveAt, undefined);
@@ -87,7 +89,7 @@ test("only the driver who logged a trip can add to it, and only at their site", 
   const d1 = driver(1),
     d2 = driver(2),
     other = driver(3, "site-b");
-  const s = run(createDraft(), d1, "trip", { pickupAt: "2026-10-01T08:00" });
+  const s = run(createDraft(), d1, "trip", { driver: "Sample Driver", pickupAt: "2026-10-01T08:00" });
   const id = s.trips[0].id;
   assert.throws(
     () => run(s, d2, "trip-update", { id, arriveAt: "2026-10-01T09:00" }),
@@ -102,19 +104,24 @@ test("only the driver who logged a trip can add to it, and only at their site", 
 test("trip times and photos are validated", () => {
   const d = driver();
   const s = createDraft();
-  assert.throws(() => run(s, d, "trip", {}), /pickupAt/);
-  assert.throws(() => run(s, d, "trip", { pickupAt: "yesterday" }), /Malaysia time/);
-  assert.throws(() => run(s, d, "trip", { pickupAt: "2999-01-01T08:00" }), /future/);
+  assert.throws(() => run(s, d, "trip", { pickupAt: "2026-10-01T08:00" }), /complete driver/);
   assert.throws(
-    () => run(s, d, "trip", { pickupAt: "2026-10-01T08:00", arriveAt: "2026-10-01T07:00" }),
+    () => run(s, d, "trip", { driver: "x".repeat(101), pickupAt: "2026-10-01T08:00" }),
+    /shorter driver/,
+  );
+  assert.throws(() => run(s, d, "trip", { driver: "D" }), /pickupAt/);
+  assert.throws(() => run(s, d, "trip", { driver: "D", pickupAt: "yesterday" }), /Malaysia time/);
+  assert.throws(() => run(s, d, "trip", { driver: "D", pickupAt: "2999-01-01T08:00" }), /future/);
+  assert.throws(
+    () => run(s, d, "trip", { driver: "D", pickupAt: "2026-10-01T08:00", arriveAt: "2026-10-01T07:00" }),
     /before the pickup/,
   );
   assert.throws(
-    () => run(s, d, "trip", { pickupAt: "2026-10-01T08:00", photo: "../secret.jpg" }),
+    () => run(s, d, "trip", { driver: "D", pickupAt: "2026-10-01T08:00", photo: "../secret.jpg" }),
     /not uploaded/,
   );
   assert.throws(
-    () => run(s, d, "trip", { pickupAt: "2026-10-01T08:00", assistant: "x".repeat(101) }),
+    () => run(s, d, "trip", { driver: "D", pickupAt: "2026-10-01T08:00", assistant: "x".repeat(101) }),
     /shorter assistant/,
   );
 });
@@ -126,7 +133,7 @@ test("packers and supervisors cannot log trips; the preview driver can", () => {
         applyCommand(createDraft(), {
           type: "trip",
           role,
-          input: { pickupAt: "2026-10-01T08:00" },
+          input: { driver: "Sample Driver", pickupAt: "2026-10-01T08:00" },
           actor: { kind: "member", role, name: role, userId: "u-" + role, siteId: "site-a" },
           capabilities: effectiveCapabilities(role),
         }),
@@ -135,7 +142,19 @@ test("packers and supervisors cannot log trips; the preview driver can", () => {
   const s = applyCommand(createDraft(), {
     type: "trip",
     role: "driver",
-    input: { pickupAt: "2026-10-01T08:00", assistant: "Sample Assistant" },
+    input: { driver: "Sample Driver", pickupAt: "2026-10-01T08:00", assistant: "Sample Assistant" },
   });
-  assert.equal(s.trips[0].driver, "Driver (test view)");
+  assert.equal(s.trips[0].driver, "Sample Driver");
+  assert.equal(s.trips[0].recordedBy.name, "Driver (test view)");
+});
+
+test("drivers share one sign-in: each trip keeps its typed driver, the account stays the recorder", () => {
+  const shared = driver();
+  let s = run(createDraft(), shared, "trip", { driver: "Sample Driver Ali", pickupAt: "2026-10-01T08:00" });
+  s = run(s, shared, "trip", { driver: "Sample Driver Abu", assistant: "Sample Assistant", pickupAt: "2026-10-01T09:00" });
+  assert.deepEqual(s.trips.map((t) => t.driver), ["Sample Driver Abu", "Sample Driver Ali"]);
+  assert.ok(s.trips.every((t) => t.recordedBy.userId === shared.userId));
+  // Any driver on the shared sign-in can add the missing arrival to a trip it logged.
+  s = run(s, shared, "trip-update", { id: s.trips[1].id, arriveAt: "2026-10-01T08:45" });
+  assert.equal(s.events[0].performer, "Sample Driver Ali");
 });

@@ -23,7 +23,7 @@ import {
   orderIssued,
   orderLines,
   orderReady,
-  people,
+  packerProfiles,
   products,
   stockCartons,
   available,
@@ -86,13 +86,8 @@ export function OrderWorkspace({
   const groups = packageGroups(dayOrders).filter((g) =>
     g.orders.some((o) => visibleIds.has(o.id)),
   );
-  const packers = state.staffProfiles
-    ? state.staffProfiles
-        .filter((p) => p.role === "packer")
-        .map((p) => ({ value: p.id, label: p.name }))
-    : people
-        .filter((p) => p.includes("Packer"))
-        .map((p) => ({ value: p, label: p }));
+  // Only active packers can be assigned.
+  const packers = packerProfiles(state).map((p) => ({ value: p.id, label: p.name }));
   const staffName = (id: string) =>
     state.staffProfiles?.find((p) => p.id === id)?.name ?? id;
   function bulk(type: string, title: string, fields: Field[]) {
