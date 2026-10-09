@@ -20,8 +20,8 @@ const duration = (lang: Lang, trip: Trip) => {
 };
 
 /**
- * Drivers log their own trips: assistant name, pickup and arrival time, and a photo.
- * Supervisors and management with trips.read see every trip at the site.
+ * Drivers log trips on a shared sign-in: driver and assistant names, pickup and arrival
+ * time, and a photo. Supervisors and management with trips.read see every trip at the site.
  */
 export function DriverTrips({
   state,
@@ -66,6 +66,14 @@ export function DriverTrips({
         "Rekod perjalanan anda dalam waktu Malaysia. Masa yang disimpan tidak boleh diubah, jadi semak dahulu. Masa tiba dan gambar boleh ditambah kemudian.",
       ),
       fields: [
+        {
+          name: "driver",
+          label: t("Driver name", "Nama pemandu"),
+          hint: t(
+            "Your own name. Drivers share this sign-in, so every trip names its driver.",
+            "Nama anda sendiri. Pemandu berkongsi log masuk ini, jadi setiap perjalanan menamakan pemandunya.",
+          ),
+        },
         {
           name: "assistant",
           label: t("Assistant driver", "Pembantu pemandu"),
@@ -113,6 +121,7 @@ export function DriverTrips({
       ),
       hidden: { id: trip.id },
       summary: [
+        { label: t("Driver", "Pemandu"), value: trip.driver },
         { label: t("Pickup", "Ambil"), value: toMyt(trip.pickupAt).replace("T", " ") },
         {
           label: t("Assistant", "Pembantu"),
@@ -193,7 +202,7 @@ export function DriverTrips({
                     {toMyt(trip.pickupAt).replace("T", " ")}
                   </strong>
                   <small>
-                    {canReview && trip.driver + " · "}
+                    {trip.driver + " · "}
                     <UserRound size={12} />{" "}
                     {trip.assistant || t("No assistant", "Tiada pembantu")}
                     {trip.note ? " · " + trip.note : ""}
@@ -210,10 +219,14 @@ export function DriverTrips({
         </Panel>
       )}
       <Panel
-        title={canReview ? t("Driver trips", "Perjalanan pemandu") : t("My trips", "Perjalanan saya")}
+        title={
+          canReview
+            ? t("Driver trips", "Perjalanan pemandu")
+            : t("Trips on this sign-in", "Perjalanan log masuk ini")
+        }
         detail={t(
-          "Malaysia time. The driver records each trip; the assistant is recorded by name.",
-          "Waktu Malaysia. Pemandu merekod setiap perjalanan; pembantu direkod mengikut nama.",
+          "Malaysia time. Each trip names its driver and assistant.",
+          "Waktu Malaysia. Setiap perjalanan menamakan pemandu dan pembantunya.",
         )}
       >
         {listed.length ? (
@@ -222,7 +235,7 @@ export function DriverTrips({
               <thead>
                 <tr>
                   <th>{t("Date", "Tarikh")}</th>
-                  {canReview && <th>{t("Driver", "Pemandu")}</th>}
+                  <th>{t("Driver", "Pemandu")}</th>
                   <th>{t("Assistant", "Pembantu")}</th>
                   <th>{t("Pickup", "Ambil")}</th>
                   <th>{t("Arrival", "Tiba")}</th>
@@ -236,7 +249,7 @@ export function DriverTrips({
                 {listed.map((trip) => (
                   <tr key={trip.id}>
                     <td>{trip.date}</td>
-                    {canReview && <td>{trip.driver}</td>}
+                    <td>{trip.driver}</td>
                     <td>{trip.assistant || "—"}</td>
                     <td>{time(trip.pickupAt)}</td>
                     <td>{time(trip.arriveAt)}</td>
