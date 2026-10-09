@@ -191,14 +191,24 @@ enough data).
 - **Log arrival / add photo** (`trip-update`): the sign-in that logged the trip adds the
   arrival time or photo later, for example on arrival. Only missing values can be added;
   recorded values never change.
+- **Several assistants** (since 2026-10-09): up to five assistant drivers per trip ("Add
+  another"), each 1–100 characters and listed once, stored in `assistants`; `assistant` keeps
+  the first name so older readers and older trips work unchanged.
+- **Drop-offs** (`trip-dropoff`, capability `trips.log`, since 2026-10-09; migration
+  `20261009090003_operator_trip_dropoffs.sql`): the sign-in that logged the trip adds a drop-off
+  with its actual time and a proof photo (both required) and an optional note, up to 20 per
+  trip. A drop-off is not before pickup and never in the future; it may be logged before or
+  after the arrival time (owner decision 2026-10-09). Drop-offs are appended only. The
+  database checks the same (append-only, own sign-in, time not before pickup, photo in the
+  signed-in account's folder, at most 20).
 - The signed-in account is always the recorder (`recordedBy`); the typed driver name is the
   performer. On a shared sign-in the name is a declaration, not proof of identity, and any
   driver using that sign-in can add a missing arrival or photo to its trips.
 - Stock-out supervisors and management (`trips.read`) see every trip and photo at the site.
   Drivers see their own trips and photos.
 - Database invariants: trips are never removed; recorded trip fields are fixed; only the
-  trip's own driver can add its missing arrival or photo; arrival is never before pickup; a
-  new photo must be in the signed-in driver's folder.
+  trip's own driver can add its missing arrival or photo, or append drop-offs; arrival and
+  drop-offs are never before pickup; a new photo must be in the signed-in driver's folder.
 - Photos are re-encoded in the browser as JPEG (max 1600 px, metadata removed) and stored in
   the private bucket `operator-trip-photos` at `<workspace id>/<driver user id>/<sha256>.jpg`
   (5 MB limit). `/api/trip-photos` signs uploads for drivers and 60-second read URLs for the

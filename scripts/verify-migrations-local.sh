@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261009090003_operator_trip_dropoffs.down.sql"
+"${psql[@]}" -At -c "select count(*) from public.operator_command_rules where command = 'trip-dropoff'" | grep -qx 0
 "${psql[@]}" -f "$root/supabase/rollback/20261009090002_operator_stock_returns.down.sql"
 "${psql[@]}" -At -c "select count(*) from public.operator_command_rules where command = 'return'" | grep -qx 0
 "${psql[@]}" -f "$root/supabase/rollback/20261009090001_operator_warehouse_stages.down.sql"
@@ -52,4 +54,6 @@ echo "assistant memberships become driver memberships"
 "${psql[@]}" -At -c "select operator_private.factory_stage('filling') and not operator_private.factory_stage('hologram')" | grep -qx t
 "${psql[@]}" -f "$root/supabase/migrations/20261009090002_operator_stock_returns.sql"
 "${psql[@]}" -At -c "select capability from public.operator_command_rules where command = 'return'" | grep -qx stock.receive
+"${psql[@]}" -f "$root/supabase/migrations/20261009090003_operator_trip_dropoffs.sql"
+"${psql[@]}" -At -c "select capability from public.operator_command_rules where command = 'trip-dropoff'" | grep -qx trips.log
 echo "ok"

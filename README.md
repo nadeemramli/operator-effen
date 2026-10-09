@@ -193,7 +193,10 @@ rollout separate until the owner supplies the roster and access administrator.
 
 Driver and assistant driver are one role. Drivers share one sign-in and log each trip with
 the driver's and assistant driver's names, pickup time, arrival time and a photo; the
-arrival and photo can be added later. Stock-out supervisors and management review every trip at the site. See
+arrival and photo can be added later. Since 9 October 2026 a trip can list up to five assistant
+drivers, and **+ Drop-off** records each drop-off along the way with its own time and photo
+(before or after arrival; migration `20261009090003_operator_trip_dropoffs.sql`). Stock-out
+supervisors and management review every trip at the site. See
 [driver trips](docs/sv-entry-and-sachet-route.md#driver-trips).
 
 ### Production PIC planning and changes

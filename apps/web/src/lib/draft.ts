@@ -436,8 +436,12 @@ export interface Trip {
   /** Malaysia date of the pickup. */
   date: string;
   driver: string;
-  /** Assistant driver's name; empty when driving alone. */
+  /** First assistant driver's name (kept for older readers); empty when driving alone. */
   assistant: string;
+  /** Every assistant driver on the trip (since 2026-10-09); absent on older trips. */
+  assistants?: string[];
+  /** Drop-offs along the trip, each with its own time and photo; appended, never changed. */
+  dropoffs?: Dropoff[];
   pickupAt: string;
   arriveAt?: string;
   /** Storage path of the trip photo. */
@@ -448,6 +452,20 @@ export interface Trip {
   arrivalRecordedAt?: string;
   photoRecordedAt?: string;
 }
+export interface Dropoff {
+  id: string;
+  /** Actual drop-off time. */
+  at: string;
+  /** Storage path of the proof photo. */
+  photo: string;
+  note?: string;
+  recordedAt: string;
+}
+export const MAX_ASSISTANTS = 5;
+export const MAX_DROPOFFS = 20;
+/** Assistant names to show: the list on newer trips, the single name on older ones. */
+export const tripAssistants = (trip: Pick<Trip, "assistant" | "assistants">) =>
+  trip.assistants ?? (trip.assistant ? [trip.assistant] : []);
 export const tripPhotoPath = /^([0-9a-f-]{36}\/){1,2}[a-f0-9]{64}\.jpg$/;
 // A performer profile. It never grants sign-in or write permission by itself: a packer
 // profile records work only on the shared packer sign-in, after its PIN (kept outside the
@@ -2590,8 +2608,20 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       // stays the recorder.
       const driver = str("driver");
       if (driver.length > 100) throw new Error("Use a shorter driver name.");
-      const assistant = str("assistant", false);
-      if (assistant.length > 100) throw new Error("Use a shorter assistant name.");
+      // Assistants come from the repeatable list field (assistant_0, assistant_1, …) or,
+      // from older clients, the single "assistant" field.
+      const listed = Object.keys(v)
+        .filter((k) => /^assistant_\d{1,2}$/.test(k))
+        .sort((a, b) => Number(a.slice(10)) - Number(b.slice(10)))
+        .map((k) => str(k, false));
+      const assistants = (listed.length ? listed : [str("assistant", false)]).filter(Boolean);
+      if (assistants.length > MAX_ASSISTANTS)
+        throw new Error(`Record up to ${MAX_ASSISTANTS} assistant drivers.`);
+      if (assistants.some((a) => a.length > 100))
+        throw new Error("Use a shorter assistant name.");
+      if (new Set(assistants.map((a) => a.toLowerCase())).size !== assistants.length)
+        throw new Error("Each assistant driver is listed once.");
+      const assistant = assistants[0] ?? "";
       const pickupAt = tripTime("pickupAt")!;
       const arriveAt = tripTime("arriveAt", false);
       if (arriveAt && arriveAt < pickupAt)
@@ -2605,6 +2635,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         date: toMyt(pickupAt).slice(0, 10),
         driver,
         assistant,
+        assistants,
         pickupAt,
         ...(arriveAt ? { arriveAt, arrivalRecordedAt: at } : {}),
         ...(photo ? { photo, photoRecordedAt: at } : {}),
@@ -2620,7 +2651,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           "Driver " + driver,
           "pickup " + toMyt(pickupAt).replace("T", " "),
           arriveAt ? "arrival " + toMyt(arriveAt).replace("T", " ") : "arrival pending",
-          assistant ? "assistant " + assistant : "no assistant",
+          assistants.length
+            ? (assistants.length > 1 ? "assistants " : "assistant ") + assistants.join(", ")
+            : "no assistant",
           photo ? "photo attached" : "",
         ]
           .filter(Boolean)
@@ -2660,6 +2693,42 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           .filter(Boolean)
           .join(" · "),
         { performer: trip.driver, ...(arriveAt ? { occurredAt: arriveAt } : {}) },
+      );
+      break;
+    }
+    case "trip-dropoff": {
+      // A drop-off along the trip, with its own actual time and a proof photo. Logged by the
+      // sign-in that logged the trip, before or after arrival (owner decision 2026-10-09).
+      const trip = inSite(find(s.trips ?? []));
+      if (trip.recordedBy?.userId !== recorder.userId)
+        throw new Error("Only the driver who logged this trip can add to it.");
+      const dropAt = tripTime("at")!;
+      if (dropAt < trip.pickupAt)
+        throw new Error("A drop-off cannot be before the pickup time.");
+      const photo = tripPhoto();
+      if (!photo) throw new Error("Add a photo of the drop-off as proof.");
+      const note = str("note", false);
+      if (note.length > 300) throw new Error("Use a shorter drop-off note.");
+      if ((trip.dropoffs?.length ?? 0) >= MAX_DROPOFFS)
+        throw new Error(`A trip can have up to ${MAX_DROPOFFS} drop-offs.`);
+      (trip.dropoffs ??= []).push({
+        id: id(),
+        at: dropAt,
+        photo,
+        ...(note ? { note } : {}),
+        recordedAt: at,
+      });
+      log(
+        "trip:" + trip.id,
+        "Trip drop-off logged",
+        [
+          "Drop-off " + toMyt(dropAt).replace("T", " "),
+          "photo attached",
+          note,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        { performer: trip.driver, occurredAt: dropAt },
       );
       break;
     }

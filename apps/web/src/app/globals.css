@@ -2891,3 +2891,27 @@ td.actions {
   padding-top: 0;
   background: color-mix(in srgb, var(--muted) 55%, transparent);
 }
+/* Repeatable list inputs (assistant drivers) and trip drop-offs. */
+.list-input {
+  display: grid;
+  gap: 6px;
+}
+.list-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.list-input > button {
+  justify-self: start;
+}
+.dropoff-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.dropoff-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

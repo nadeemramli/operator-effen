@@ -24,7 +24,10 @@ const section = (table, source = sql) => {
   return start < 0 ? "" : source.slice(start, source.indexOf(";", start));
 };
 // Floor improvements (October 2026): later migrations seed further rows.
-const later = ["20261009090002_operator_stock_returns"].map(migration);
+const later = [
+  "20261009090002_operator_stock_returns",
+  "20261009090003_operator_trip_dropoffs",
+].map(migration);
 const merged = (table) =>
   section(table) +
   section(table, trips) +
@@ -155,6 +158,7 @@ test("every operational command stays inside its database scope", () => {
   run("production", "close", { date: "2026-10-01", note: "Done" });
   run("driver", "trip", { driver: "Sample Driver", assistant: "Sample Assistant", pickupAt: "2026-10-01T09:00" });
   run("driver", "trip-update", { id: s.trips[0].id, arriveAt: "2026-10-01T10:30" });
+  run("driver", "trip-dropoff", { id: s.trips[0].id, at: "2026-10-01T10:00", photo: "10000000-0000-4000-8000-00000000000a/00000000-0000-4000-8000-000000000001/" + "a".repeat(64) + ".jpg" });
   run("production", "route-review", (() => {
     const legacy = s.batches.find((b) => b.id === "b-ady");
     delete legacy.route;

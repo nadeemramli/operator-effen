@@ -831,4 +831,43 @@ select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000009', 
   jsonb_set(pg_temp.state(:W), '{issues}', '[{"id":"iw1","cartonId":"cw1","orderId":"o","qty":43,"pic":"x","at":"t"}]')),
   'ok', 'issue received plus returned');
 
+-- 11. Trip drop-offs and assistants (20261009090003): drop-offs are appended only, by the
+--     sign-in that logged the trip, each with a time not before pickup and its own photo.
+create function pg_temp.drop(p_id text, p_uid text, p_at text default '2026-10-06T01:30:00.000Z',
+  p_photo boolean default true) returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'at', p_at, 'recordedAt', '2026-10-06T01:31:00.000Z')
+    || case when p_photo then jsonb_build_object('photo',
+      '10000000-0000-4000-8000-00000000000a/' || p_uid || '/' || repeat('c', 64) || '.jpg') else '{}' end $$;
+create function pg_temp.drops(p jsonb) returns jsonb language sql as $$
+  select jsonb_set(pg_temp.state(), '{trips,0,dropoffs}', p) $$;
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  pg_temp.drops(jsonb_build_array(pg_temp.drop('d1', :DRV)))), 'ok', 'driver adds a drop-off to own trip');
+select pg_temp.expect(pg_temp.commit_as(:DRV2, :A, 'trip-dropoff',
+  pg_temp.drops((pg_temp.state() -> 'trips' -> 0 -> 'dropoffs') || jsonb_build_array(pg_temp.drop('d2', :DRV2)))),
+  '23514', 'another sign-in adds a drop-off');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  jsonb_set(pg_temp.state(), '{trips,0,dropoffs,0,at}', '"2026-10-06T01:45:00.000Z"')),
+  '23514', 'rewrite a recorded drop-off');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff', pg_temp.drops('[]')),
+  '23514', 'remove a recorded drop-off');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  pg_temp.drops((pg_temp.state() -> 'trips' -> 0 -> 'dropoffs') || jsonb_build_array(pg_temp.drop('d3', :DRV, p_photo => false)))),
+  '23514', 'drop-off without a photo');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  pg_temp.drops((pg_temp.state() -> 'trips' -> 0 -> 'dropoffs') || jsonb_build_array(pg_temp.drop('d4', :DRV2)))),
+  '23514', 'drop-off photo in another account''s folder');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  pg_temp.drops((pg_temp.state() -> 'trips' -> 0 -> 'dropoffs') || jsonb_build_array(pg_temp.drop('d5', :DRV, '2026-10-06T00:30:00.000Z')))),
+  '23514', 'drop-off before pickup');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  pg_temp.drops((pg_temp.state() -> 'trips' -> 0 -> 'dropoffs') || jsonb_build_array(pg_temp.drop('d6', :DRV, '2026-10-06T03:30:00.000Z')))),
+  'ok', 'second drop-off after arrival');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip',
+  pg_temp.with_trips((pg_temp.state() -> 'trips') || jsonb_build_array(pg_temp.trip('t-crew', :DRV,
+    '{"assistants":["Assistant A","Assistant B"]}')))), 'ok', 'new trip with two assistants');
+do $$ begin
+  if jsonb_array_length((select state -> 'trips' -> 0 -> 'dropoffs' from public.operator_workspaces where site_id = 'site-a')) <> 2 then
+    raise exception 'FAIL: expected two drop-offs on the trip'; end if;
+end $$;
+
 select 'operator access tests passed' as result;

@@ -808,6 +808,45 @@ await check("C: drivers share one sign-in; each trip keeps the typed driver name
   assert.equal(unnamed.status, 400);
   await d.context.close();
 });
+await check("C: a driver lists two assistants and logs a drop-off with its own time and photo", async () => {
+  const d = await session("driverA");
+  const myt = (ms) => new Date(ms + 8 * 3600e3).toISOString().slice(0, 16);
+  const now = Date.now();
+  const trip = await post(d, "trip", { driver: "Synthetic Driver Ali", assistant_0: "Synthetic Helper A", assistant_1: "Synthetic Helper B", pickupAt: myt(now - 60 * 60e3) }, { role: "driver" });
+  assert.equal(trip.status, 200, JSON.stringify(trip.body));
+  const logged = stored(W.a).trips[0];
+  assert.deepEqual(logged.assistants, ["Synthetic Helper A", "Synthetic Helper B"]);
+  assert.equal(logged.assistant, "Synthetic Helper A");
+  // Upload a proof photo the way the browser does: sign, then PUT to the signed URL.
+  const bytes = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from("synthetic drop-off " + randomUUID()), Buffer.alloc(200)]);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const uploaded = await d.page.evaluate(async ([hash, bytes, ws]) => {
+    const res = await fetch("/api/trip-photos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hash, size: bytes.length, workspace: ws }) });
+    const signed = await res.json();
+    if (!res.ok) return { status: res.status, signed };
+    if (!signed.exists) {
+      const put = await fetch(signed.url, { method: "PUT", headers: { "Content-Type": "image/jpeg" }, body: new Uint8Array(bytes) });
+      if (!put.ok) return { status: put.status, signed };
+    }
+    return { status: 200, path: signed.path };
+  }, [hash, [...bytes], W.a]);
+  assert.equal(uploaded.status, 200, JSON.stringify(uploaded));
+  const noPhoto = await post(d, "trip-dropoff", { id: logged.id, at: myt(now - 30 * 60e3) }, { role: "driver" });
+  assert.equal(noPhoto.status, 400);
+  assert.match(noPhoto.body.error, /photo/);
+  const drop = await post(d, "trip-dropoff", { id: logged.id, at: myt(now - 30 * 60e3), photo: uploaded.path, note: "INT shop" }, { role: "driver" });
+  assert.equal(drop.status, 200, JSON.stringify(drop.body));
+  const after = stored(W.a).trips.find((t) => t.id === logged.id);
+  assert.equal(after.dropoffs.length, 1);
+  assert.equal(after.dropoffs[0].photo, uploaded.path);
+  // Another sign-in cannot add to this trip.
+  const other = await post(outC, "trip-dropoff", { id: logged.id, at: myt(now - 20 * 60e3), photo: uploaded.path }, { role: "outbound" });
+  assert.equal(other.status, 403);
+  await d.page.goto("/?view=trips");
+  await d.page.getByText("Synthetic Helper A, Synthetic Helper B").first().waitFor();
+  await d.page.locator(".dropoff-list", { hasText: "INT shop" }).first().waitFor();
+  await d.context.close();
+});
 await outC.context.close();
 await packers.context.close();
 
