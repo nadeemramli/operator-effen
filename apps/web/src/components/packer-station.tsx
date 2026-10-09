@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { FormError } from "./form-error";
 import { KeyRound, Lock, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -136,7 +137,7 @@ export function PackerUnlock({
               onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
             />
           </label>
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          <FormError message={error} />
           <Button className="action-primary" disabled={busy || pin.length < 4}>
             <KeyRound size={16} />
             {t("Open my AWBs", "Buka AWB saya")}
@@ -283,7 +284,7 @@ export function PackerProfiles({
           {t("Add packer", "Tambah pembungkus")}
         </Button>
       </form>
-      {error && <p className="text-sm text-destructive mt-3">{error}</p>}
+      <FormError message={error} className="mt-3" />
       {notice && <p className="text-sm text-success mt-3">{notice}</p>}
       {!!profiles.length && (
         <div className="table-scroll mt-4">
