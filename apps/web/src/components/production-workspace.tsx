@@ -28,6 +28,7 @@ import {
 export { ProcessPicHistory } from "./sachet-records";
 import {
   Empty,
+  FormError,
   Panel,
   ProductName,
   fmt,
@@ -107,6 +108,7 @@ export function ProductionWorkspace({
   command: (
     type: string,
     input: Record<string, unknown>,
+    options?: { onError?: (message: string) => void },
   ) => Promise<Draft | null>;
   show: (spec: FormSpec) => void;
   pic: (name?: string, label?: string) => Field;
@@ -543,7 +545,10 @@ export function ProductionWorkspace({
           defaultDate={workDate}
           peopleOptions={pic().options ?? []}
           onSave={async (input) => {
-            const result = await command("batch", input);
+            let error = "";
+            const result = await command("batch", input, {
+              onError: (message) => (error = message),
+            });
             if (result)
               router.push(
                 href(
@@ -552,6 +557,7 @@ export function ProductionWorkspace({
                   result.batches[0].date,
                 ).replace(/&factory=[^&]+/, ""),
               );
+            return error;
           }}
         />
       ) : tab === "history" ? (
@@ -866,10 +872,12 @@ function BatchPlanForm({
   defaultDate: string;
   peopleOptions: { value: string; label: string }[];
   backHref: string;
-  onSave: (input: Record<string, unknown>) => Promise<void>;
+  /** Resolves to an error message, or "" once saved. */
+  onSave: (input: Record<string, unknown>) => Promise<string>;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [productId, setProductId] = useState(defaultProduct);
+  const [error, setError] = useState("");
   const route = isSachet(productId)
     ? sachetRoutes[currentSachetRoute].stages.map((key) => {
         const stage = sachetStage(key)!;
@@ -888,7 +896,10 @@ function BatchPlanForm({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void onSave(Object.fromEntries(new FormData(e.currentTarget)));
+          setError("");
+          void onSave(Object.fromEntries(new FormData(e.currentTarget))).then(
+            setError,
+          );
         }}
       >
         {isSachet(productId) && (
@@ -1041,6 +1052,7 @@ function BatchPlanForm({
                 )}
           </p>
         </fieldset>
+        <FormError message={error} className="mt-4" />
         <div className="plan-actions">
           <Button asChild variant="outline">
             <Link href={backHref}>{t("Cancel", "Batal")}</Link>
