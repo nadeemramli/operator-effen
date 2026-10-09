@@ -1,6 +1,8 @@
 # Operator EFFEN
 
-Operator EFFEN is an authenticated operations test workspace. The workflow previews use fictional data; individual staff authentication is a later rollout step.
+Operator EFFEN is the EFFEN operations workspace. Since 2026-10-06 staff sign in with
+their own accounts and site memberships (see [role-based entry](docs/sv-entry-and-sachet-route.md));
+the fictional preview sandbox remains for accounts that hold the preview flag and no membership.
 
 ## Production readiness planning
 
@@ -8,12 +10,15 @@ The [production readiness plan](docs/production-readiness-plan.md) and [executio
 
 Confirmed sizing: 7–10 packers on phones, up to 2 production users and 2 supervisors on laptops (11–14 concurrent users). Architecture and release targets are proposals; publishing this plan does not establish live factory readiness. See the dated baseline and decision register before continuing on another computer.
 
+The [readiness status review](docs/production-readiness-status.md) (9 October 2026) records what
+each workstream has implemented, the evidence for it, and what remains open.
+
 ## Stack
 
 - Node.js 24 (see `.nvmrc`), pnpm 11.16.0
 - Next.js 16.3.5, React 19.2.4, TypeScript
 - Tailwind CSS 4, shadcn-compatible theme, Geist typography
-- Supabase for the operational database and planned authentication; CLI pinned to 2.117.0
+- Supabase for the operational database, authentication and private file storage; CLI pinned to 2.117.0
 - Vercel for hosting
 
 The workspace layout (`apps/web`), framework family and theme align with Fullkit. Next.js and its ESLint config use 16.3.5 to address dependency advisories affecting the original 16.2.11 baseline. The theme was copied from Fullkit commit `c56d0b4b311a8bff13582238f5ce566b6e272c57`; Geist uses its bundled font package so builds do not need Google Fonts access.
@@ -51,9 +56,14 @@ The placeholder can build without a database connection. A successful build alon
 
 ## Environments
 
-The new Operator Supabase project is the development backend during the foundation phase. It is separate from Fullkit's database and currently contains no application tables or business records.
+The Operator Supabase project (`operator-effen`) is the live operational database since
+2026-10-06; it is separate from Fullkit's database. Its schema is the committed migrations in
+`supabase/migrations` and must not drift from them (compare with `supabase migration list`).
 
-Vercel's **Development** and **Preview** environments receive the public Supabase URL and publishable key. Production database variables are deliberately unset. Establish database separation before introducing live operational data.
+Vercel's **Production** environment holds the live Supabase URL, publishable key and the
+server-only `OPERATOR_COMMIT_SECRET`. **Development** and **Preview** were disconnected from
+the live project at go-live and point at a placeholder; give them a separate staging project
+to re-enable preview deployments. Never point a preview at the live database.
 
 The committed `supabase/config.toml` is generated local CLI configuration, with seeding disabled until reviewed seed data exists. It has not been pushed to the hosted project's service settings. Do not run a database reset or configuration push against a hosted project as a setup shortcut.
 
@@ -63,7 +73,9 @@ Vercel is linked to this repository with root directory `apps/web`, framework Ne
 
 Never put service-role or secret keys in variables beginning with `NEXT_PUBLIC_`. The app currently needs only the publishable key.
 
-No database migrations, catalog imports, production records or user accounts are included. Authentication/access rules and the reporting connection to Fullkit are separate implementation steps.
+Database migrations and their access tests are in `supabase/`; user accounts, memberships and
+production records are never committed. The reporting connection to Fullkit is a separate
+implementation step.
 
 ## Repository boundary
 
@@ -249,3 +261,15 @@ refresh never passes through another role's screens. Management's "view as" lens
 for the browser tab, refreshes included, and ends with it. Signing in again after a
 refresh or an expired session returns to the screen that was open; only paths on this
 site are accepted as the return address.
+
+### Browser security policy and dependency patches (9 October 2026)
+
+Every page and API response now carries a Content Security Policy with a per-request nonce
+(`apps/web/src/proxy.ts`, `apps/web/src/lib/security-headers.ts`): scripts run only with the
+nonce, uploads and signed photo or PDF reads may only reach the configured Supabase origin,
+framing is refused, and the PDF and OCR workers keep loading from `/vendor` without the
+policy. `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`
+and `Cross-Origin-Opener-Policy` are set on every response; Vercel adds
+`Strict-Transport-Security`. Next.js is on 16.3.8 (patched `next/og` and image advisories)
+and build-time tooling is pinned past its advisories in `pnpm-workspace.yaml`; run
+`pnpm audit --prod` before each release.

@@ -5,3 +5,9 @@ allowBuilds:
   sharp: true
   tesseract.js: false
   unrs-resolver: true
+
+# Build-time tooling only (shadcn CSS import, tailwind postcss, eslint); pinned past
+# the source-map-js and MCP SDK OAuth advisories (braces has no patched release yet). Re-check with `pnpm audit --prod`.
+overrides:
+  "source-map-js@<1.2.2": ">=1.2.2"
+  "@modelcontextprotocol/sdk@<1.31.0": ">=1.31.0"
