@@ -115,7 +115,7 @@ test("every operational command stays inside its database scope", () => {
   run("intake", "stock-in-ady", { receiptId: s.adypocideReceipts[0].id, boxes: 3, rack: "R", pic: "R" });
   run("production", "batch", { product: "cav", code: "COV-B", date: "2026-10-01", target: 2 });
   const bottle = s.batches[0].id;
-  for (let i = 0; i < 4; i++) run("production", "step", { id: bottle, step: i, pic: "P", qty: 2, qc: "not-recorded" });
+  for (let i = 0; i < 4; i++) run("production", "step", { id: bottle, step: i, pic: "P", ...(i === 3 ? { qty: 2, qc: "not-recorded" } : {}) });
   run("production", "transfer", { id: bottle, qty: 2, pic: "F" });
   run("intake", "receive", { batchId: bottle, qty: 2, rack: "R", pic: "R" });
   run("intake", "count", { cartonId: s.cartons[0].id, actual: 1, pic: "R" });
