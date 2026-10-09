@@ -28,6 +28,7 @@ import {
   outOfScopeKeys,
 } from "@/lib/access";
 import { validateImport } from "@/lib/awb-import";
+import { rebaseLoop, STALE_MESSAGE, type RebaseStep } from "@/lib/rebase";
 import { commandRules } from "@/lib/capabilities";
 import {
   openPackerSession,
@@ -164,43 +165,7 @@ export async function POST(request: NextRequest) {
     if (!roles.some((r) => r.id === body.command.role))
       return json({ error: "Choose a valid test role." }, 400);
     const role: Role = body.command.role;
-    const loaded = await db
-      .from("ui_draft_workspaces")
-      .select("state,revision")
-      .eq("user_id", user.id)
-      .single();
-    if (!loaded.data)
-      return json({ error: "Unable to load the test workspace." }, 503);
-    const current = loaded.data.state as Draft;
     const operationId: string | undefined = body.operationId;
-    if (operationId) {
-      const prior = findOperation(current, operationId);
-      if (prior)
-        return prior.fingerprint === print && prior.userId === user.id
-          ? json({
-              state: withBatchReferences(current),
-              revision: loaded.data.revision,
-              replayed: true,
-            })
-          : json(
-              {
-                error:
-                  "This save ID was already used for a different change. Nothing new was saved; refresh and review.",
-                code: "operation-mismatch",
-              },
-              409,
-            );
-    }
-    if (loaded.data.revision !== body.revision)
-      return json(
-        {
-          error:
-            "A teammate changed the shared records. Refresh to load their changes before trying again.",
-          code: "revision",
-        },
-        409,
-      );
-    let state: Draft;
     try {
       if (type === "import-save")
         for (const file of validateImport(input.batch).files) {
@@ -210,60 +175,92 @@ export async function POST(request: NextRequest) {
         }
       if (type.startsWith("trip") && typeof input.photo === "string" && input.photo)
         await requireTripPhoto(db, "trip-draft-photos", user.id, input.photo);
-      state = applyCommand(current, {
-        type,
-        role,
-        input,
-        capabilities: previewCapabilities(role),
-        actor: {
-          kind: "preview",
-          role,
-          name: roleLabel(role) + " (test view)",
-          userId: user.id,
-        },
-        // Fictional sandbox: no PINs; the previewed packer picks a sample profile.
-        performer: typeof input.profile === "string" ? input.profile : undefined,
-      });
-      if (operationId)
-        recordOperation(state, {
-          id: operationId,
-          type,
-          fingerprint: print,
-          userId: user.id,
-          at: new Date().toISOString(),
-        });
-      if (new TextEncoder().encode(JSON.stringify(state)).length > 1800000)
-        throw new Error(
-          "The shared test workspace is full. This change has not been saved.",
-        );
     } catch (e) {
       return domainError(e);
     }
-    const result = await db
-      .from("ui_draft_workspaces")
-      .update({
-        state,
-        revision: loaded.data.revision + 1,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", user.id)
-      .eq("revision", loaded.data.revision)
-      .select("state,revision")
-      .maybeSingle();
-    if (result.error)
-      return json(
-        { error: "Unable to save. Your change has not been recorded." },
-        503,
-      );
-    if (!result.data)
-      return json(
-        {
-          error: "A teammate saved a change first. Refresh before trying again.",
-          code: "revision",
-        },
-        409,
-      );
-    return json(result.data);
+    // Load the latest state, apply, commit with its revision; repeat if someone saved first.
+    return rebaseLoop(async (): Promise<RebaseStep<NextResponse>> => {
+      const loaded = await db
+        .from("ui_draft_workspaces")
+        .select("state,revision")
+        .eq("user_id", user.id)
+        .single();
+      if (!loaded.data)
+        return { done: json({ error: "Unable to load the test workspace." }, 503) };
+      const current = loaded.data.state as Draft;
+      if (operationId) {
+        const prior = findOperation(current, operationId);
+        if (prior)
+          return {
+            done:
+              prior.fingerprint === print && prior.userId === user.id
+                ? json({
+                    state: withBatchReferences(current),
+                    revision: loaded.data.revision,
+                    replayed: true,
+                  })
+                : json(
+                    {
+                      error:
+                        "This save ID was already used for a different change. Nothing new was saved; refresh and review.",
+                      code: "operation-mismatch",
+                    },
+                    409,
+                  ),
+          };
+      }
+      let state: Draft;
+      try {
+        state = applyCommand(current, {
+          type,
+          role,
+          input,
+          capabilities: previewCapabilities(role),
+          actor: {
+            kind: "preview",
+            role,
+            name: roleLabel(role) + " (test view)",
+            userId: user.id,
+          },
+          // Fictional sandbox: no PINs; the previewed packer picks a sample profile.
+          performer: typeof input.profile === "string" ? input.profile : undefined,
+        });
+        if (operationId)
+          recordOperation(state, {
+            id: operationId,
+            type,
+            fingerprint: print,
+            userId: user.id,
+            at: new Date().toISOString(),
+          });
+        if (new TextEncoder().encode(JSON.stringify(state)).length > 1800000)
+          throw new Error(
+            "The shared test workspace is full. This change has not been saved.",
+          );
+      } catch (e) {
+        return { done: domainError(e) };
+      }
+      const result = await db
+        .from("ui_draft_workspaces")
+        .update({
+          state,
+          revision: loaded.data.revision + 1,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", user.id)
+        .eq("revision", loaded.data.revision)
+        .select("state,revision")
+        .maybeSingle();
+      if (result.error)
+        return {
+          done: json(
+            { error: "Unable to save. Your change has not been recorded." },
+            503,
+          ),
+        };
+      if (!result.data) return { stale: true };
+      return { done: json(result.data) };
+    }, staleResponse);
   }
 
   // Operational workspace: identity, role, site and capabilities come from the server
@@ -280,45 +277,6 @@ export async function POST(request: NextRequest) {
       503,
     );
   const operationId: string = body.operationId ?? randomUUID();
-  const prior = await db
-    .from("operator_commits")
-    .select("command,fingerprint,result_revision")
-    .eq("workspace_id", membership.workspaceId)
-    .eq("operation_id", operationId)
-    .maybeSingle();
-  const loaded = await db
-    .from("operator_workspaces")
-    .select("state,revision")
-    .eq("id", membership.workspaceId)
-    .single();
-  if (prior.error || !loaded.data)
-    return json({ error: "Unable to load your site workspace." }, 503);
-  if (prior.data)
-    return prior.data.fingerprint === print && prior.data.command === type
-      ? json({
-          state: withBatchReferences(loaded.data.state as Draft),
-          revision: loaded.data.revision,
-          replayed: true,
-          resultRevision: prior.data.result_revision,
-        })
-      : json(
-          {
-            error:
-              "This save ID was already used for a different change. Nothing new was saved; refresh and review.",
-            code: "operation-mismatch",
-          },
-          409,
-        );
-  if (loaded.data.revision !== body.revision)
-    return json(
-      {
-        error:
-          "A teammate changed the shared records. Refresh to load their changes before trying again.",
-        code: "revision",
-      },
-      409,
-    );
-  const current = loaded.data.state as Draft;
   // Shared packer sign-in: a packer's own count is saved only for the profile their PIN
   // unlocked on this device (signed cookie), never for a profile named in the request.
   let packer: PackerSession | null = null;
@@ -337,10 +295,6 @@ export async function POST(request: NextRequest) {
         403,
       );
   }
-  // A production supervisor limited to one factory never changes the other factory's
-  // batches; the database re-checks the signed state (operator_private.assert_factory_scope).
-  const outside = factoryDenial(membership.factory, type, input, current.batches ?? []);
-  if (outside) return json({ error: outside }, 403);
   const recorder: Recorder = {
     kind: "member",
     role: membership.role as Role,
@@ -349,7 +303,7 @@ export async function POST(request: NextRequest) {
     staffProfileId: membership.staffProfileId,
     siteId: membership.siteId,
   };
-  let stateText: string;
+  // Stored files do not depend on the records; check them once, before any attempt.
   try {
     if (type === "import-save")
       for (const file of validateImport(input.batch).files) {
@@ -364,94 +318,139 @@ export async function POST(request: NextRequest) {
         `${membership.workspaceId}/${user.id}`,
         input.photo,
       );
-    const state = applyCommand(current, {
-      type,
-      role: recorder.role,
-      input,
-      actor: recorder,
-      capabilities: membership.capabilities,
-      performer: packer?.profileId,
-    });
-    if (
-      outOfScopeKeys(
-        type,
-        current as unknown as Record<string, unknown>,
-        state as unknown as Record<string, unknown>,
-      ).length
-    )
-      throw new Error("This change is outside your role's records.");
-    if (outOfFactory(membership.factory, current, state).length)
-      throw new AccessDenied(
-        `Your access covers the ${membership.factory} factory only. This change has not been saved.`,
-      );
-    stateText = JSON.stringify(state);
-    if (new TextEncoder().encode(stateText).length > 1800000)
-      throw new Error(
-        "The shared workspace is full. This change has not been saved.",
-      );
   } catch (e) {
     return domainError(e);
   }
-  const result = await db.rpc("operator_commit_workspace", {
-    p_workspace: membership.workspaceId,
-    p_expected_revision: loaded.data.revision,
-    p_command: type,
-    p_operation: operationId,
-    p_fingerprint: print,
-    p_state: stateText,
-    p_attestation: attest(secret, {
-      workspaceId: membership.workspaceId,
-      revision: loaded.data.revision,
-      userId: user.id,
-      operationId,
-      command: type,
-      fingerprint: print,
-      stateText,
-    }),
-  });
-  if (result.error) {
-    const code = result.error.code;
-    return code === "42501"
-      ? json({ error: result.error.message }, 403)
-      : code === "28000"
-        ? json({ error: "Please sign in again." }, 401)
-        : code === "PT409"
-          ? json({ error: result.error.message, code: "operation-mismatch" }, 409)
-          : code === "23514"
-            ? json({ error: result.error.message, code: "invariant" }, 409)
-            : code === "55000"
-              ? json({ error: result.error.message }, 503)
-              : json(
-                  { error: "Unable to save. Your change has not been recorded." },
-                  503,
-                );
-  }
-  const saved = (
-    result.data as { new_state: Draft; new_revision: number; replayed: boolean }[]
-  )?.[0];
-  if (!saved)
-    return json(
-      {
-        error: "A teammate saved a change first. Refresh before trying again.",
-        code: "revision",
-      },
-      409,
-    );
-  const response = json({
-    state: withBatchReferences(saved.new_state),
-    revision: saved.new_revision,
-    replayed: saved.replayed,
-    ...(packer ? { packerExpiresAt: Date.now() + PACKER_IDLE_MS } : {}),
-  });
-  // Each save keeps the packer's session open for another idle period.
-  if (packer)
-    response.cookies.set(
-      PACKER_COOKIE,
-      sealPackerSession(secret, { ...packer, expiresAt: Date.now() + PACKER_IDLE_MS }),
-      packerCookieOptions(PACKER_IDLE_MS),
-    );
-  return response;
+  // Load the latest state, apply, commit with its revision; repeat if someone saved first.
+  // The operation-ID replay check is the first step of every attempt.
+  return rebaseLoop(async (): Promise<RebaseStep<NextResponse>> => {
+    const prior = await db
+      .from("operator_commits")
+      .select("command,fingerprint,result_revision")
+      .eq("workspace_id", membership.workspaceId)
+      .eq("operation_id", operationId)
+      .maybeSingle();
+    const loaded = await db
+      .from("operator_workspaces")
+      .select("state,revision")
+      .eq("id", membership.workspaceId)
+      .single();
+    if (prior.error || !loaded.data)
+      return { done: json({ error: "Unable to load your site workspace." }, 503) };
+    if (prior.data)
+      return {
+        done:
+          prior.data.fingerprint === print && prior.data.command === type
+            ? json({
+                state: withBatchReferences(loaded.data.state as Draft),
+                revision: loaded.data.revision,
+                replayed: true,
+                resultRevision: prior.data.result_revision,
+              })
+            : json(
+                {
+                  error:
+                    "This save ID was already used for a different change. Nothing new was saved; refresh and review.",
+                  code: "operation-mismatch",
+                },
+                409,
+              ),
+      };
+    const current = loaded.data.state as Draft;
+    // A production supervisor limited to one factory never changes the other factory's
+    // batches; the database re-checks the signed state (operator_private.assert_factory_scope).
+    const outside = factoryDenial(membership.factory, type, input, current.batches ?? []);
+    if (outside) return { done: json({ error: outside }, 403) };
+    let stateText: string;
+    try {
+      const state = applyCommand(current, {
+        type,
+        role: recorder.role,
+        input,
+        actor: recorder,
+        capabilities: membership.capabilities,
+        performer: packer?.profileId,
+      });
+      if (
+        outOfScopeKeys(
+          type,
+          current as unknown as Record<string, unknown>,
+          state as unknown as Record<string, unknown>,
+        ).length
+      )
+        throw new Error("This change is outside your role's records.");
+      if (outOfFactory(membership.factory, current, state).length)
+        throw new AccessDenied(
+          `Your access covers the ${membership.factory} factory only. This change has not been saved.`,
+        );
+      stateText = JSON.stringify(state);
+      if (new TextEncoder().encode(stateText).length > 1800000)
+        throw new Error(
+          "The shared workspace is full. This change has not been saved.",
+        );
+    } catch (e) {
+      return { done: domainError(e) };
+    }
+    const result = await db.rpc("operator_commit_workspace", {
+      p_workspace: membership.workspaceId,
+      p_expected_revision: loaded.data.revision,
+      p_command: type,
+      p_operation: operationId,
+      p_fingerprint: print,
+      p_state: stateText,
+      p_attestation: attest(secret, {
+        workspaceId: membership.workspaceId,
+        revision: loaded.data.revision,
+        userId: user.id,
+        operationId,
+        command: type,
+        fingerprint: print,
+        stateText,
+      }),
+    });
+    if (result.error) {
+      const code = result.error.code;
+      return {
+        done:
+          code === "42501"
+            ? json({ error: result.error.message }, 403)
+            : code === "28000"
+              ? json({ error: "Please sign in again." }, 401)
+              : code === "PT409"
+                ? json({ error: result.error.message, code: "operation-mismatch" }, 409)
+                : code === "23514"
+                  ? json({ error: result.error.message, code: "invariant" }, 409)
+                  : code === "55000"
+                    ? json({ error: result.error.message }, 503)
+                    : json(
+                        { error: "Unable to save. Your change has not been recorded." },
+                        503,
+                      ),
+      };
+    }
+    const saved = (
+      result.data as { new_state: Draft; new_revision: number; replayed: boolean }[]
+    )?.[0];
+    if (!saved) return { stale: true };
+    const response = json({
+      state: withBatchReferences(saved.new_state),
+      revision: saved.new_revision,
+      replayed: saved.replayed,
+      ...(packer ? { packerExpiresAt: Date.now() + PACKER_IDLE_MS } : {}),
+    });
+    // Each save keeps the packer's session open for another idle period.
+    if (packer)
+      response.cookies.set(
+        PACKER_COOKIE,
+        sealPackerSession(secret, { ...packer, expiresAt: Date.now() + PACKER_IDLE_MS }),
+        packerCookieOptions(PACKER_IDLE_MS),
+      );
+    return { done: response };
+  }, staleResponse);
 }
+
+const staleResponse = () =>
+  json({ error: STALE_MESSAGE, code: "revision" }, 409);
 
 function domainError(e: unknown) {
   if (e instanceof AccessDenied) return json({ error: e.message }, 403);
