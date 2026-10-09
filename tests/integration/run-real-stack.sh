@@ -15,6 +15,8 @@ bin="${PG_BIN:-/usr/lib/postgresql/16/bin}"
 supa="${SUPA_BIN:-/opt/supa}"
 storage="${STORAGE_DIR:-/opt/supa/storage}"
 pw="${PLAYWRIGHT_MODULE:-/opt/node-tools/node_modules/playwright}"
+# The cloud container keeps a system Chromium; elsewhere Playwright uses its own browser.
+[ -z "${PW_CHROMIUM:-}" ] && [ -x /opt/pw-browsers/chromium ] && export PW_CHROMIUM=/opt/pw-browsers/chromium
 pg_port=54432 auth_port=54433 storage_port=54434 rest_port=54436 api_port=54400 app_port=3100
 dir="$(mktemp -d)"; mkdir -p "$dir/files"
 as_pg=(); [ "$(id -u)" = 0 ] && { chown -R postgres "$dir"; as_pg=(runuser -u postgres --); }
