@@ -166,6 +166,12 @@ are never converted into box inventory. Previously counted boxes remain stock.
   the earlier count stale and require a fresh count before more allocation/assignment.
   Since 9 October 2026 "Tally by assigned packer" shows who keyed each count (packer with PIN
   or supervisor), and a parcel's record shows "Count entered by".
+- **Inventory for the day** (Daily tally, since 9 October 2026): per product, the balance
+  on the racks before the day, what was received, issued, returned and adjusted that
+  Malaysia day, and the balance after deduction ("On rack now" for today, "Closing" for past
+  days). Derived from stock movements only; no new records. Δ compares stock that left the
+  racks with the tally's issued-to-orders figure, which should match. **Export inventory**
+  downloads the same figures; the parcel CSV is unchanged.
 - The day changes at midnight in Asia/Kuala_Lumpur. Supervisors can manually carry
   unpacked AWBs forward; stock allocations and assignments follow the AWB, and the
   old day's checkpoint is flagged because its order set changed.
