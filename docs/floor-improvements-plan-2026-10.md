@@ -533,16 +533,22 @@ field keys ("Please complete pic.").
 
 ---
 
-## Owner decisions still open (plan proceeds with the defaults shown)
+## Owner decisions (decided 2026-10-09)
 
-| Topic | Default taken | Alternative |
+The owner confirmed every default on 2026-10-09. These are now the rules; the alternatives
+are kept for the record only.
+
+| Topic | Decision | Alternative not taken |
 |---|---|---|
-| WP6 Admin on stock screens | View-only access | Grant record capabilities (migration + capability change) |
-| WP7 "click OCR" | Automatic OCR when no references are found; checkbox kept as a slow fallback | Remove the checkbox entirely |
-| WP7 cover page | Skip any page with no references or SKUs | Always skip page 1 |
-| WP3 returns | Into an existing stock carton of the batch | Create a new carton/rack per return |
-| WP4 drop-off time vs arrival | Drop-offs allowed before or after arrival is logged, never in the future | Require drop-offs before arrival |
-| WP8 label PIC | Packer who declares is also "AWB attached by" | Ask the packer for a second name |
+| WP6 Admin on stock screens | View-only access to Stock-in, Daily tally and Packing station; no new capabilities | Grant record capabilities (migration + capability change) |
+| WP7 "click OCR" | Automatic OCR when a page's text yields no AWB or order reference; checkbox kept as a slow, unticked fallback | Remove the checkbox entirely |
+| WP7 cover page | Skip any page with no tracking number, no order reference and no known SKU; "Add missed label" can still point at it | Always skip page 1 |
+| WP3 returns | Back into an existing stock carton of the batch, on its rack | New carton/rack per return |
+| WP4 drop-off time vs arrival | Drop-offs may be logged before or after arrival, never in the future | Require drop-offs before arrival |
+| WP8 label PIC | The packer who declares the count is also "AWB attached by" | Ask for a second name |
+
+Also confirmed: no packer or driver accounts exist yet; WP8 ships with the identity bridge and
+the owner creates packer logins and memberships afterwards.
 
 ## Verification checklist (every PR)
 
