@@ -551,7 +551,7 @@ export function DraftApp() {
         if (data.code === "packer-locked") {
           setPackerProfile("");
           setForm(null);
-          setError(data.error);
+          fail(data.error);
           return null;
         }
         const conflict = data.conflict as
