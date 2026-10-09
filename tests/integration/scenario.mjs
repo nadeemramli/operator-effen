@@ -159,8 +159,13 @@ await check("A: plan a five-stage batch in the UI; route order shows Hologram 4t
   const batch = stored(W.a).batches.find((b) => b.code === "INT-ADY-001");
   batchId = batch.id;
   assert.deepEqual(batch.route.stages, ["mixing", "filling", "batching", "hologram", "wrapping"]);
-  const rows = await prod.page.locator("section.batch-card", { hasText: "INT-ADY-001" }).locator("table.machine-records tbody tr td:first-child").allInnerTexts();
-  assert.match(rows.join("|"), /1\. Mixer.*\|2\. Sachet filling.*\|3\. Inkjet.*\|4\. Hologram machine.*\|5\. Shrink/s);
+  // Production records the two factory stages; the other three are listed, in route order,
+  // as recorded at stock-in.
+  const card = prod.page.locator("section.batch-card", { hasText: "INT-ADY-001" });
+  const rows = await card.locator("table.machine-records tbody tr td:first-child").allInnerTexts();
+  assert.match(rows.join("|"), /^1\. Mixer.*\|2\. Sachet filling[^|]*$/s);
+  const later = await card.locator(".warehouse-stage-list li > span:first-child").allInnerTexts();
+  assert.deepEqual(later.map((x) => x.split(" ")[0]), ["Inkjet", "Hologram", "Shrink"]);
 });
 
 await check("A: supervisor's direct RPC with a replacement state is refused by the database", async () => {
