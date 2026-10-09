@@ -294,6 +294,7 @@ export function DraftApp() {
     [form, setForm] = useState<FormSpec | null>(null),
     [formError, setFormError] = useState(""),
     [formField, setFormField] = useState<string | undefined>(),
+    [formConflict, setFormConflict] = useState(false),
     [toast, setToast] = useState("");
   const [mobile, setMobile] = useState(false),
     [light, setLight] = useState(false),
@@ -343,7 +344,9 @@ export function DraftApp() {
     localStorage.setItem("operator-language", next);
     document.documentElement.lang = next;
   };
-  const load = useCallback(async (workspace?: string) => {
+  // `silent`: a background refresh. It keeps the open screen, form and selections and
+  // never shows an error; the next save or manual refresh reports any problem.
+  const load = useCallback(async (workspace?: string, silent = false) => {
     try {
       const res = await fetch(
         "/api/draft" +
@@ -358,6 +361,14 @@ export function DraftApp() {
       if (!res.ok)
         throw new Error("Workspace could not be loaded. Please refresh.");
       const data = await res.json();
+      if (silent) {
+        // Another site may have been chosen meanwhile; only refresh the one on screen.
+        if (workspace && data.actor?.workspaceId !== workspace) return;
+        setState(data.state);
+        setRevision(data.revision);
+        revisionRef.current = data.revision;
+        return;
+      }
       setState(data.state);
       setRevision(data.revision);
       revisionRef.current = data.revision;
@@ -392,12 +403,30 @@ export function DraftApp() {
       setPendingSave(readPending());
       setError("");
     } catch (e) {
+      if (silent) return;
       const message = e instanceof Error ? e.message : "Connection error.";
       setError(message);
       setToast(message);
     }
   }, [router]);
   const dismissToast = useCallback(() => setToast(""), []);
+  // Keep the shared records fresh: when the tab becomes visible again, and every minute
+  // while nobody is filling in a form or waiting for a save.
+  const idle = !form && !busy && !reset;
+  const workspaceId = actor?.workspaceId;
+  const ready = !!actor;
+  useEffect(() => {
+    if (!ready || !idle) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") void load(workspaceId, true);
+    };
+    const timer = setInterval(refresh, 60000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [ready, idle, workspaceId, load]);
   useEffect(() => {
     void Promise.resolve().then(() => {
       try {
@@ -514,6 +543,7 @@ export function DraftApp() {
       setPendingSave(null);
     };
     keep();
+    let conflicted = false;
     try {
       let res: Response;
       try {
@@ -554,19 +584,21 @@ export function DraftApp() {
           fail(data.error);
           return null;
         }
-        const conflict = data.conflict as
-          | { currentVersion?: number; last?: { to?: string; recordedBy?: unknown } }
-          | undefined;
-        throw new Error(
-          (data.error ?? "Unable to save. Please refresh.") +
-            (conflict
-              ? " " +
-                t(
-                  "Refresh, check the current record, then reopen the form.",
-                  "Muat semula, semak rekod semasa, kemudian buka semula borang.",
-                )
-              : ""),
-        );
+        // Someone else changed the same record: load their version now, keep the open form
+        // and its values, and let the person check and save again.
+        if (res.status === 409 && (data.code === "record" || data.code === "revision")) {
+          await load(pending.workspaceId, true);
+          conflicted = true;
+          throw new Error(
+            (data.error ?? "") +
+              " " +
+              t(
+                "The latest version has been loaded — check it, then save again.",
+                "Versi terkini telah dimuatkan — semak, kemudian simpan semula.",
+              ),
+          );
+        }
+        throw new Error(data.error ?? "Unable to save. Please refresh.");
       }
       clear();
       setState(data.state);
@@ -590,6 +622,7 @@ export function DraftApp() {
       return data.state as Draft;
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Unable to save.";
+      setFormConflict(conflicted);
       if (onError) onError(fieldMessage(raw, null, lang).message);
       else if (form) {
         const mapped = fieldMessage(raw, form, lang);
@@ -2874,6 +2907,14 @@ export function DraftApp() {
         busy={busy}
         error={formError}
         invalidField={formField}
+        errorAction={
+          formConflict ? (
+            <Button type="submit" variant="outline" size="sm" disabled={busy}>
+              <RefreshCw size={14} />
+              {t("Try again", "Cuba lagi")}
+            </Button>
+          ) : undefined
+        }
         onClose={() => setForm(null)}
         onSubmit={(type, values) => command(type, values)}
       />
