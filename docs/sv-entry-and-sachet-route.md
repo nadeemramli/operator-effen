@@ -267,8 +267,25 @@ commit;
   them a separate staging project to re-enable them.
 - Known limit accepted for go-live: production supervisors are not limited to one factory;
   Faris and Helmi can both record capsule and sachet batches. Addressed by
-  `20261007090000_operator_factory_scope.sql` (see "Factory scope"); not yet applied to
-  `operator-effen` — awaiting the owner's go-ahead and the scope assignment script.
+  `20261007090000_operator_factory_scope.sql` (see "Factory scope").
+
+## Factory scope rollout (2026-10-06, owner-approved)
+
+- PR #18 merged and deployed to Vercel Production first (the app reads memberships without
+  the column until it exists; checked against PostgREST 13 on a local copy of the schema).
+- Before applying, the live `operator_commit_workspace` body was confirmed byte-identical to
+  `20261005090000` (the version this migration replaces and the rollback restores); the live
+  site had no saved records yet (revision 0).
+- The migration file was run unchanged in one transaction and its repository version
+  recorded in the migration history (as at go-live). Verified afterwards: new column and both
+  constraints, commit function body identical to the migration, one overload, grants (members
+  may run the commit and HR functions; anonymous callers may not; the private helpers are not
+  callable; `factory` is readable, not writable). Security advisor: only the expected
+  "signed-in users can execute" note for `operator_set_membership_factory`, like the other
+  administration functions.
+- 2026-10-06 07:11 UTC: the owner ran the "Factory scope" assignment script in the SQL
+  Editor. Faris (capsule) is scoped to `bottle` and Helmi to `sachet`, each with a `change`
+  row in `operator_membership_audit` (actor role `owner-bootstrap`, as at go-live).
 
 ## Verification
 
