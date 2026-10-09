@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,12 +13,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  NEXT_TELEMETRY_DISABLED: 1
+
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      NEXT_TELEMETRY_DISABLED: 1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -29,3 +31,66 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm build
+
+  # Database boundary and browser scenarios against real Supabase components (GoTrue,
+  # PostgREST, Storage API) on a disposable Postgres, the production build and Chromium.
+  # Synthetic users and data only; nothing here reaches a hosted project.
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PG_BIN: /usr/lib/postgresql/16/bin
+      AUTH_VERSION: v2.197.0
+      POSTGREST_VERSION: v16.4
+      STORAGE_VERSION: v1.80.2
+      PLAYWRIGHT_VERSION: 1.64.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm install --global pnpm@11.16.0
+      - run: pnpm install --frozen-lockfile
+      - name: Migration rehearsal (apply, access tests, rollback, re-apply)
+        run: scripts/verify-migrations-local.sh
+      - name: Restore Supabase components
+        id: supa
+        uses: actions/cache@v4
+        with:
+          path: ~/supa
+          key: supa-${{ runner.os }}-${{ env.AUTH_VERSION }}-${{ env.POSTGREST_VERSION }}-${{ env.STORAGE_VERSION }}
+      - name: Fetch GoTrue and PostgREST
+        if: steps.supa.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/supa && cd ~/supa
+          curl -fsSL "https://github.com/supabase/auth/releases/download/${AUTH_VERSION}/auth-${AUTH_VERSION}-amd64.tar.xz" | tar -xJ
+          # The archive's binary has been named both gotrue and auth; the harness runs ./auth.
+          [ -x ./auth ] || { b="$(find . -maxdepth 2 -type f \( -name auth -o -name gotrue \) | head -1)"; [ -n "$b" ] && cp "$b" ./auth && chmod +x ./auth; }
+          [ -d ./migrations ] || { m="$(find . -maxdepth 2 -type d -name migrations | head -1)"; [ -n "$m" ] && cp -r "$m" ./migrations; }
+          curl -fsSL "https://github.com/PostgREST/postgrest/releases/download/${POSTGREST_VERSION}/postgrest-${POSTGREST_VERSION}-linux-static-x86-64.tar.xz" | tar -xJ
+          ./auth version || ./auth --help | head -2
+          ./postgrest --help | head -1
+          ls -la ~/supa
+      - name: Build Storage API
+        if: steps.supa.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch "${STORAGE_VERSION}" https://github.com/supabase/storage ~/supa/storage
+          cd ~/supa/storage
+          npm ci --no-audit --no-fund
+          npm run build
+          test -f dist/start/server.js
+      - name: Install Playwright Chromium
+        run: |
+          set -euo pipefail
+          mkdir -p ~/pw && cd ~/pw
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "playwright@${PLAYWRIGHT_VERSION}"
+          npx playwright install --with-deps chromium
+      - name: Real-stack scenarios
+        env:
+          SUPA_BIN: /home/runner/supa
+          STORAGE_DIR: /home/runner/supa/storage
+          PLAYWRIGHT_MODULE: /home/runner/pw/node_modules/playwright
+        run: tests/integration/run-real-stack.sh
