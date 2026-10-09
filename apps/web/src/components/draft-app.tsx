@@ -99,6 +99,7 @@ import {
   batchUnit,
   orderIssued,
   orderLines,
+  packEntrySource,
   packerProfiles,
   people,
   previewCapabilities,
@@ -3053,6 +3054,20 @@ export function DraftApp() {
                       />
                     }
                   />
+                  {selectedOrder.actual !== null && (
+                    <Detail
+                      label={t("Count entered by", "Kiraan direkod oleh")}
+                      value={
+                        packEntrySource(selectedOrder) === "unknown"
+                          ? t("Not recorded", "Tidak direkod")
+                          : (packEntrySource(selectedOrder) === "packer"
+                              ? t("Packer with PIN", "Pembungkus dengan PIN")
+                              : t("Supervisor", "Penyelia")) +
+                            " · " +
+                            recorderLabel(selectedOrder.packRecordedBy)
+                      }
+                    />
+                  )}
                   <Detail
                     label={t("AWB attached by", "AWB dilekatkan oleh")}
                     value={
