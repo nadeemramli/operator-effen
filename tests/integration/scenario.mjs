@@ -209,7 +209,8 @@ await check("A: machines added by production are shared with stock-in", async ()
 
 await check("A: invalid stock, route and correction operations are rejected without side effects", async () => {
   const machines = stored(W.a).machines;
-  for (const stage of ["mixing", "filling", "batching", "wrapping"]) {
+  // Transfer needs the factory stages (mixing, filling); with only mixing it is refused.
+  for (const stage of ["mixing"]) {
     const r = await post(prod, "machine", {
       id: batchId, stage, pic: "Sample PIC A", expectedVersion: 0,
       ...(stage === "mixing" ? { machineId: machines.find((m) => m.name === "INT Mixer").id } : {}),
@@ -218,7 +219,7 @@ await check("A: invalid stock, route and correction operations are rejected with
   }
   const before = revision(W.a);
   const cases = [
-    [prod, "transfer", { id: batchId, pic: "Sample PIC B" }, /all five stages/, "production"],
+    [prod, "transfer", { id: batchId, pic: "Sample PIC B" }, /mixing and filling stages/, "production"],
     [prod, "machine", { id: batchId, stage: "laminating", pic: "X" }, /Unknown production stage/, "production"],
     [prod, "stage-correct", { id: batchId, stage: "mixing", field: "machine", machineId: machines[0].id, reason: "x" }, /Reopen/, "production"],
     [prod, "change-step-pic", { id: batchId, stage: "mixing", kind: "correction", pic: "Sample PIC B" }, /reason/, "production"],
@@ -233,6 +234,14 @@ await check("A: invalid stock, route and correction operations are rejected with
   const card = prod.page.locator("section.batch-card", { hasText: "INT-ADY-001" });
   await prod.page.goto("/?view=production&production=log&date=2026-10-03");
   assert.equal(await card.getByRole("button", { name: /Send to warehouse/ }).isDisabled(), true);
+  for (const stage of ["filling", "batching", "wrapping"]) {
+    const r = await post(prod, "machine", { id: batchId, stage, pic: "Sample PIC A", expectedVersion: 0 });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  }
+  // The production card shows the factory stages; the rest are listed as recorded at stock-in.
+  await prod.page.reload();
+  await card.getByText("Recorded at stock-in").waitFor();
+  assert.equal(await card.getByRole("button", { name: /Send to warehouse/ }).isDisabled(), false);
 });
 
 await check("A: stock-in records Hologram through the UI person picker (visible card click)", async () => {
@@ -261,11 +270,11 @@ await check("A: stock-in records Hologram through the UI person picker (visible 
   assert.equal(commit, "intake:machine");
   await prod.page.reload();
   const card = prod.page.locator("section.batch-card", { hasText: "INT-ADY-001" });
-  await card.getByText(/Entered by Synthetic Stock-in SV A/).first().waitFor();
+  await card.locator(".warehouse-stage-list").getByText("Sample PIC C").waitFor();
   assert.equal(await card.getByRole("button", { name: /Send to warehouse/ }).isDisabled(), false);
 });
 
-await check("A: transfer succeeds once all five stages and PICs exist", async () => {
+await check("A: transfer succeeds once mixing and filling have PICs", async () => {
   const t = await post(prod, "transfer", { id: batchId, pic: "Sample PIC B" });
   assert.equal(t.status, 200, JSON.stringify(t.body));
   assert.ok(stored(W.a).batches.find((b) => b.id === batchId).transferredAt);
@@ -307,11 +316,12 @@ await check("A: concurrent saves — one wins, the other gets a reviewable confl
   assert.equal(retry.body.conflict.currentVersion, holo.version + 1);
 });
 
-await check("A: post-transfer correction keeps stock/custody facts and flags the revision", async () => {
+// Factory-stage corrections after transfer are revisions; warehouse-stage records before the
+// box count are the normal stock-in flow and are not (see the INT-ADY-002 case).
+await check("A: post-transfer correction of a factory stage keeps stock/custody facts and flags the revision", async () => {
   const before = stored(W.a);
-  const holo = before.batches.find((b) => b.id === batchId).steps.find((s) => s.sachetStage === "hologram");
-  const target = before.machines.find((m) => m.name === (holo.machineName === "INT Holo Beta" ? "INT Holo Alpha" : "INT Holo Beta")).id;
-  const r = await post(intake, "stage-correct", { id: batchId, stage: "hologram", field: "machine", machineId: target, reason: "Line log shows the other machine", expectedVersion: holo.version }, { role: "intake" });
+  const mixing = before.batches.find((b) => b.id === batchId).steps.find((s) => s.sachetStage === "mixing");
+  const r = await post(intake, "stage-correct", { id: batchId, stage: "mixing", field: "occurredAt", occurredAt: "2026-10-03T09:00", reason: "Line log shows the actual mixing time", expectedVersion: mixing.version }, { role: "intake" });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const after = stored(W.a);
   assert.deepEqual([after.cartons, after.adypocideReceipts, after.issues, after.adjustments], [before.cartons, before.adypocideReceipts, before.issues, before.adjustments]);
@@ -380,6 +390,38 @@ await check("A: legacy four-stage batches — history readable, in-progress need
   await prod.page.goto("/?view=production&production=history&batch=legacy-sent");
   await prod.page.getByText(/Four-stage sachet route/).waitFor();
   assert.equal(stored(W.a).batches.find((b) => b.id === "legacy-sent").route, undefined);
+});
+
+await check("A: warehouse stages are recorded at stock-in after transfer and gate the box count", async () => {
+  const planned = await post(prod, "batch", { product: "ady", code: "INT-ADY-002", date: "2026-10-03", route: "sachet-v2" });
+  assert.equal(planned.status, 200, JSON.stringify(planned.body));
+  const id = stored(W.a).batches.find((b) => b.code === "INT-ADY-002").id;
+  for (const stage of ["mixing", "filling"]) {
+    const r = await post(prod, "machine", { id, stage, pic: "Sample PIC A", expectedVersion: 0 });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  }
+  const sent = await post(prod, "transfer", { id, pic: "Sample PIC B" });
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  const received = await post(intake, "receive-ady", { batchId: id, pic: "Sample PIC C" }, { role: "intake" });
+  assert.equal(received.status, 200, JSON.stringify(received.body));
+  const receiptId = stored(W.a).adypocideReceipts.find((r) => r.batchId === id).id;
+  const early = await post(intake, "stock-in-ady", { receiptId, boxes: 5, rack: "R-1", pic: "Sample PIC C" }, { role: "intake" });
+  assert.equal(early.status, 400, JSON.stringify(early.body));
+  assert.match(early.body.error, /warehouse stages/);
+  // The stock-in receipt row shows the open warehouse stages and keeps the box count disabled.
+  await intake.page.goto("/?view=warehouse");
+  const row = intake.page.locator("table.ady-receipts tr", { hasText: "INT-ADY-002" }).first();
+  await row.getByText(/0\/3 warehouse stages/).waitFor();
+  assert.equal(await row.getByRole("button", { name: /Finalize box count/ }).isDisabled(), true);
+  for (const stage of ["batching", "hologram", "wrapping"]) {
+    const r = await post(intake, "machine", { id, stage, pic: "Sample PIC C", expectedVersion: 0 }, { role: "intake" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  }
+  const b = stored(W.a).batches.find((x) => x.id === id);
+  assert.equal(b.revisions, undefined, "warehouse stages after transfer are not revisions");
+  await intake.page.reload();
+  await row.getByText(/3\/3 warehouse stages/).waitFor();
+  assert.equal(await row.getByRole("button", { name: /Finalize box count/ }).isDisabled(), false);
 });
 
 // ============ Objective B: memberships, cross-site roles, files and policy ============
