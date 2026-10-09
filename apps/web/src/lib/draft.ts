@@ -427,12 +427,35 @@ export interface Trip {
   photoRecordedAt?: string;
 }
 export const tripPhotoPath = /^([0-9a-f-]{36}\/){1,2}[a-f0-9]{64}\.jpg$/;
-// A performer profile. It never grants sign-in or write permission.
+// A performer profile. It never grants sign-in or write permission by itself: a packer
+// profile records work only on the shared packer sign-in, after its PIN (kept outside the
+// workspace state) unlocks it.
 export interface StaffProfile {
   id: string;
   name: string;
   role: Role;
+  /** False once a supervisor deactivates it; absent means active. */
+  active?: boolean;
+  createdAt?: string;
+  createdBy?: Recorder;
 }
+export const staffProfileId =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/**
+ * Packers who can be assigned or record work: the site's active packer profiles, or the
+ * sample packers while a workspace has no staff profiles yet.
+ */
+export const packerProfiles = (s: Pick<Draft, "staffProfiles">) =>
+  s.staffProfiles
+    ? s.staffProfiles
+        .filter((p) => p.role === "packer" && p.active !== false)
+        .map((p) => ({ id: p.id, name: p.name }))
+    : people
+        .filter((p) => p.includes("Packer"))
+        .map((p) => ({ id: p, name: p }));
+/** Display name for a stored performer reference (profile ID or legacy name). */
+export const staffName = (s: Pick<Draft, "staffProfiles">, ref?: string) =>
+  (ref && s.staffProfiles?.find((p) => p.id === ref)?.name) || ref || "";
 export interface Draft {
   staffProfiles?: StaffProfile[];
   trips?: Trip[];
@@ -901,6 +924,11 @@ export type Command = {
   actor?: Recorder;
   /** Server-derived effective capabilities at this site. Preview: role defaults. */
   capabilities?: readonly Capability[] | readonly string[];
+  /**
+   * The packer profile unlocked with its PIN on the shared packer sign-in (pack-own only).
+   * Set by the API server from its signed packer session; never taken from the input.
+   */
+  performer?: string;
 };
 /** A stale edit. Carries the current record so the supervisor can review it. */
 export class ConflictError extends Error {
@@ -1893,11 +1921,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const targets = v.packers.map((packer, i) => {
         if (
           typeof packer !== "string" ||
-          !(s.staffProfiles
-            ? s.staffProfiles.some(
-                (p) => p.id === packer && p.role === "packer",
-              )
-            : people.includes(packer))
+          !packerProfiles(s).some((p) => p.id === packer)
         )
           throw new Error("Choose a packer profile.");
         return { packer, count: num("allocation_" + i) };
@@ -2064,13 +2088,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         }
       } else if (cmd.type === "assign-orders") {
         const packer = str("packer");
-        if (
-          !(s.staffProfiles
-            ? s.staffProfiles.some(
-                (p) => p.id === packer && p.role === "packer",
-              )
-            : people.includes(packer))
-        )
+        if (!packerProfiles(s).some((p) => p.id === packer))
           throw new Error("Choose a packer profile.");
         for (const o of orders) {
           if (o.actual !== null)
@@ -2172,9 +2190,13 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
       break;
     }
-    case "pack": {
-      // SV-only entry: the stock-out supervisor records the actual packer's count.
-      allow("outbound");
+    case "pack":
+    case "pack-own": {
+      // The stock-out supervisor records the actual packer's count (pack), or a packer
+      // records their own first count on the shared packer sign-in (pack-own). For
+      // pack-own the packer is the profile the server unlocked with its PIN, never input.
+      const own = cmd.type === "pack-own";
+      allow(own ? "packer" : "outbound");
       const o = find(s.orders);
       if (!singleProductOrder(o))
         throw new Error(
@@ -2188,18 +2210,25 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error(
           "Only an assigned packer's work can be recorded. Assign this AWB first.",
         );
-      const packer = str("pic");
-      if (
+      const packer = own ? (cmd.performer ?? "") : str("pic");
+      if (own) {
+        if (!packerProfiles(s).some((p) => p.id === packer))
+          throw new Error("Choose your name and enter your PIN before recording.");
+        if (packer !== o.assignedPacker)
+          throw new Error(
+            "This AWB is assigned to another packer. Ask your supervisor to reassign it.",
+          );
+      } else if (
         s.staffProfiles &&
         !s.staffProfiles.some((p) => p.id === packer && p.role === "packer")
       )
         throw new Error("Choose the actual packer's profile.");
-      const reason = str("reason", false);
+      const reason = own ? "" : str("reason", false);
       if (packer !== o.assignedPacker && !reason)
         throw new Error(
           "The actual packer differs from the assigned packer. Enter a reason.",
         );
-      const packedAt = occurrence("occurredAt");
+      const packedAt = own ? at : occurrence("occurredAt");
       if (o.lines) {
         o.lines.forEach((l) => {
           l.actual = num("actual_" + l.product);
@@ -2207,7 +2236,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         o.actual = o.lines.reduce((n, l) => n + l.actual!, 0);
       } else o.actual = num("actual");
       o.packer = packer;
-      o.labelPic = str("labelPic");
+      // A packer recording their own parcel also attached its AWB.
+      o.labelPic = own ? packer : str("labelPic");
       o.packedAt = packedAt;
       o.packRecordedAt = at;
       o.packRecordedBy = recorder;
@@ -2221,13 +2251,89 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           )
           .join(" · ") +
           " · packed by " +
-          o.packer +
+          staffName(s, o.packer) +
           " · AWB attached by " +
-          o.labelPic +
+          staffName(s, o.labelPic) +
+          (own ? " · entered by the packer with their PIN" : "") +
           (packer !== o.assignedPacker
-            ? ` · assigned to ${o.assignedPacker}: ${reason}`
+            ? ` · assigned to ${staffName(s, o.assignedPacker)}: ${reason}`
             : ""),
         { performer: packer, occurredAt: packedAt },
+      );
+      break;
+    }
+    case "staff-profile-create": {
+      // Packer profiles for the shared packer sign-in. The PIN is set separately and is
+      // never part of the workspace state.
+      allow("outbound", "hr");
+      const profileId = str("profileId");
+      if (!staffProfileId.test(profileId))
+        throw new Error("Invalid profile reference. Refresh and try again.");
+      const name = str("name");
+      if (name.length > 60) throw new Error("Use a shorter name.");
+      if ((s.staffProfiles ?? []).some((p) => p.id === profileId))
+        throw new Error("This profile already exists. Refresh and try again.");
+      if (
+        packerProfiles({ staffProfiles: s.staffProfiles ?? [] }).some(
+          (p) => p.name.toLowerCase() === name.toLowerCase(),
+        )
+      )
+        throw new Error(
+          "An active packer already has this name. Add an initial or surname.",
+        );
+      (s.staffProfiles ??= []).push({
+        id: profileId,
+        name,
+        role: "packer",
+        active: true,
+        createdAt: at,
+        createdBy: recorder,
+      });
+      log("staff:" + profileId, "Packer profile added", name);
+      break;
+    }
+    case "staff-profile-update": {
+      allow("outbound", "hr");
+      const profile = find(s.staffProfiles ?? []);
+      if (profile.role !== "packer")
+        throw new Error("Only packer profiles are managed here.");
+      const name = str("name", false),
+        active = v.active;
+      if (name.length > 60) throw new Error("Use a shorter name.");
+      if (active !== undefined && typeof active !== "boolean")
+        throw new Error("Choose whether the profile is active.");
+      const changes: string[] = [];
+      if (name && name !== profile.name) {
+        if (
+          packerProfiles(s).some(
+            (p) =>
+              p.id !== profile.id && p.name.toLowerCase() === name.toLowerCase(),
+          )
+        )
+          throw new Error(
+            "An active packer already has this name. Add an initial or surname.",
+          );
+        changes.push(`${profile.name} → ${name}`);
+        profile.name = name;
+      }
+      if (typeof active === "boolean" && active !== (profile.active !== false)) {
+        if (
+          active &&
+          packerProfiles(s).some(
+            (p) => p.name.toLowerCase() === profile.name.toLowerCase(),
+          )
+        )
+          throw new Error(
+            "An active packer already has this name. Rename one of them first.",
+          );
+        changes.push(active ? "reactivated" : "deactivated");
+        profile.active = active;
+      }
+      if (!changes.length) throw new Error("Nothing to change.");
+      log(
+        "staff:" + profile.id,
+        "Packer profile updated",
+        profile.name + " · " + changes.join(" · "),
       );
       break;
     }
@@ -2367,7 +2473,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       break;
     }
     case "trip": {
-      // Drivers log their own trip; the driver is always the signed-in recorder.
+      // Drivers share one sign-in, so each trip names its driver; the signed-in account
+      // stays the recorder.
+      const driver = str("driver");
+      if (driver.length > 100) throw new Error("Use a shorter driver name.");
       const assistant = str("assistant", false);
       if (assistant.length > 100) throw new Error("Use a shorter assistant name.");
       const pickupAt = tripTime("pickupAt")!;
@@ -2381,7 +2490,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         id: id(),
         ...(site ? { siteId: site } : {}),
         date: toMyt(pickupAt).slice(0, 10),
-        driver: recorder.name,
+        driver,
         assistant,
         pickupAt,
         ...(arriveAt ? { arriveAt, arrivalRecordedAt: at } : {}),
@@ -2395,14 +2504,15 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         "trip:" + trip.id,
         "Trip logged",
         [
-          "Pickup " + toMyt(pickupAt).replace("T", " "),
+          "Driver " + driver,
+          "pickup " + toMyt(pickupAt).replace("T", " "),
           arriveAt ? "arrival " + toMyt(arriveAt).replace("T", " ") : "arrival pending",
           assistant ? "assistant " + assistant : "no assistant",
           photo ? "photo attached" : "",
         ]
           .filter(Boolean)
           .join(" · "),
-        { performer: recorder.name, occurredAt: pickupAt },
+        { performer: driver, occurredAt: pickupAt },
       );
       break;
     }
