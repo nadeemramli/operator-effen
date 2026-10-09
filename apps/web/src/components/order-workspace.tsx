@@ -16,6 +16,7 @@ import {
 } from "./draft-primitives";
 import { channels } from "@/lib/awb-import";
 import {
+  dailyInventory,
   dailyTally,
   packageGroups,
   singleProductOrder,
@@ -341,6 +342,7 @@ export function OrderWorkspace({
               </Empty>
             )}
           </Panel>
+          <InventoryForDay state={state} lang={lang} date={date} tally={tally} />
         </>
       )}
       {mode !== "tally" &&
@@ -1220,5 +1222,150 @@ export function PackerPackageSummary({
           </Panel>
         ))}
     </>
+  );
+}
+
+/**
+ * Stock side of the daily tally: what left the racks that day (and came back, arrived or
+ * was adjusted), next to what the tally says was issued to that day's orders. The two
+ * "issued" figures should match; Δ shows any difference.
+ */
+function InventoryForDay({
+  state,
+  lang,
+  date,
+  tally,
+}: {
+  state: Draft;
+  lang: Lang;
+  date: string;
+  tally: ReturnType<typeof dailyTally>;
+}) {
+  const t = (en: string, ms: string) => tr(lang, en, ms);
+  const isToday = date === today();
+  const rows = dailyInventory(state, date).filter(
+    (r) =>
+      r.opening ||
+      r.received ||
+      r.issued ||
+      r.returned ||
+      r.adjusted ||
+      r.closing ||
+      tally.find((x) => x.product === r.product)?.issued,
+  );
+  const delta = (product: string, issued: number) =>
+    (tally.find((x) => x.product === product)?.issued ?? 0) - issued;
+  const headings = [
+    t("Product", "Produk"),
+    t("Opening on rack", "Baki awal di rak"),
+    t("Received", "Diterima"),
+    t("Issued that day", "Dikeluarkan hari itu"),
+    t("Returned", "Dipulangkan"),
+    t("Adjusted", "Dilaras"),
+    isToday ? t("On rack now", "Di rak sekarang") : t("Closing", "Baki akhir"),
+    t("Δ vs tally issued", "Δ berbanding tally dikeluarkan"),
+  ];
+  function exportCsv() {
+    const lines = [
+      ["Date", ...headings.slice(1, 7).map((h) => h), "Delta vs tally issued", "Product", "Unit"],
+      ...rows.map((r) => {
+        const p = products.find((x) => x.id === r.product)!;
+        return [
+          date,
+          r.opening,
+          r.received,
+          r.issued,
+          r.returned,
+          r.adjusted,
+          r.closing,
+          delta(r.product, r.issued),
+          p.name,
+          p.unit,
+        ];
+      }),
+    ];
+    const csv = lines
+      .map((row) =>
+        row
+          .map((value) => {
+            let x = String(value);
+            if (/^[=+@\-\t\r]/.test(x)) x = "'" + x;
+            return '"' + x.replaceAll('"', '""') + '"';
+          })
+          .join(","),
+      )
+      .join("\r\n");
+    const url = URL.createObjectURL(
+      new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "operator-inventory-" + date + ".csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  return (
+    <Panel
+      title={t("Inventory for the day", "Inventori untuk hari ini")}
+      detail={t(
+        "Stock on the racks for this Malaysia day: balance before the day, what came in and went out, and the balance after deduction. Issued here should equal Issued in the tally above.",
+        "Stok di rak untuk hari Malaysia ini: baki sebelum hari itu, stok masuk dan keluar, dan baki selepas ditolak. Dikeluarkan di sini sepatutnya sama dengan Dikeluarkan dalam tally di atas.",
+      )}
+      action={
+        <Button size="sm" variant="outline" onClick={exportCsv}>
+          {t("Export inventory", "Eksport inventori")}
+        </Button>
+      }
+    >
+      <div className="table-scroll">
+        <table className="daily-tally">
+          <thead>
+            <tr>
+              {headings.map((h) => (
+                <th key={h}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const p = products.find((x) => x.id === r.product)!;
+              const d = delta(r.product, r.issued);
+              return (
+                <tr key={r.product}>
+                  <td>
+                    {p.name}
+                    <small>{units(lang, p.unit)}</small>
+                  </td>
+                  <td>{r.opening}</td>
+                  <td>{r.received}</td>
+                  <td>{r.issued}</td>
+                  <td>{r.returned}</td>
+                  <td>{r.adjusted}</td>
+                  <td>
+                    <strong>{r.closing}</strong>
+                  </td>
+                  <td className={d ? "text-warning" : ""}>
+                    {d > 0 ? "+" + d : d}
+                    {!!d && (
+                      <small>
+                        {t(
+                          "Issued to orders and stock leaving the racks differ",
+                          "Stok untuk pesanan dan stok keluar rak berbeza",
+                        )}
+                      </small>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {!rows.length && (
+        <Empty>
+          {t("No stock on the racks for this day.", "Tiada stok di rak untuk hari ini.")}
+        </Empty>
+      )}
+    </Panel>
   );
 }

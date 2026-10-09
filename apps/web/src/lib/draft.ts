@@ -681,6 +681,63 @@ export const dailyTally = (s: Draft, date: string) =>
       stale: !!count && count.fingerprint !== demandFingerprint(s, date, p.id),
     };
   });
+/** Malaysia calendar day of a timestamp; "" when the timestamp cannot be read. */
+const mytDay = (iso: string) => {
+  const time = Date.parse(iso);
+  return Number.isFinite(time) ? toMyt(new Date(time).toISOString()).slice(0, 10) : "";
+};
+export type DailyInventory = {
+  product: string;
+  /** Balance on the racks before the day's movements. */
+  opening: number;
+  received: number;
+  issued: number;
+  returned: number;
+  /** Count adjustments (and any historical boxing out of a stock carton). */
+  adjusted: number;
+  /** opening + received + returned + adjusted − issued. For today: on the racks now. */
+  closing: number;
+};
+/**
+ * Stock-side figures for one Malaysia day, per product, derived only from stock cartons,
+ * their issues, returns, adjustments and boxing by timestamp. No records are created.
+ * Movements whose time cannot be read count as before the day (opening).
+ */
+export function dailyInventory(s: Draft, date: string): DailyInventory[] {
+  return products.map((p) => {
+    const row: DailyInventory = {
+      product: p.id,
+      opening: 0,
+      received: 0,
+      issued: 0,
+      returned: 0,
+      adjusted: 0,
+      closing: 0,
+    };
+    const ids = new Set(
+      s.cartons
+        .filter((c) => c.product === p.id && c.unit === p.unit)
+        .map((c) => c.id),
+    );
+    const move = (at: string, qty: number, kind: Exclude<keyof DailyInventory, "product" | "opening" | "closing">) => {
+      const day = mytDay(at);
+      if (day === date) row[kind] += qty;
+      else if (day < date)
+        row.opening += kind === "issued" ? -qty : qty;
+    };
+    for (const c of s.cartons) if (ids.has(c.id)) move(c.at, c.qty, "received");
+    for (const i of s.issues) if (ids.has(i.cartonId)) move(i.at, i.qty, "issued");
+    for (const r of s.returns ?? [])
+      if (ids.has(r.cartonId)) move(r.at, r.qty, "returned");
+    for (const a of s.adjustments)
+      if (ids.has(a.cartonId)) move(a.at, a.delta, "adjusted");
+    for (const b of s.boxing)
+      if (ids.has(b.sourceId)) move(b.at, -(b.boxes * b.ratio + b.loss), "adjusted");
+    row.closing =
+      row.opening + row.received + row.returned + row.adjusted - row.issued;
+    return row;
+  });
+}
 export const batchReceived = (s: Draft, b: Batch) =>
   s.cartons
     .filter((c) => c.batchId === b.id && c.unit === batchUnit(b))
