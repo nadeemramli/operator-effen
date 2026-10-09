@@ -140,6 +140,13 @@ are never converted into box inventory. Previously counted boxes remain stock.
   manually enter an AWB, including keyboard-style barcode input, without a PDF.
   Manual entries must be reviewed before joining demand; pending records can be edited.
   Scanning a barcode supplies only the reference, not the parcel contents.
+  Since 9 October 2026 PDF intake reads text first and runs OCR automatically on any page
+  whose text has no AWB and no order reference ("Force OCR on every page" remains as a slow,
+  unticked fallback). Pages with no tracking number, order reference or known SKU (cover,
+  title or separator pages, on any page number) produce no label and are counted as
+  skipped in the review summary; **Add missed label** can still point at one. A label read
+  by OCR is marked "compare with the PDF" but does not block confirmation. Only labels with
+  a real problem need the "I checked" box, and only excluding a label needs a note.
 - **Order management:** Filter by Malaysia fulfilment day, product/brand, package,
   or AWB/order/channel text. Package summaries show AWBs and required bottle/box units.
 - **Incoming orders:** Record already-printed labels, then save the supervisor's
@@ -157,6 +164,8 @@ are never converted into box inventory. Previously counted boxes remain stock.
   AWBs remain visible even if opposite errors cancel in the aggregate. Each count
   preserves the demand snapshot, PIC, timestamp and reason. New/changed orders mark
   the earlier count stale and require a fresh count before more allocation/assignment.
+  Since 9 October 2026 "Tally by assigned packer" shows who keyed each count (packer with PIN
+  or supervisor), and a parcel's record shows "Count entered by".
 - The day changes at midnight in Asia/Kuala_Lumpur. Supervisors can manually carry
   unpacked AWBs forward; stock allocations and assignments follow the AWB, and the
   old day's checkpoint is flagged because its order set changed.
@@ -258,6 +267,14 @@ rows stay in review until separated using the actual labels. Existing mixed-bran
 records without stock or packing activity can be explicitly separated in Order
 management with a reason and actual AWBs. Historical activity is preserved and
 requires supervisor reconciliation; it is never silently split or duplicated.
+
+### Office admin on stock screens (9 October 2026)
+
+Office admin can open **Stock in & inventory**, **Packing station** and **Daily tally** in
+addition to Input orders and Order management, and still opens on Input orders. Access is
+view only (owner decision 2026-10-09): no stock or fulfilment capability was added, so the
+record buttons on those screens are hidden and the server and database refuse those
+commands as before.
 
 ### Landing screen and return after sign-in (9 October 2026)
 

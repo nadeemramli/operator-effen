@@ -111,7 +111,10 @@ export type ImportRow = {
   courier: string;
   lines: ImportLine[];
   sources: SourcePage[];
+  /** Blocking until the row is reviewed: something on the label needs a decision. */
   warnings: string[];
+  /** Informational only, never blocking (for example "Read by OCR — compare with the PDF"). */
+  notes?: string[];
   reviewed: boolean;
   reviewNote: string;
   excluded: boolean;
@@ -124,6 +127,8 @@ export type ImportFile = {
   path: string;
   pages: number;
   size: number;
+  /** Pages with no tracking number, order reference or known SKU (cover, title, separator). */
+  skippedPages?: number[];
 };
 export type AwbImport = {
   id: string;
@@ -155,41 +160,92 @@ const whole = (n: unknown, min = 1): n is number =>
 const refPattern =
   /(?:Order\s*(?:ID|No\.?|Number)?\s*[:#]|O\/N\s*:)\s*#?\s*([A-Z0-9-]+)/gi;
 
+/**
+ * The references a page's text carries: tracking numbers (AWBs), order references and
+ * SKU tokens with a known package mapping. Shared by the OCR decision and the parser.
+ */
+export function detectReferences(raw: string) {
+  const text = raw.replace(/\r/g, "");
+  const upper = text.toUpperCase();
+  const orderRefs = [
+    ...new Set([...text.matchAll(refPattern)].map((m) => m[1].toUpperCase())),
+  ];
+  const tracking = [
+    ...new Set(
+      upper.match(
+        /\b(?:NVMY[A-Z0-9]{7,30}|SPXMY[A-Z0-9]{7,25}|SG\d{9,18}[A-Z]?|MYMP[A-Z0-9]{7,25})\b/g,
+      ) ?? [],
+    ),
+  ];
+  const explicit = [
+    ...text.matchAll(
+      /(?:AWB|Tracking\s*(?:Number|No\.?)?)\s*[:#]\s*([A-Z0-9-]{6,40})/gi,
+    ),
+  ].map((m) => normalizeAwb(m[1]));
+  explicit.forEach((a) => {
+    if (!tracking.includes(a)) tracking.push(a);
+  });
+  if (/J\s*&\s*T/i.test(text)) {
+    const nums = upper.match(/\b\d{12,15}\b/g) ?? [];
+    nums
+      .filter((n) => !orderRefs.includes(n))
+      .forEach((n) => {
+        if (!tracking.includes(n)) tracking.push(n);
+      });
+  }
+  const knownSkus = [
+    ...new Set(
+      (
+        text.match(
+          /\b[a-z][a-z0-9_-]*\d[a-z0-9_-]*\b|\b[39](?:botol|free3)[a-z]*\b/gi,
+        ) ?? []
+      )
+        .filter((s) => defaultFor(s))
+        .map((s) => s.toLowerCase()),
+    ),
+  ];
+  return { orderRefs, tracking, knownSkus };
+}
+/**
+ * OCR is automatic: a page is read by OCR when its extracted text yields no AWB and no
+ * order reference (image labels often carry a little real text, such as a store name).
+ * `force` reads every page by OCR (the slow fallback).
+ */
+export function needsOcr(text: string, force = false) {
+  if (force) return true;
+  const { tracking, orderRefs } = detectReferences(text);
+  return !tracking.length && !orderRefs.length;
+}
+/** A page with no tracking number, order reference or known SKU produces no label row. */
+export const isLabelPage = (page: ParsedPage) => {
+  if (page.error) return true;
+  const { tracking, orderRefs, knownSkus } = detectReferences(page.text);
+  return !!(tracking.length || orderRefs.length || knownSkus.length);
+};
+export const OCR_NOTE = "Read by OCR — compare with the PDF";
+
 export function parsePages(
   pages: ParsedPage[],
   channel: string,
   store: string,
 ): ImportRow[] {
+  return parseImport(pages, channel, store).rows;
+}
+/** Label rows from the pages, plus the pages skipped as non-label (cover, title, …). */
+export function parseImport(
+  pages: ParsedPage[],
+  channel: string,
+  store: string,
+): { rows: ImportRow[]; skipped: { file: string; page: number }[] } {
   const rows: ImportRow[] = [];
+  const skipped: { file: string; page: number }[] = [];
   for (const page of pages) {
-    const text = page.text.replace(/\r/g, "");
-    const upper = text.toUpperCase();
-    const orderRefs = [
-      ...new Set([...text.matchAll(refPattern)].map((m) => m[1].toUpperCase())),
-    ];
-    const tracking = [
-      ...new Set(
-        upper.match(
-          /\b(?:NVMY[A-Z0-9]{7,30}|SPXMY[A-Z0-9]{7,25}|SG\d{9,18}[A-Z]?|MYMP[A-Z0-9]{7,25})\b/g,
-        ) ?? [],
-      ),
-    ];
-    const explicit = [
-      ...text.matchAll(
-        /(?:AWB|Tracking\s*(?:Number|No\.?)?)\s*[:#]\s*([A-Z0-9-]{6,40})/gi,
-      ),
-    ].map((m) => normalizeAwb(m[1]));
-    explicit.forEach((a) => {
-      if (!tracking.includes(a)) tracking.push(a);
-    });
-    if (/J\s*&\s*T/i.test(text)) {
-      const nums = upper.match(/\b\d{12,15}\b/g) ?? [];
-      nums
-        .filter((n) => !orderRefs.includes(n))
-        .forEach((n) => {
-          if (!tracking.includes(n)) tracking.push(n);
-        });
+    if (!isLabelPage(page)) {
+      skipped.push({ file: page.file, page: page.page });
+      continue;
     }
+    const text = page.text.replace(/\r/g, "");
+    const { orderRefs, tracking } = detectReferences(text);
     const detectedChannel = /TIKTOK/i.test(text)
       ? "TikTok"
       : /LAZADA|\bLEX\b/i.test(text)
@@ -298,8 +354,7 @@ export function parsePages(
       });
     }
     if (page.error) warnings.push(page.error);
-    if (page.method === "ocr")
-      warnings.push("Check OCR transcription against the PDF");
+    const notes = page.method === "ocr" ? [OCR_NOTE] : [];
     if (tracking.length > 1 || orderRefs.length > 1)
       warnings.push(
         "Multiple labels on this page: check each parcel's contents",
@@ -320,6 +375,7 @@ export function parsePages(
         lines: tracking.length > 1 || orderRefs.length > 1 ? [] : lines,
         sources: [{ file: page.file, page: page.page, method: page.method }],
         warnings: [...warnings],
+        ...(notes.length ? { notes: [...notes] } : {}),
         reviewed: false,
         reviewNote: "",
         excluded: false,
@@ -351,6 +407,8 @@ export function parsePages(
       if (!target.lines.length) {
         target.lines = row.lines;
         target.warnings.push(...row.warnings);
+        if (row.notes?.length)
+          target.notes = [...new Set([...(target.notes ?? []), ...row.notes])];
       } else if (lineSignature(target.lines) !== lineSignature(row.lines)) {
         target.warnings.push("Label and packing list disagree");
         continue;
@@ -365,7 +423,7 @@ export function parsePages(
       });
     }
   }
-  return rows;
+  return { rows, skipped };
 }
 export const lineSignature = (lines: ImportLine[]) =>
   JSON.stringify(
@@ -502,7 +560,11 @@ export function validateImport(value: unknown): AwbImport {
       !whole(f.pages) ||
       f.pages > 200 ||
       !whole(f.size) ||
-      f.size > 20 * 1024 * 1024
+      f.size > 20 * 1024 * 1024 ||
+      (f.skippedPages !== undefined &&
+        (!Array.isArray(f.skippedPages) ||
+          f.skippedPages.length > 200 ||
+          f.skippedPages.some((n) => !whole(n) || n > f.pages)))
     )
       throw new Error("Invalid source file.");
   for (const r of b.rows) {
@@ -522,7 +584,11 @@ export function validateImport(value: unknown): AwbImport {
       !r.sources.length ||
       !Array.isArray(r.warnings) ||
       r.warnings.length > 20 ||
-      r.warnings.some((w) => !text(w, 200))
+      r.warnings.some((w) => !text(w, 200)) ||
+      (r.notes !== undefined &&
+        (!Array.isArray(r.notes) ||
+          r.notes.length > 20 ||
+          r.notes.some((n) => !text(n, 200))))
     )
       throw new Error("Invalid label record.");
     if (
@@ -547,8 +613,9 @@ export function validateImport(value: unknown): AwbImport {
       )
     )
       throw new Error("Invalid product line.");
-    if ((r.reviewed || r.excluded) && !r.reviewNote.trim())
-      throw new Error("Explain a reviewed or excluded label.");
+    // Excluding a label needs a reason; marking a label checked does not.
+    if (r.excluded && !r.reviewNote.trim())
+      throw new Error("Explain why the label is excluded.");
   }
   return structuredClone(b);
 }

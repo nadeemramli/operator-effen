@@ -14,7 +14,7 @@ Actual performer and authenticated recorder stay separate throughout.
 | Production SV | one site | plan batches, record and correct stages, machines, day close, staff memberships*, feedback |
 | Stock-in SV | one site | record and correct stages, machines, receive stock, **stock adjustments**, day close, staff memberships*, feedback |
 | Stock-out SV | one site | order entry, fulfilment, outbound corrections, read sources, read driver trips, day close, staff memberships*, feedback |
-| Office admin | site or all sites | order/AWB import and release, order entry, read sources, feedback |
+| Office admin | site or all sites | order/AWB import and release, order entry, read sources, feedback; reads the Stock-in, Packing station and Daily tally screens (view only, since 2026-10-09) |
 | HR | site or all sites | memberships (all roles, all sites), site capability policy, feedback |
 | Management | site or all sites | review comments, read sources, read driver trips, feedback |
 | Driver | one site | log trips on the shared driver sign-in, naming the driver (see [driver trips](#driver-trips)), view, feedback |
@@ -232,6 +232,10 @@ packed. The supervisor still corrects saved counts and reviews the daily tally. 
   count only, only for an AWB assigned to that profile; the packer is recorded as packer and AWB
   attacher, the shared account as recorder. Corrections stay `correct` (stock-out supervisor).
   The supervisor's own `pack` entry is unchanged.
+- **Who keyed it** (since 2026-10-09): the daily tally's "Tally by assigned packer" has an
+  **Entered by** column (counts keyed by the packer with their PIN vs by a supervisor, from the
+  recorder's role), and the parcel record shows **Count entered by**. Older counts without a
+  recorder show "not recorded".
 - Limits: picking a name plus a PIN shows who claims the work, not a verified identity; a
   shared PIN is as good as the person's own, so set a new one when it leaks. Anyone with the
   shared password can lock a profile with wrong PINs (the supervisor unlocks it). All packers

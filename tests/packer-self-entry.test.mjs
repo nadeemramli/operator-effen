@@ -2,7 +2,7 @@
 // their own profile with a PIN (checked by the database) and records their own first count.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyCommand, createDraft, packerProfiles, staffName } from "../apps/web/src/lib/draft.ts";
+import { applyCommand, createDraft, packEntrySource, packerProfiles, staffName } from "../apps/web/src/lib/draft.ts";
 import { effectiveCapabilities, outOfScopeKeys } from "../apps/web/src/lib/access.ts";
 import {
   openPackerSession,
@@ -151,4 +151,17 @@ test("packer sessions are signed, expire and belong to one account and site", ()
   const far = sealPackerSession(secret, { ...who, profileId: ALI, expiresAt: now + 10 * PACKER_IDLE_MS });
   assert.equal(openPackerSession(secret, far, who, now), null, "longer than one idle period");
   for (const bad of [undefined, "", "v1.x", cookie + "0"]) assert.equal(openPackerSession(secret, bad, who, now), null);
+});
+
+// WP8 residual: the daily tally and the parcel record show who keyed each count.
+test("each packed count shows whether the packer (PIN) or a supervisor entered it", () => {
+  let { s, ali, abu } = day();
+  const order = (id) => s.orders.find((o) => o.id === id);
+  assert.equal(packEntrySource(order(ali)), null, "nothing packed yet");
+  s = run(s, PACKERS, "pack-own", { id: ali, actual: 2 }, ALI);
+  s = run(s, SV, "pack", { id: abu, actual: 2, pic: ABU, labelPic: ABU });
+  assert.equal(packEntrySource(order(ali)), "packer");
+  assert.equal(packEntrySource(order(abu)), "supervisor");
+  // Records saved before the recorder was kept are shown as not recorded, not guessed.
+  assert.equal(packEntrySource({ actual: 2 }), "unknown");
 });
