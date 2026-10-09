@@ -81,7 +81,8 @@ test("correction and shift handover preserve participants, reasons and output th
     qc: "not-recorded",
   });
   const step = s.batches[0].steps[0];
-  assert.equal(step.qty, 10);
+  // Machine steps record the PIC only; the QC count is taken on the last step.
+  assert.equal(step.qty, null);
   assert.equal(step.pic, "PIC C");
   assert.equal(step.done, true);
   assert.deepEqual(
@@ -104,7 +105,7 @@ test("correction and shift handover preserve participants, reasons and output th
     pic: "PIC D",
     reason: "Corrected current profile",
   });
-  assert.equal(s.batches[0].steps[0].qty, 10);
+  assert.equal(s.batches[0].steps[0].qty, null);
   assert.equal(s.batches[0].steps[0].picHistory.length, 4);
 });
 test("handover validation enforces a different PIC, a reason, chronology, role and an untransferred batch", () => {
