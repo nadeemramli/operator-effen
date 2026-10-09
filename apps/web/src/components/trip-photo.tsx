@@ -42,10 +42,13 @@ export function TripPhotoInput({
   name,
   lang,
   workspace,
+  required = false,
 }: {
   name: string;
   lang: Lang;
   workspace?: string;
+  /** A required photo blocks the form until one has finished uploading. */
+  required?: boolean;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const input = useRef<HTMLInputElement>(null);
@@ -54,6 +57,13 @@ export function TripPhotoInput({
     [uploading, setUploading] = useState(false),
     [error, setError] = useState("");
   useEffect(() => () => URL.revokeObjectURL(preview), [preview]);
+  // Native validation blocks the submit while a required photo is missing or uploading.
+  useEffect(() => {
+    if (!required || uploading) return;
+    input.current?.setCustomValidity(
+      path ? "" : t("Add a photo as proof.", "Tambah gambar sebagai bukti."),
+    );
+  });
   async function choose(file?: File) {
     setPath("");
     setPreview("");

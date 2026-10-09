@@ -136,6 +136,7 @@ export const commandRules: Record<
   close: { capability: "day.close", stateKeys: ["closedDays", "events"] },
   trip: { capability: "trips.log", stateKeys: ["trips", "events"] },
   "trip-update": { capability: "trips.log", stateKeys: ["trips", "events"] },
+  "trip-dropoff": { capability: "trips.log", stateKeys: ["trips", "events"] },
   "staff-profile-create": {
     capability: "members.manage",
     stateKeys: ["staffProfiles", "events"],

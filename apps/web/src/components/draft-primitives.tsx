@@ -4,7 +4,7 @@ import { TripPhotoInput } from "./trip-photo";
 import { FormError } from "./form-error";
 export { FormError } from "./form-error";
 import { useEffect, useState, type ReactNode } from "react";
-import { AlertTriangle, ArrowUpRight, Inbox, X } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Inbox, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -251,11 +251,15 @@ export type Field = {
     | "textarea"
     | "select"
     | "person"
-    | "photo";
+    | "photo"
+    /** Repeatable text inputs, sent as `<name>_0`, `<name>_1`, …; `max` caps the count. */
+    | "list";
   options?: { value: string; label: string }[];
   value?: string | number;
   required?: boolean;
   min?: number;
+  /** List fields: the most entries allowed. */
+  max?: number;
   hint?: string;
   profile?: { name: string; caption?: string };
   /** Photo fields: the operational workspace the photo is stored under. */
@@ -390,7 +394,10 @@ export function ActionForm({
                     name={field.name}
                     lang={lang}
                     workspace={field.workspace}
+                    required={field.required !== false}
                   />
+                ) : field.type === "list" ? (
+                  <ListInput field={field} lang={lang} />
                 ) : field.type === "person" ? (
                   <PersonPicker
                     name={field.name}
@@ -501,3 +508,55 @@ export function ActionForm({
     </Dialog>
   );
 }
+
+/** Repeatable text inputs ("+ Add another"), sent as `<name>_0`, `<name>_1`, …. */
+function ListInput({ field, lang }: { field: Field; lang: Lang }) {
+  const max = field.max ?? 5;
+  const [rows, setRows] = useState<{ key: number; value: string }[]>([
+    { key: 0, value: String(field.value ?? "") },
+  ]);
+  return (
+    <div className="list-input">
+      {rows.map((row, i) => (
+        <div key={row.key} className="list-input-row">
+          <Input
+            id={i === 0 ? "field-" + field.name : undefined}
+            name={`${field.name}_${i}`}
+            aria-label={`${field.label} ${i + 1}`}
+            value={row.value}
+            maxLength={100}
+            required={field.required !== false && i === 0}
+            onChange={(e) =>
+              setRows(rows.map((r) => (r.key === row.key ? { ...r, value: e.target.value } : r)))
+            }
+          />
+          {rows.length > 1 && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={tr(lang, "Remove", "Buang") + ` ${field.label} ${i + 1}`}
+              onClick={() => setRows(rows.filter((r) => r.key !== row.key))}
+            >
+              <X size={14} />
+            </Button>
+          )}
+        </div>
+      ))}
+      {rows.length < max && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            setRows([...rows, { key: Math.max(...rows.map((r) => r.key)) + 1, value: "" }])
+          }
+        >
+          <Plus size={14} />
+          {tr(lang, "Add another", "Tambah lagi")}
+        </Button>
+      )}
+    </div>
+  );
+}
+

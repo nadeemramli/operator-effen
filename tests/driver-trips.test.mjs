@@ -158,3 +158,56 @@ test("drivers share one sign-in: each trip keeps its typed driver, the account s
   s = run(s, shared, "trip-update", { id: s.trips[1].id, arriveAt: "2026-10-01T08:45" });
   assert.equal(s.events[0].performer, "Sample Driver Ali");
 });
+
+// WP4: several assistant drivers and drop-offs with time and photo.
+test("a trip lists up to five distinct assistants; the first stays the assistant field", async () => {
+  const { tripAssistants } = await import("../apps/web/src/lib/draft.ts");
+  const d = driver();
+  const base = { driver: "Sample Driver", pickupAt: "2026-10-01T08:00" };
+  let s = run(createDraft(), d, "trip", {
+    ...base,
+    assistant_0: " Sample A ",
+    assistant_2: "Sample C",
+    assistant_1: "Sample B",
+    assistant_3: "",
+  });
+  assert.deepEqual(s.trips[0].assistants, ["Sample A", "Sample B", "Sample C"]);
+  assert.equal(s.trips[0].assistant, "Sample A");
+  assert.match(s.events[0].detail, /assistants Sample A, Sample B, Sample C/);
+  s = run(s, d, "trip", { ...base, assistant: "Old Client" });
+  assert.deepEqual(s.trips[0].assistants, ["Old Client"]);
+  s = run(s, d, "trip", base);
+  assert.deepEqual(s.trips[0].assistants, []);
+  assert.equal(s.trips[0].assistant, "");
+  const six = Object.fromEntries([0, 1, 2, 3, 4, 5].map((i) => ["assistant_" + i, "Name " + i]));
+  assert.throws(() => run(s, d, "trip", { ...base, ...six }), /up to 5/);
+  assert.throws(() => run(s, d, "trip", { ...base, assistant_0: "Ali", assistant_1: "ali" }), /listed once/);
+  assert.throws(() => run(s, d, "trip", { ...base, assistant_0: "x".repeat(101) }), /shorter/);
+  // Older trips without the list still read.
+  assert.deepEqual(tripAssistants({ assistant: "Legacy" }), ["Legacy"]);
+  assert.deepEqual(tripAssistants({ assistant: "" }), []);
+});
+
+test("the trip's own sign-in adds drop-offs with time and photo, before or after arrival", () => {
+  const d = driver(), other = driver(2);
+  let s = run(createDraft(), d, "trip", { driver: "Sample Driver", pickupAt: "2026-10-01T08:00" });
+  const id = s.trips[0].id;
+  s = run(s, d, "trip-dropoff", { id, at: "2026-10-01T09:00", photo: photo(d, "a"), note: "Shop 1" });
+  s = run(s, d, "trip-update", { id, arriveAt: "2026-10-01T11:00" });
+  // A drop-off may be backfilled after arrival is logged (owner decision 2026-10-09).
+  s = run(s, d, "trip-dropoff", { id, at: "2026-10-01T10:00", photo: photo(d, "b") });
+  const trip = s.trips[0];
+  assert.deepEqual(trip.dropoffs.map((x) => [x.at, x.note]), [
+    ["2026-10-01T01:00:00.000Z", "Shop 1"],
+    ["2026-10-01T02:00:00.000Z", undefined],
+  ]);
+  assert.equal(s.events[0].action, "Trip drop-off logged");
+  assert.throws(() => run(s, d, "trip-dropoff", { id, at: "2026-10-01T09:30" }), /photo/);
+  assert.throws(() => run(s, d, "trip-dropoff", { id, photo: photo(d, "c") }), /Please complete at/);
+  assert.throws(() => run(s, d, "trip-dropoff", { id, at: "2026-10-01T07:59", photo: photo(d, "c") }), /before the pickup/);
+  assert.throws(() => run(s, d, "trip-dropoff", { id, at: "2099-01-01T09:00", photo: photo(d, "c") }), /future/);
+  assert.throws(() => run(s, other, "trip-dropoff", { id, at: "2026-10-01T09:30", photo: photo(other, "c") }), /Only the driver/);
+  for (let i = s.trips[0].dropoffs.length; i < 20; i++)
+    s = run(s, d, "trip-dropoff", { id, at: "2026-10-01T09:30", photo: photo(d, "d") });
+  assert.throws(() => run(s, d, "trip-dropoff", { id, at: "2026-10-01T09:30", photo: photo(d, "d") }), /up to 20/);
+});
