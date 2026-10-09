@@ -205,6 +205,12 @@ A handover must have an existing PIC, cannot precede the batch date or previous
 handover, and cannot be recorded after factory transfer. Historical misclicks can
 still be corrected with a reason. Process output totals are not split between PICs.
 
+Capsule (bottle) batches since 9 October 2026: the three machine steps (filling machine,
+capsule counter & silica gel, bottle cap & capping) record their PIC only, with optional
+start/end time. The last step, Batching, Sticker & QC, records the QC count of finished
+bottles and the QC result; that count is the batch's finished quantity and the limit for
+sending to fulfilment. Older batches whose machine steps carry an output keep and show it.
+
 Previous batches → View record → Open production log selects that batch's work
 date. A prominent date banner and date picker control the daily production list.
 

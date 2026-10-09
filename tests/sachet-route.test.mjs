@@ -251,7 +251,7 @@ test("bottle production keeps its quantity route", () => {
   assert.equal(b.steps.length, 4);
   assert.throws(() => run(s, "machine", { id: b.id, stage: "mixing", pic: "P" }), /sachet products/);
   for (let i = 0; i < 4; i++)
-    s = run(s, "step", { id: b.id, step: i, pic: "P", qty: 10, qc: "not-recorded" });
+    s = run(s, "step", { id: b.id, step: i, pic: "P", ...(i === 3 ? { qty: 10, qc: "not-recorded" } : {}) });
   s = run(s, "transfer", { id: b.id, qty: 10, pic: "F" });
   assert.equal(s.batches[0].sent, 10);
 });

@@ -88,6 +88,7 @@ import {
   isSachet,
   batchComplete,
   batchTransferred,
+  isQcStep,
   adypocideReceipts,
   stockCartons,
   type AdypocideReceipt,
@@ -143,8 +144,8 @@ const copy: Record<View, [string, string, string, string]> = {
   production: [
     "From plan to finished batch",
     "Dari pelan ke kelompok siap",
-    "Record batches, machine responsibilities and bottle output.",
-    "Rekod kelompok, tanggungjawab mesin dan hasil botol.",
+    "Record batches, machine responsibilities and the QC count of finished bottles.",
+    "Rekod kelompok, tanggungjawab mesin dan kiraan QC botol siap.",
   ],
   warehouse: [
     "A place for every unit",
@@ -2926,12 +2927,15 @@ export function DraftApp() {
                               "Pelaksana direkodkan",
                             )}
                           />
-                          {!isSachet(linkedBatch.product) && (
-                            <>
-                              {st.qty ?? "—"}{" "}
-                              {units(lang, batchUnit(linkedBatch))}
-                            </>
-                          )}
+                          {!isSachet(linkedBatch.product) &&
+                            st.qty !== null && (
+                              <>
+                                {isQcStep(linkedBatch, i)
+                                  ? t("QC count", "Kiraan QC") + ": "
+                                  : ""}
+                                {st.qty} {units(lang, batchUnit(linkedBatch))}
+                              </>
+                            )}
                         </p>
                         {st.machineName && <small>{st.machineName}</small>}
                         <ProcessPicHistory step={st} lang={lang} />

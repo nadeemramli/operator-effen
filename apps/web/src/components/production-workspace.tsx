@@ -41,6 +41,7 @@ import {
   batchComplete,
   batchTransferred,
   batchRoute,
+  isQcStep,
   products,
   product,
   stepNames,
@@ -116,6 +117,23 @@ export function ProductionWorkspace({
   const router = useRouter(),
     params = useSearchParams();
   const t = (en: string, ms: string) => tr(lang, en, ms);
+  const qcField: Field = {
+    name: "qc",
+    label: t("QC result", "Keputusan QC"),
+    type: "select",
+    value: "not-recorded",
+    options: [
+      {
+        value: "not-recorded",
+        label: t("Not recorded / not checked", "Tidak direkod / tidak diperiksa"),
+      },
+      { value: "pass", label: t("Checked — passed", "Diperiksa — lulus") },
+      {
+        value: "issue",
+        label: t("Checked — issue found", "Diperiksa — isu ditemui"),
+      },
+    ],
+  };
   const mode = params.get("production");
   const tab: ProductionView =
     mode === "plan" || mode === "history" || mode === "machines"
@@ -307,24 +325,40 @@ export function ProductionWorkspace({
                       onClick={() =>
                         show({
                           type: "step",
-                          title: stepNames(b)[i][lang === "ms" ? 1 : 0],
+                          title: isQcStep(b, i)
+                            ? stepNames(b)[i][lang === "ms" ? 1 : 0] +
+                              " · " +
+                              t(
+                                "QC count (finished bottles)",
+                                "Kiraan QC (botol siap)",
+                              )
+                            : stepNames(b)[i][lang === "ms" ? 1 : 0],
                           description:
                             b.code +
                             " · " +
-                            t(
-                              "Enter completed output and the actual performer.",
-                              "Masukkan hasil siap dan pelaksana sebenar.",
-                            ),
+                            (isQcStep(b, i)
+                              ? t(
+                                  "Enter the QC count of finished bottles at the end of the line. It becomes the batch's finished quantity.",
+                                  "Masukkan kiraan QC botol siap di hujung barisan. Ia menjadi kuantiti siap kelompok.",
+                                )
+                              : t(
+                                  "Record who ran this machine. No output count is needed; QC counts the finished bottles on the last step.",
+                                  "Rekod siapa yang menjalankan mesin ini. Tiada kiraan hasil diperlukan; QC mengira botol siap pada langkah terakhir.",
+                                )),
                           hidden: { id: b.id, step: i },
                           fields: [
                             { ...pic(), value: step.pic || undefined },
-                            number(
-                              "qty",
-                              t("Output quantity", "Jumlah hasil") +
-                                " (" +
-                                units(lang, batchUnit(b)) +
-                                ")",
-                            ),
+                            ...(isQcStep(b, i)
+                              ? [
+                                  number(
+                                    "qty",
+                                    t(
+                                      "QC count (finished bottles)",
+                                      "Kiraan QC (botol siap)",
+                                    ),
+                                  ),
+                                ]
+                              : []),
                             {
                               name: "start",
                               label: t("Start time", "Masa mula"),
@@ -337,38 +371,9 @@ export function ProductionWorkspace({
                               type: "time",
                               required: false,
                             },
-                            {
-                              name: "qc",
-                              label: t(
-                                "QC result, if performed",
-                                "Keputusan QC, jika dilakukan",
-                              ),
-                              type: "select",
-                              value: "not-recorded",
-                              options: [
-                                {
-                                  value: "not-recorded",
-                                  label: t(
-                                    "Not recorded / not checked",
-                                    "Tidak direkod / tidak diperiksa",
-                                  ),
-                                },
-                                {
-                                  value: "pass",
-                                  label: t(
-                                    "Checked — passed",
-                                    "Diperiksa — lulus",
-                                  ),
-                                },
-                                {
-                                  value: "issue",
-                                  label: t(
-                                    "Checked — issue found",
-                                    "Diperiksa — isu ditemui",
-                                  ),
-                                },
-                              ],
-                            },
+                            ...(isQcStep(b, i)
+                              ? [qcField]
+                              : []),
                           ],
                         })
                       }
@@ -405,11 +410,18 @@ export function ProductionWorkspace({
                           </small>
                         )}
                       </span>
-                      {step.done ? (
+                      {step.done &&
+                      (isQcStep(b, i) || step.qty !== null) ? (
                         <span className="process-output">
                           <span>{fmt(step.qty ?? 0)}</span>
-                          <small>{units(lang, batchUnit(b))}</small>
+                          <small>
+                            {isQcStep(b, i)
+                              ? t("QC count", "Kiraan QC")
+                              : units(lang, batchUnit(b))}
+                          </small>
                         </span>
+                      ) : step.done ? (
+                        <Check size={14} className="process-add" />
                       ) : (
                         <Plus size={14} className="process-add" />
                       )}
@@ -986,8 +998,8 @@ function BatchPlanForm({
                       "Lima peringkat tetap, termasuk Hologram. Tetapkan PIC dirancang sekarang atau kemudian; perancangan tidak menandakan peringkat siap. Kuantiti sachet tidak diperlukan.",
                     )
                   : t(
-                      "Assign PICs now or later. Record completed output in the production log when the work takes place.",
-                      "Pilih PIC sebenar dan masukkan hasil apabila setiap proses direkodkan dalam log pengeluaran.",
+                      "Assign PICs now or later. The QC count is recorded on the last step.",
+                      "Tetapkan PIC sekarang atau kemudian. Kiraan QC direkod pada langkah terakhir.",
                     )}
               </p>
             </div>
@@ -1141,7 +1153,7 @@ function BatchRecord({
               {[
                 t("Process", "Proses"),
                 t("Person responsible (PIC)", "Orang bertanggungjawab (PIC)"),
-                t("Output", "Hasil"),
+                t("QC count", "Kiraan QC"),
                 t("Time", "Masa"),
                 t("QC record", "Rekod QC"),
               ].map((h) => (
@@ -1177,9 +1189,10 @@ function BatchRecord({
                   )}
                   <ProcessPicHistory step={s} lang={lang} />
                 </td>
-                <td data-label={t("Output", "Hasil")}>
+                <td data-label={t("QC count", "Kiraan QC")}>
+                  {/* Machine steps have no output; older records may still carry one. */}
                   {s.qty ?? "—"}
-                  <small>{units(lang, batchUnit(b))}</small>
+                  {s.qty !== null && <small>{units(lang, batchUnit(b))}</small>}
                 </td>
                 <td data-label={t("Time", "Masa")}>
                   {s.start || "—"} – {s.end || "—"}
