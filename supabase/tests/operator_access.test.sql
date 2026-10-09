@@ -694,4 +694,42 @@ do $$ begin
     raise exception 'FAIL: factory_stage split'; end if;
 end $$;
 
+-- 10. Stock returns (20261009090002): append-only, attributed, into an existing carton.
+\set SI '''00000000-0000-4000-8000-000000000006'''
+create function pg_temp.ret(p_id text, p_carton text, p_qty jsonb, p_uid text) returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'cartonId', p_carton, 'qty', p_qty, 'reason', 'Courier return',
+    'pic', 'SI', 'at', 't', 'recordedBy', jsonb_build_object('userId', p_uid)) $$;
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', jsonb_build_array(pg_temp.ret('r1', 'cw1', '3', :SI)))),
+  'ok', 'return to a carton');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', (pg_temp.state(:W) -> 'returns')
+    || jsonb_build_array(pg_temp.ret('r2', 'cw1', '0', :SI)))), '23514', 'return with qty 0');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', (pg_temp.state(:W) -> 'returns')
+    || jsonb_build_array(pg_temp.ret('r3', 'cw1', '1.5', :SI)))), '23514', 'return with a fractional qty');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns,0,qty}', '30')), '23514', 'rewrite an existing return');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', '[]')), '23514', 'remove an existing return');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', (pg_temp.state(:W) -> 'returns')
+    || jsonb_build_array(pg_temp.ret('r4', 'no-such-carton', '1', :SI)))), '23514', 'return to an unknown carton');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', (pg_temp.state(:W) -> 'returns')
+    || jsonb_build_array(pg_temp.ret('r5', 'cw1', '1', '00000000-0000-4000-8000-000000000001')))),
+  '23514', 'return attributed to another user');
+select pg_temp.expect(pg_temp.commit_as(:SV, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', (pg_temp.state(:W) -> 'returns')
+    || jsonb_build_array(pg_temp.ret('r6', 'cw1', '1', :SV)))), '42501', 'production SV records a return');
+-- Returned units count in the balance: 40 boxed + 3 returned can be issued as 43, not 44.
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values
+  (:W, '00000000-0000-4000-8000-000000000009', 'outbound', 'SO W', 'site');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000009', :W, 'issue',
+  jsonb_set(pg_temp.state(:W), '{issues}', '[{"id":"iw1","cartonId":"cw1","orderId":"o","qty":44,"pic":"x","at":"t"}]')),
+  '23514', 'issue more than received plus returned');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000009', :W, 'issue',
+  jsonb_set(pg_temp.state(:W), '{issues}', '[{"id":"iw1","cartonId":"cw1","orderId":"o","qty":43,"pic":"x","at":"t"}]')),
+  'ok', 'issue received plus returned');
+
 select 'operator access tests passed' as result;

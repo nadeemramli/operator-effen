@@ -21,7 +21,10 @@ const section = (table, source = sql) => {
   const start = source.indexOf(`insert into public.${table}`);
   return start < 0 ? "" : source.slice(start, source.indexOf(";", start));
 };
-const merged = (table) => section(table) + section(table, trips);
+// Floor improvements (October 2026): later migrations seed further rows.
+const later = ["20261009090002_operator_stock_returns"].map(migration);
+const merged = (table) =>
+  section(table) + section(table, trips) + later.map((m) => section(table, m)).join("");
 
 test("one driver role: the migration removes the separate assistant role", () => {
   assert.match(trips, /update public\.operator_memberships\s+set role = 'driver', updated_at = now\(\)\s+where role = 'assistant';/);
@@ -109,6 +112,7 @@ test("every operational command stays inside its database scope", () => {
   run("intake", "receive", { batchId: bottle, qty: 2, rack: "R", pic: "R" });
   run("intake", "count", { cartonId: s.cartons[0].id, actual: 1, pic: "R" });
   run("intake", "adjust", { id: s.counts[0].id, reason: "Broken bottle" });
+  run("intake", "return", { cartonId: s.cartons[0].id, qty: 1, reason: "Courier return", awb: "RT 123", pic: "R" });
   run("admin", "order", { awb: "COV-AWB", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });
   const o = s.orders[0].id;
   run("outbound", "edit-order", { id: o, awb: "COV-AWB", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });

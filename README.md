@@ -227,6 +227,16 @@ Sachet intake labels are generic. The catalog's factory type controls the route,
 so additional sachet products use the same process and stock-in rules when added
 to the catalog. This change does not invent additional product entries.
 
+### Stock returns by batch (9 October 2026)
+
+Stock-in → **Record a return**: choose the batch (newest first, with its racks and what is
+available), then the carton if the batch has more than one, the quantity, the reason, an
+optional AWB of the returned parcel and the PIC. The quantity goes back into that existing
+stock carton on its rack and is available again. A return is its own append-only movement:
+the original stock issue stays as recorded, and returns are never edited or removed. "On the
+racks", the stock tables on Overview and Reports, and a carton's record show what was
+returned. Requires migration `20261009090002_operator_stock_returns.sql`.
+
 ### Outbound packages (25 September 2026)
 
 Order management is the combined daily outbound workspace; old `view=outbound`

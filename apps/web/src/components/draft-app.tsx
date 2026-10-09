@@ -36,6 +36,7 @@ import {
   Download,
   ScanLine,
   LoaderCircle,
+  Undo2,
 } from "lucide-react";
 import { ProductionWorkspace, ProcessPicHistory } from "./production-workspace";
 import { SachetProductionRecords, StageRecords } from "./sachet-records";
@@ -89,6 +90,7 @@ import {
   isSachet,
   batchComplete,
   batchTransferred,
+  cartonReturned,
   stageDone,
   warehouseStages,
   adypocideReceipts,
@@ -715,6 +717,121 @@ export function DraftApp() {
       ],
       submit: t("Confirm box stock-in", "Sahkan stok masuk kotak"),
     });
+  // Returns are recorded in two steps: choose the batch, then its carton and the details.
+  const recordReturn = () =>
+    show({
+      type: "return-pick",
+      title: t("Record a return", "Rekod pemulangan"),
+      description: t(
+        "Choose the batch the returned stock belongs to. It goes back into that batch's carton on its rack.",
+        "Pilih kelompok stok yang dipulangkan. Ia dimasukkan semula ke karton kelompok itu di raknya.",
+      ),
+      fields: [
+        {
+          name: "batchId",
+          label: t("Batch", "Kelompok"),
+          type: "select",
+          options: (state?.batches ?? [])
+            .filter((b) => inventoryCartons.some((c) => c.batchId === b.id))
+            .sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id))
+            .map((b) => {
+              const cartons = inventoryCartons.filter((c) => c.batchId === b.id);
+              return {
+                value: b.id,
+                label: [
+                  product(b.product).name,
+                  b.code,
+                  [...new Set(cartons.map((c) => c.rack))].join(", "),
+                  fmt(cartons.reduce((n, c) => n + available(state!, c), 0)) +
+                    " " +
+                    units(lang, product(b.product).unit),
+                ].join(" · "),
+              };
+            }),
+        },
+      ],
+      submit: t("Next", "Seterusnya"),
+    });
+  const returnDetails = (batchId: string) => {
+    const batch = state?.batches.find((b) => b.id === batchId);
+    const cartons = inventoryCartons.filter((c) => c.batchId === batchId);
+    if (!batch || !cartons.length) return;
+    show({
+      type: "return",
+      title: t("Record a return", "Rekod pemulangan"),
+      description:
+        product(batch.product).name +
+        " · " +
+        batch.code +
+        " · " +
+        t(
+          "The quantity goes back into the carton below and becomes available again. The original stock issue stays as recorded.",
+          "Kuantiti dimasukkan semula ke karton di bawah dan tersedia semula. Pengeluaran stok asal kekal seperti direkod.",
+        ),
+      hidden: cartons.length === 1 ? { cartonId: cartons[0].id } : {},
+      summary:
+        cartons.length === 1
+          ? [
+              { label: t("Carton", "Karton"), value: cartons[0].ref },
+              { label: t("Rack", "Rak"), value: cartons[0].rack },
+              {
+                label: t("Available now", "Tersedia sekarang"),
+                value:
+                  fmt(available(state!, cartons[0])) +
+                  " " +
+                  units(lang, cartons[0].unit),
+              },
+            ]
+          : undefined,
+      fields: [
+        ...(cartons.length > 1
+          ? [
+              {
+                name: "cartonId",
+                label: t("Carton / rack", "Karton / rak"),
+                type: "select" as const,
+                options: cartons.map((c) => ({
+                  value: c.id,
+                  label:
+                    c.ref +
+                    " · " +
+                    c.rack +
+                    " · " +
+                    fmt(available(state!, c)) +
+                    " " +
+                    units(lang, c.unit),
+                })),
+              },
+            ]
+          : []),
+        number(
+          "qty",
+          t("Quantity returned", "Kuantiti dipulangkan") +
+            " (" +
+            units(lang, product(batch.product).unit) +
+            ")",
+          undefined,
+          1,
+        ),
+        {
+          name: "reason",
+          label: t("Reason for the return", "Sebab pemulangan"),
+          type: "textarea",
+        },
+        {
+          name: "awb",
+          label: t("AWB of the returned parcel", "AWB bungkusan dipulangkan"),
+          required: false,
+          hint: t(
+            "Optional. Not checked against orders; the parcel may be older than Operator.",
+            "Pilihan. Tidak disemak dengan pesanan; bungkusan mungkin lebih lama daripada Operator.",
+          ),
+        },
+        pic(),
+      ],
+      submit: t("Record return", "Rekod pemulangan"),
+    });
+  };
   const count = (c: Carton) =>
     show({
       type: "count",
@@ -1096,6 +1213,7 @@ export function DraftApp() {
               <th className="num">
                 {t("Issued to packing", "Untuk pembungkusan")}
               </th>
+              <th className="num">{t("Returned", "Dipulangkan")}</th>
               <th>{t("Unit", "Unit")}</th>
             </tr>
           </thead>
@@ -1132,6 +1250,13 @@ export function DraftApp() {
                           ),
                         )
                         .reduce((n, i) => n + i.qty, 0),
+                    )}
+                  </td>
+                  <td className="num">
+                    {fmt(
+                      state!.cartons
+                        .filter((c) => c.product === p.id && c.unit === unit)
+                        .reduce((n, c) => n + cartonReturned(state!, c), 0),
                     )}
                   </td>
                   <td className="text-muted-foreground">{units(lang, unit)}</td>
@@ -1451,6 +1576,12 @@ export function DraftApp() {
               {t("Carton-level balances", "Baki setiap karton")}
             </div>
             <div className="flex flex-wrap gap-2">
+              {can("stock.receive") && (
+                <Button variant="outline" onClick={recordReturn}>
+                  <Undo2 size={16} />
+                  {t("Record a return", "Rekod pemulangan")}
+                </Button>
+              )}
               <Button variant="outline" onClick={receiveAdypocide}>
                 <Boxes size={16} />
                 {t(
@@ -1651,6 +1782,7 @@ export function DraftApp() {
                     <th>{t("Product", "Produk")}</th>
                     <th>{t("Rack", "Rak")}</th>
                     <th className="num">{t("Received", "Diterima")}</th>
+                    <th className="num">{t("Returned", "Dipulangkan")}</th>
                     <th className="num">{t("Available", "Tersedia")}</th>
                     <th>{t("Unit", "Unit")}</th>
                     <th className="actions" />
@@ -1682,6 +1814,11 @@ export function DraftApp() {
                       </td>
                       <td className="mono text-muted-foreground">{c.rack}</td>
                       <td className="num">{fmt(c.qty)}</td>
+                      <td className="num">
+                        {cartonReturned(state, c)
+                          ? fmt(cartonReturned(state, c))
+                          : "—"}
+                      </td>
                       <td className="num font-semibold">
                         {fmt(available(state, c))}
                       </td>
@@ -2746,7 +2883,11 @@ export function DraftApp() {
         busy={busy}
         error={formError}
         onClose={() => setForm(null)}
-        onSubmit={command}
+        onSubmit={async (type, values) => {
+          if (type !== "return-pick") return command(type, values);
+          returnDetails(String(values.batchId ?? ""));
+          return null;
+        }}
       />
       <AlertDialog open={reset} onOpenChange={setReset}>
         <AlertDialogContent>
@@ -2951,6 +3092,37 @@ export function DraftApp() {
                     }
                   />
                 </div>
+                {!!state.returns?.some(
+                  (r) => r.cartonId === selectedCarton.id,
+                ) && (
+                  <>
+                    <h3 className="section-label">
+                      {t("RETURNS", "PEMULANGAN")}
+                    </h3>
+                    {state.returns
+                      .filter((r) => r.cartonId === selectedCarton.id)
+                      .map((r) => (
+                        <div key={r.id} className="linked-record">
+                          <Undo2 size={16} />
+                          <span>
+                            +{r.qty} {units(lang, selectedCarton.unit)} ·{" "}
+                            {r.reason}
+                            <small>
+                              {[
+                                r.awb ? "AWB " + r.awb : null,
+                                r.pic,
+                                new Date(r.at).toLocaleString("en-MY", {
+                                  timeZone: "Asia/Kuala_Lumpur",
+                                }),
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </small>
+                          </span>
+                        </div>
+                      ))}
+                  </>
+                )}
               </>
             )}
             {linkedBatch && (

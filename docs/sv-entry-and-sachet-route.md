@@ -38,7 +38,9 @@ JSON document per site with one revision (normalized per-record storage is #10).
    and the command's capability at that site, verifies the signature over the exact state text,
    user, revision, operation ID, command and payload fingerprint, limits the change to the
    command's top-level records, and enforces invariants itself: audit events, notes, stock
-   issues, adjustments and sort counts are append-only; new events, notes and history entries
+   issues, adjustments, sort counts and stock returns (since 2026-10-09) are append-only; a new
+   return has a positive whole quantity, an existing carton and the signed-in recorder, and
+   counts in that carton's balance; new events, notes and history entries
    are attributed to the caller; received cartons are immutable; no carton goes below zero;
    batches, custody (transfer) facts and route snapshots are fixed; stage completion is never
    undone and PIC/correction/rework history is append-only; a batch with a route snapshot needs
@@ -302,7 +304,8 @@ commit;
 
 ## Rollback
 
-Run `supabase/rollback/20261009090001_operator_warehouse_stages.down.sql` (restores the
+Run `supabase/rollback/20261009090002_operator_stock_returns.down.sql`, then
+`supabase/rollback/20261009090001_operator_warehouse_stages.down.sql` (restores the
 all-stages transfer gate), then `supabase/rollback/20261007090000_operator_factory_scope.down.sql`, then
 `20261006090000_operator_driver_trips.down.sql`, then
 `20261005090000_operator_trusted_commands.down.sql`, then
