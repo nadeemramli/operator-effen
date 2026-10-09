@@ -42,6 +42,7 @@ import { SachetProductionRecords, StageRecords } from "./sachet-records";
 import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { DriverTrips } from "./driver-trips";
+import { PackerProfiles, PackerUnlock } from "./packer-station";
 import { channels } from "@/lib/awb-import";
 import {
   allowedViews,
@@ -97,12 +98,14 @@ import {
   batchUnit,
   orderIssued,
   orderLines,
+  packerProfiles,
   people,
   previewCapabilities,
   product,
   products,
   recorderLabel,
   roles,
+  staffName,
   stepNames,
   today,
   tr,
@@ -176,14 +179,14 @@ const copy: Record<View, [string, string, string, string]> = {
   packing: [
     "One parcel. An honest count.",
     "Satu bungkusan. Kiraan sebenar.",
-    "Supervisors record what each packer actually packed and who attached the AWB.",
-    "Penyelia merekod jumlah sebenar setiap pembungkus dan siapa yang melekatkan AWB.",
+    "Each packer records what they actually packed under their own name and PIN. Supervisors correct and review.",
+    "Setiap pembungkus merekod jumlah sebenar yang dibungkus atas nama dan PIN sendiri. Penyelia membetulkan dan menyemak.",
   ],
   trips: [
     "Driver trips",
     "Perjalanan pemandu",
-    "Drivers log each trip: assistant driver, pickup and arrival time, and a photo.",
-    "Pemandu merekod setiap perjalanan: pembantu pemandu, masa ambil dan tiba, serta gambar.",
+    "Drivers log each trip: driver and assistant names, pickup and arrival time, and a photo.",
+    "Pemandu merekod setiap perjalanan: nama pemandu dan pembantu, masa ambil dan tiba, serta gambar.",
   ],
   trace: [
     "Follow the record",
@@ -249,6 +252,9 @@ const storedRole = (storage: () => Storage, key: string): Role | undefined => {
     return undefined;
   }
 };
+// The shared packer phone locks the unlocked packer after this long without a touch, so the
+// next person cannot save under the previous packer's name. The server session is longer.
+const PACKER_IDLE_MS = 3 * 60 * 1000;
 // Assistant drivers are drivers now; a server still on the older role list maps across.
 const viewRole = (role?: string): Role =>
   role === "assistant"
@@ -366,6 +372,21 @@ export function DraftApp() {
             : viewRole(data.actor.role)
           : (storedRole(() => localStorage, PREVIEW_ROLE_KEY) ?? "management"),
       );
+      if (
+        data.actor?.kind === "member" &&
+        data.actor.capabilities?.includes("packing.record")
+      ) {
+        const session = await fetch(
+          "/api/packer-session?workspace=" +
+            encodeURIComponent(data.actor.workspaceId),
+          { cache: "no-store" },
+        )
+          .then((r): Promise<{ profileId?: string | null }> =>
+            r.ok ? r.json() : Promise.resolve({}),
+          )
+          .catch(() => ({ profileId: null }));
+        setPackerProfile(session.profileId ?? "");
+      }
       setPendingSave(readPending());
       setError("");
     } catch (e) {
@@ -387,6 +408,34 @@ export function DraftApp() {
       void load();
     });
   }, [load]);
+  // Hooks stay above the early return below so they run in the same order every render.
+  // Shared packer sign-in: the packer currently unlocked on this device.
+  const packerStation = role === "packer" && !viewingAs;
+  const lastPackerTouch = useRef(0);
+  const lockPacker = useCallback(async () => {
+    setPackerProfile("");
+    setPackingSelection([]);
+    setForm(null);
+    if (member)
+      await fetch("/api/packer-session", { method: "DELETE" }).catch(() => null);
+  }, [member]);
+  useEffect(() => {
+    if (!packerStation || !packerProfile) return;
+    lastPackerTouch.current = Date.now();
+    const touch = () => {
+      lastPackerTouch.current = Date.now();
+    };
+    window.addEventListener("pointerdown", touch);
+    window.addEventListener("keydown", touch);
+    const timer = window.setInterval(() => {
+      if (Date.now() - lastPackerTouch.current > PACKER_IDLE_MS) void lockPacker();
+    }, 10000);
+    return () => {
+      window.removeEventListener("pointerdown", touch);
+      window.removeEventListener("keydown", touch);
+      window.clearInterval(timer);
+    };
+  }, [packerStation, packerProfile, lockPacker]);
   // Until the server says who is signed in, no screen is chosen: the role decides the
   // screen, and a guessed role sent every refresh to that guess's first screen.
   if (!actor)
@@ -481,6 +530,12 @@ export function DraftApp() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (res.status < 500) clear();
+        if (data.code === "packer-locked") {
+          setPackerProfile("");
+          setForm(null);
+          setError(data.error);
+          return null;
+        }
         const conflict = data.conflict as
           | { currentVersion?: number; last?: { to?: string; recordedBy?: unknown } }
           | undefined;
@@ -545,8 +600,12 @@ export function DraftApp() {
     name,
     label,
     type: "person",
-    options: state?.staffProfiles
-      ? state.staffProfiles.map((p) => ({ value: p.id, label: p.name }))
+    // Packer profiles exist only for the shared packer sign-in; they never replace the
+    // people offered as process PICs.
+    options: state?.staffProfiles?.some((p) => p.role !== "packer")
+      ? state.staffProfiles
+          .filter((p) => p.role !== "packer")
+          .map((p) => ({ value: p.id, label: p.name }))
       : people.map((p) => ({ value: p, label: p })),
     hint: t(
       "Sample people for this draft. Real staff will be added later.",
@@ -799,6 +858,46 @@ export function DraftApp() {
         },
       ],
       submit: t("Save actual count", "Simpan kiraan sebenar"),
+    });
+  // A packer's own count on the shared packer sign-in. The server takes the packer from the
+  // PIN-unlocked session; the preview passes its sample profile instead.
+  const packOwn = (o: Order) =>
+    show({
+      type: "pack-own",
+      title: t("Record what I packed", "Rekod apa yang saya bungkus"),
+      description:
+        o.awb +
+        " · " +
+        orderLines(o)
+          .map(
+            (l) =>
+              `${product(l.product).name}: ${l.expected} ${units(lang, product(l.product).unit)}`,
+          )
+          .join(" · ") +
+        " · " +
+        t(
+          "Saved once under your name. Your supervisor corrects any mistake.",
+          "Disimpan sekali atas nama anda. Penyelia anda membetulkan sebarang kesilapan.",
+        ),
+      hidden: { id: o.id, ...(member ? {} : { profile: packerProfile }) },
+      summary: [
+        {
+          label: t("Packer", "Pembungkus"),
+          value: staffName(state ?? { staffProfiles: undefined }, packerProfile),
+        },
+      ],
+      fields: orderLines(o).map((l) =>
+        number(
+          o.lines ? "actual_" + l.product : "actual",
+          product(l.product).name +
+            " · " +
+            t("I packed", "Saya bungkus") +
+            " (" +
+            units(lang, product(l.product).unit) +
+            ")",
+        ),
+      ),
+      submit: t("Save my count", "Simpan kiraan saya"),
     });
   const correct = (o: Order) =>
     show({
@@ -1865,9 +1964,40 @@ export function DraftApp() {
           dispatch={dispatch}
         />
       );
+    if (view === "packing" && packerStation && !packerProfile)
+      return (
+        <PackerUnlock
+          state={state}
+          lang={lang}
+          date={packingDate}
+          workspaceId={actor?.workspaceId}
+          preview={!member}
+          onUnlock={(id) => {
+            setPackerProfile(id);
+            setPackingSelection([]);
+            setError("");
+          }}
+        />
+      );
     if (view === "packing")
       return (
         <>
+          {packerStation ? (
+            <div className="inline-note">
+              <ShieldCheck size={18} />
+              <span className="flex-1">
+                {t("Recording as", "Merekod sebagai")}{" "}
+                <strong>{staffName(state, packerProfile)}</strong>.{" "}
+                {t(
+                  "Tap Done when you finish so the next person can choose their name.",
+                  "Tekan Selesai apabila habis supaya orang seterusnya boleh memilih nama mereka.",
+                )}
+              </span>
+              <Button variant="outline" size="sm" onClick={() => void lockPacker()}>
+                {t("Done", "Selesai")}
+              </Button>
+            </div>
+          ) : (
           <label className="order-profile">
             {t("Packer", "Pembungkus")}
             <select
@@ -1884,12 +2014,7 @@ export function DraftApp() {
                   "Pilih pembungkus untuk melihat pakej ditugaskan",
                 )}
               </option>
-              {(state.staffProfiles
-                ? state.staffProfiles
-                    .filter((p) => p.role === "packer")
-                    .map((p) => ({ id: p.id, name: p.name }))
-                : people.map((p) => ({ id: p, name: p }))
-              ).map((p) => (
+              {packerProfiles(state).map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
@@ -1897,11 +2022,22 @@ export function DraftApp() {
             </select>
             <small>
               {t(
-                "Supervisors record each packer's actual count. Packer profiles do not sign in or save records.",
-                "Penyelia merekod kiraan sebenar setiap pembungkus. Profil pembungkus tidak log masuk atau menyimpan rekod.",
+                "Packers record their own counts on the shared packer sign-in with their PIN. You can also record for them and correct saved counts.",
+                "Pembungkus merekod kiraan sendiri pada log masuk pembungkus bersama dengan PIN mereka. Anda juga boleh merekod bagi pihak mereka dan membetulkan kiraan tersimpan.",
               )}
             </small>
           </label>
+          )}
+          {role === "outbound" && can("members.manage") && (
+            <PackerProfiles
+              state={state}
+              lang={lang}
+              busy={busy}
+              workspaceId={actor?.workspaceId}
+              live={member}
+              command={command}
+            />
+          )}
           <label className="order-profile">
             {t("Packing day (Malaysia)", "Hari pembungkusan (Malaysia)")}
             <Input
@@ -2013,8 +2149,8 @@ export function DraftApp() {
                   </div>
                   {o.actual !== null ? (
                     <p className="text-xs text-muted-foreground mb-4">
-                      {t("Packed by", "Dibungkus oleh")} {o.packer} ·{" "}
-                      {t("AWB", "AWB")}: {o.labelPic}
+                      {t("Packed by", "Dibungkus oleh")} {staffName(state, o.packer)} ·{" "}
+                      {t("AWB", "AWB")}: {staffName(state, o.labelPic)}
                       {o.packRecordedBy && (
                         <>
                           <br />
@@ -2024,11 +2160,27 @@ export function DraftApp() {
                       )}
                     </p>
                   ) : null}
-                  {role !== "outbound" ? (
+                  {packerStation ? (
+                    o.actual === null ? (
+                      <Button
+                        className="action-primary w-full"
+                        onClick={() => packOwn(o)}
+                      >
+                        {t("Record what I packed", "Rekod apa yang saya bungkus")}
+                      </Button>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {t(
+                          "Saved. Ask your supervisor if it needs a correction.",
+                          "Disimpan. Minta penyelia anda jika perlu pembetulan.",
+                        )}
+                      </p>
+                    )
+                  ) : role !== "outbound" ? (
                     <p className="text-xs text-muted-foreground">
                       {t(
-                        "Your supervisor records this count.",
-                        "Penyelia anda merekod kiraan ini.",
+                        "The packer or their supervisor records this count.",
+                        "Pembungkus atau penyelia mereka merekod kiraan ini.",
                       )}
                     </p>
                   ) : o.actual === null ? (

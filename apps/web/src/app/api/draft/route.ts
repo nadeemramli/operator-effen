@@ -28,6 +28,15 @@ import {
   outOfScopeKeys,
 } from "@/lib/access";
 import { validateImport } from "@/lib/awb-import";
+import { commandRules } from "@/lib/capabilities";
+import {
+  openPackerSession,
+  PACKER_COOKIE,
+  PACKER_IDLE_MS,
+  packerCookieOptions,
+  sealPackerSession,
+  type PackerSession,
+} from "@/lib/packer-session";
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, {
     status,
@@ -212,6 +221,8 @@ export async function POST(request: NextRequest) {
           name: roleLabel(role) + " (test view)",
           userId: user.id,
         },
+        // Fictional sandbox: no PINs; the previewed packer picks a sample profile.
+        performer: typeof input.profile === "string" ? input.profile : undefined,
       });
       if (operationId)
         recordOperation(state, {
@@ -308,6 +319,24 @@ export async function POST(request: NextRequest) {
       409,
     );
   const current = loaded.data.state as Draft;
+  // Shared packer sign-in: a packer's own count is saved only for the profile their PIN
+  // unlocked on this device (signed cookie), never for a profile named in the request.
+  let packer: PackerSession | null = null;
+  if (commandRules[type]?.capability === "packing.record") {
+    packer = openPackerSession(secret, request.cookies.get(PACKER_COOKIE)?.value, {
+      userId: user.id,
+      workspaceId: membership.workspaceId,
+    });
+    if (!packer)
+      return json(
+        {
+          error:
+            "Your packer session ended. Choose your name and enter your PIN again. Nothing was saved.",
+          code: "packer-locked",
+        },
+        403,
+      );
+  }
   // A production supervisor limited to one factory never changes the other factory's
   // batches; the database re-checks the signed state (operator_private.assert_factory_scope).
   const outside = factoryDenial(membership.factory, type, input, current.batches ?? []);
@@ -341,6 +370,7 @@ export async function POST(request: NextRequest) {
       input,
       actor: recorder,
       capabilities: membership.capabilities,
+      performer: packer?.profileId,
     });
     if (
       outOfScopeKeys(
@@ -407,11 +437,20 @@ export async function POST(request: NextRequest) {
       },
       409,
     );
-  return json({
+  const response = json({
     state: withBatchReferences(saved.new_state),
     revision: saved.new_revision,
     replayed: saved.replayed,
+    ...(packer ? { packerExpiresAt: Date.now() + PACKER_IDLE_MS } : {}),
   });
+  // Each save keeps the packer's session open for another idle period.
+  if (packer)
+    response.cookies.set(
+      PACKER_COOKIE,
+      sealPackerSession(secret, { ...packer, expiresAt: Date.now() + PACKER_IDLE_MS }),
+      packerCookieOptions(PACKER_IDLE_MS),
+    );
+  return response;
 }
 
 function domainError(e: unknown) {
