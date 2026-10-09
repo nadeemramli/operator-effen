@@ -24,7 +24,8 @@ import {
   channels,
   couriers,
   defaultFor,
-  parsePages,
+  OCR_NOTE,
+  parseImport,
   rowProblems,
   rowStatus,
   type AwbImport,
@@ -192,12 +193,20 @@ export function AwbIntake({
         });
         pages.push(...read.pages);
       }
+      // Pages with no tracking number, order reference or known SKU (cover, title,
+      // separator) become no row; they are listed per file and can still be added by hand.
+      const parsed = parseImport(pages, channel, store.trim());
       const b: AwbImport = {
         id: crypto.randomUUID(),
         date,
         name: `${store.trim()} · ${date}`,
-        files: sourceFiles,
-        rows: parsePages(pages, channel, store.trim()),
+        files: sourceFiles.map((f) => {
+          const skipped = parsed.skipped
+            .filter((p) => p.file === f.id)
+            .map((p) => p.page);
+          return skipped.length ? { ...f, skippedPages: skipped } : f;
+        }),
+        rows: parsed.rows,
         createdAt: "",
         updatedAt: "",
       };
@@ -398,14 +407,14 @@ export function AwbIntake({
                 disabled={processing}
               />
               {t(
-                "Use OCR on every page (for PDFs with missing or broken text)",
-                "Gunakan OCR pada semua halaman (jika teks PDF hilang atau rosak)",
+                "Force OCR on every page (slow; only if labels are still missed)",
+                "Paksa OCR pada semua halaman (perlahan; hanya jika label masih tertinggal)",
               )}
             </label>
             <p className="field-hint">
               {t(
-                "Text is read first; image-only pages use OCR automatically. Keep this page open while processing. Extracted counts need Admin confirmation.",
-                "Teks dibaca dahulu; halaman imej menggunakan OCR secara automatik. Biarkan halaman ini terbuka semasa pemprosesan. Jumlah diekstrak memerlukan pengesahan Admin.",
+                "Text is read first. Any page without an AWB or order reference in its text is read by OCR automatically. Pages with no label (cover, title) are skipped. Keep this page open while processing.",
+                "Teks dibaca dahulu. Halaman tanpa AWB atau rujukan pesanan dalam teksnya dibaca dengan OCR secara automatik. Halaman tanpa label (kulit, tajuk) dilangkau. Biarkan halaman ini terbuka semasa pemprosesan.",
               )}
             </p>
             <FormError message={error} />
@@ -524,8 +533,8 @@ export function AwbIntake({
           ) : (
             <div className="inline-note">
               {t(
-                "Review the summary once. Resolve or exclude flagged labels; duplicates are skipped. No stock changes until operational movements are recorded.",
-                "Semak ringkasan sekali. Selesaikan atau kecualikan label bermasalah; pendua dilangkau. Stok tidak berubah sehingga pergerakan operasi direkod.",
+                "Review the summary once. Only labels with a problem need attention: resolve or exclude them; duplicates and pages without a label are skipped. Labels read by OCR are marked for comparison but do not need a check. No stock changes until operational movements are recorded.",
+                "Semak ringkasan sekali. Hanya label bermasalah perlu perhatian: selesaikan atau kecualikan; pendua dan halaman tanpa label dilangkau. Label dibaca OCR ditanda untuk perbandingan tetapi tidak perlu disemak. Stok tidak berubah sehingga pergerakan operasi direkod.",
               )}
             </div>
           )}
@@ -565,6 +574,32 @@ export function AwbIntake({
               </strong>{" "}
               {t("duplicates", "pendua")}
             </span>
+            {batch.files.some((f) => f.skippedPages?.length) && (
+              <span
+                title={batch.files
+                  .filter((f) => f.skippedPages?.length)
+                  .map(
+                    (f) =>
+                      f.name +
+                      ": " +
+                      t("page", "halaman") +
+                      " " +
+                      f.skippedPages!.join(", "),
+                  )
+                  .join(" · ")}
+              >
+                <strong>
+                  {batch.files.reduce(
+                    (n, f) => n + (f.skippedPages?.length ?? 0),
+                    0,
+                  )}
+                </strong>{" "}
+                {t(
+                  "pages skipped (cover/title, no label)",
+                  "halaman dilangkau (kulit/tajuk, tiada label)",
+                )}
+              </span>
+            )}
             {totals.map(({ p, qty }) => (
               <span key={p.id}>
                 <strong>{qty}</strong>
@@ -950,10 +985,24 @@ export function AwbIntake({
                         </ul>
                       </div>
                     )}
+                    {!!row.notes?.length && (
+                      <p className="field-hint">
+                        {row.notes
+                          .map((n) =>
+                            n === OCR_NOTE
+                              ? t(
+                                  "Read by OCR — compare with the PDF.",
+                                  "Dibaca oleh OCR — bandingkan dengan PDF.",
+                                )
+                              : n,
+                          )
+                          .join(" ")}
+                      </p>
+                    )}
                     <label>
                       {t(
-                        "Review / exclusion note",
-                        "Catatan semakan / pengecualian",
+                        "Note (required to exclude a label)",
+                        "Catatan (diperlukan untuk mengecualikan label)",
                       )}
                       <Input
                         maxLength={1000}
@@ -964,19 +1013,24 @@ export function AwbIntake({
                     </label>
                     {canEdit && (
                       <div className="awb-review-checks">
-                        <label className="awb-check">
-                          <input
-                            type="checkbox"
-                            checked={row.reviewed}
-                            onChange={(e) =>
-                              change({ reviewed: e.target.checked })
-                            }
-                          />
-                          {t(
-                            "I checked the flagged fields and parcel allocation",
-                            "Saya telah menyemak butiran dan kandungan bungkusan",
-                          )}
-                        </label>
+                        {/* Only a label with something to verify asks for the check. */}
+                        {(row.reviewed ||
+                          row.warnings.length > 0 ||
+                          rowStatus(row, batch, state) === "review") && (
+                          <label className="awb-check">
+                            <input
+                              type="checkbox"
+                              checked={row.reviewed}
+                              onChange={(e) =>
+                                change({ reviewed: e.target.checked })
+                              }
+                            />
+                            {t(
+                              "I checked the flagged fields and parcel allocation",
+                              "Saya telah menyemak butiran dan kandungan bungkusan",
+                            )}
+                          </label>
+                        )}
                         <label className="awb-check">
                           <input
                             type="checkbox"
