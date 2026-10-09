@@ -992,6 +992,20 @@ export class ConflictError extends Error {
 }
 export const roleLabel = (role: Role) =>
   roles.find((r) => r.id === role)?.en ?? role;
+/**
+ * Who keyed a parcel's packed count: the packer on the shared packer sign-in (PIN), a
+ * supervisor, or unknown for older records saved before the recorder was kept.
+ */
+export const packEntrySource = (
+  o: Pick<Order, "actual" | "packRecordedBy">,
+): "packer" | "supervisor" | "unknown" | null =>
+  o.actual === null
+    ? null
+    : !o.packRecordedBy
+      ? "unknown"
+      : o.packRecordedBy.role === "packer"
+        ? "packer"
+        : "supervisor";
 export const recorderLabel = (r?: Recorder) =>
   !r
     ? ""
