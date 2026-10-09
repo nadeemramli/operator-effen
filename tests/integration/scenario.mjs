@@ -300,6 +300,18 @@ await check("A: concurrent saves — one wins, the other gets a reviewable confl
   assert.equal(retry.body.conflict.currentVersion, holo.version + 1);
 });
 
+await check("A: an unrelated save after a teammate's save succeeds without a refresh", async () => {
+  const seen = await load(intake);
+  const a = await post(prod, "feedback", { text: "Saved first by production" });
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  // Stock-in still holds the revision it loaded before production saved.
+  const b = await api(intake, "POST", { command: { type: "feedback", role: "intake", input: { text: "Saved second without refreshing" } }, revision: seen.revision, operationId: randomUUID(), workspaceId: W.a });
+  assert.equal(b.status, 200, JSON.stringify(b.body));
+  assert.equal(b.body.revision, seen.revision + 2);
+  const texts = stored(W.a).notes.map((n) => n.text);
+  assert.ok(texts.includes("Saved first by production") && texts.includes("Saved second without refreshing"));
+});
+
 await check("A: post-transfer correction keeps stock/custody facts and flags the revision", async () => {
   const before = stored(W.a);
   const holo = before.batches.find((b) => b.id === batchId).steps.find((s) => s.sachetStage === "hologram");
