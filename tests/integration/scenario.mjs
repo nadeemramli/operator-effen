@@ -288,7 +288,9 @@ await check("A: response-loss retry applies once; reused ID with different input
   assert.equal(reused.body.code, "operation-mismatch");
 });
 
-await check("A: concurrent saves — one wins, the other gets a reviewable conflict", async () => {
+// Saves of different records no longer conflict (the server re-applies a save that lost the
+// race); two edits of the same record still do.
+await check("A: concurrent edits of the same record — one wins, the other gets a reviewable conflict", async () => {
   const holo = stored(W.a).batches.find((b) => b.id === batchId).steps.find((s) => s.sachetStage === "hologram");
   const beta = stored(W.a).machines.find((m) => m.name === "INT Holo Beta").id;
   const rev = revision(W.a);

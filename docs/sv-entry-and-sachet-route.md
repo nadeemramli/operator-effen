@@ -216,8 +216,9 @@ packed. The supervisor still corrects saved counts and reviews the daily tally. 
 - Limits: picking a name plus a PIN shows who claims the work, not a verified identity; a
   shared PIN is as good as the person's own, so set a new one when it leaks. Anyone with the
   shared password can lock a profile with wrong PINs (the supervisor unlocks it). All packers
-  saving at once still share one site document and revision (#10): saves made at the same
-  moment get "a teammate saved first" and must be repeated.
+  saving at once still share one site document and revision (#10). Since 2026-10-09 the server
+  re-applies a save that lost the race on the latest records (see "Known limits"), so
+  simultaneous counts for different AWBs both save; only two saves of the same AWB conflict.
 - Rollout: apply the migration before deploying the app. Until then the app fails closed
   (unlock answers 503; `pack-own` is refused by the database).
 - Applied to `operator-effen` on 2026-10-07 (owner-approved), recorded as version
