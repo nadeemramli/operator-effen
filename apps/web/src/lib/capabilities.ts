@@ -104,6 +104,7 @@ export const commandRules: Record<
     stateKeys: ["cartons", "adypocideReceipts", "events"],
   },
   count: { capability: "stock.receive", stateKeys: ["counts", "events"] },
+  return: { capability: "stock.receive", stateKeys: ["returns", "events"] },
   adjust: { capability: "stock.adjust", stateKeys: ["adjustments", "counts", "events"] },
   order: { capability: "orders.enter", stateKeys: ["orders", "events"] },
   "edit-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },

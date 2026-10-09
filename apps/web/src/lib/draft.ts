@@ -371,6 +371,22 @@ export interface Count {
   at: string;
   adjusted: boolean;
 }
+/**
+ * Stock that came back (for example a parcel returned by the courier) and was put back into
+ * an existing stock carton of its batch, on that carton's rack. Append-only: never edited or
+ * removed. It does not reverse the original stock issue, which stays as recorded.
+ */
+export interface Return {
+  id: string;
+  cartonId: string;
+  qty: number;
+  reason: string;
+  pic: string;
+  /** Optional AWB of the returned parcel; not checked against orders (it may predate Operator). */
+  awb?: string;
+  at: string;
+  recordedBy?: Recorder;
+}
 export interface Adjustment {
   id: string;
   cartonId: string;
@@ -478,6 +494,7 @@ export interface Draft {
   boxing: Boxing[];
   counts: Count[];
   adjustments: Adjustment[];
+  returns?: Return[];
   events: Event[];
   notes: Note[];
   closedDays: string[];
@@ -589,7 +606,18 @@ export const available = (s: Draft, c: Carton) =>
     .reduce((n, i) => n + i.boxes * i.ratio + i.loss, 0) +
   s.adjustments
     .filter((i) => i.cartonId === c.id)
-    .reduce((n, i) => n + i.delta, 0);
+    .reduce((n, i) => n + i.delta, 0) +
+  cartonReturned(s, c);
+/** Units returned to this carton. */
+export const cartonReturned = (s: Draft, c: Carton) =>
+  (s.returns ?? [])
+    .filter((r) => r.cartonId === c.id)
+    .reduce((n, r) => n + r.qty, 0);
+/** Units returned to any stock carton of this batch. */
+export const batchReturned = (s: Draft, b: Batch) =>
+  s.cartons
+    .filter((c) => c.batchId === b.id)
+    .reduce((n, c) => n + cartonReturned(s, c), 0);
 export const orderLines = (o: Order): OrderLine[] => o.lines ?? [o];
 export const orderIssued = (s: Draft, o: Order, productId?: string) =>
   s.issues
@@ -2534,6 +2562,42 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
       break;
     }
+    case "return": {
+      allow("intake");
+      const c = s.cartons.find((x) => x.id === str("cartonId"));
+      if (!c || c.unit !== product(c.product).unit)
+        throw new Error(
+          "Choose a stock carton of the batch. Returns go back into an existing carton on its rack.",
+        );
+      const batch = s.batches.find((b) => b.id === c.batchId);
+      if (batch) inSite(batch);
+      const qty = num("qty", 1);
+      const reason = str("reason");
+      const awb = normalizeAwb(str("awb", false));
+      if (awb.length > 40) throw new Error("Use an AWB of up to 40 characters.");
+      const pic = str("pic");
+      if ((s.returns?.length ?? 0) >= 2000)
+        throw new Error("The returns list is full for this workspace.");
+      (s.returns ??= []).unshift({
+        id: id(),
+        cartonId: c.id,
+        qty,
+        reason,
+        pic,
+        ...(awb ? { awb } : {}),
+        at,
+        recordedBy: recorder,
+      });
+      log(
+        c.batchId,
+        "Stock returned to rack",
+        `${c.ref} · ${qty} ${c.unit} · rack ${c.rack} · ${reason}` +
+          (awb ? " · AWB " + awb : "") +
+          " · " +
+          pic,
+      );
+      break;
+    }
     case "review": {
       allow("management");
       const text = str("text");
@@ -2656,6 +2720,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     (s.sortCounts?.length ?? 0) > 1000 ||
     s.notes.length > 200 ||
     (s.trips?.length ?? 0) > 500 ||
+    (s.returns?.length ?? 0) > 2000 ||
     (s.machines?.length ?? 0) > 300
   )
     throw new Error(
