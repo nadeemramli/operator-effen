@@ -32,6 +32,7 @@ const people = {
   intakeA: { role: "intake", ws: W.a, name: "Synthetic Stock-in SV A" },
   outA: { role: "outbound", ws: W.a, name: "Synthetic Stock-out SV A" },
   packerA: { role: "packer", ws: W.a, name: "Synthetic Packer A" },
+  driverA: { role: "driver", ws: W.a, name: "Synthetic Drivers A" },
   prodB: { role: "production", ws: W.b, name: "Synthetic Production SV B" },
   outB: { role: "outbound", ws: W.b, name: "Synthetic Stock-out SV B" },
   mgmt: { role: "management", scope: "all-sites", name: "Synthetic Manager" },
@@ -343,7 +344,7 @@ await check("A: packer cannot write through the API or the database", async () =
   assert.equal(rpc.status, 403);
   assert.equal(revision(W.a), before);
   await packer.page.goto("/?view=packing");
-  await packer.page.getByText(/Your supervisor records this count|Supervisors record/).first().waitFor();
+  await packer.page.getByText(/Who is packing\?/).first().waitFor();
   await packer.context.close();
 });
 
@@ -623,6 +624,151 @@ await check("B: expired session keeps the unsaved entry and resubmits it once af
   assert.equal(stored(W.a).machines.filter((m) => m.name === "INT Shrink After Expiry").length, 1);
   await s.context.close();
 });
+
+// ============ Objective C: shared packer and driver sign-ins (20261008) ============
+const mytToday = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kuala_Lumpur" }).format(new Date());
+const pins = (s, method, body, query = "") =>
+  s.page.evaluate(
+    async ([path, method, body]) => {
+      const res = await fetch(path, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: res.status, body: await res.json().catch(() => null) };
+    },
+    [query, method, body],
+  );
+const outC = await session("outA");
+const packers = await session("packerA");
+let ali, abu, aliAwb, abuAwb;
+
+await check("C: stock-out SV adds packer profiles with PINs; PINs never reach the workspace state", async () => {
+  await outC.page.goto("/?view=packing");
+  for (const [name, pin] of [["Synthetic Ali", "2468"], ["Synthetic Abu", "8642"]]) {
+    await outC.page.getByLabel("Packer name").fill(name);
+    await outC.page.getByLabel(/PIN \(4–6 digits\)/).fill(pin);
+    await outC.page.getByRole("button", { name: /Add packer/ }).click();
+    await outC.page.getByText(`${name} added with their PIN.`).waitFor();
+  }
+  const profiles = stored(W.a).staffProfiles;
+  ali = profiles.find((p) => p.name === "Synthetic Ali").id;
+  abu = profiles.find((p) => p.name === "Synthetic Abu").id;
+  assert.equal(sql(`select count(*) from operator_private.staff_pins where workspace_id='${W.a}'`), "2");
+  const text = JSON.stringify(stored(W.a));
+  assert.ok(!text.includes("2468") && !text.includes("8642"), "PIN in workspace state");
+  assert.equal((await pins(outC, "GET", null, "/api/staff-pins?workspace=" + W.a)).body.pins.length, 2);
+});
+
+await check("C: the supervisor assigns today's AWBs to Ali and Abu", async () => {
+  const awbs = ["NVMYINTPK0001", "NVMYINTPK0002"];
+  for (const awb of awbs) {
+    const r = await post(outC, "order", { awb, product: "cav", channel: "TikTok", package: "INT pack", expected: 2, date: mytToday }, { role: "outbound" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const id = stored(W.a).orders.find((o) => o.awb === awb).id;
+    assert.equal((await post(outC, "review-order", { id, pic: "S" }, { role: "outbound" })).status, 200);
+  }
+  const counted = stored(W.a).orders.filter((o) => o.date === mytToday && o.product === "cav").reduce((n, o) => n + o.expected, 0);
+  const count = await post(outC, "sort-count", { date: mytToday, product: "cav", counted, pic: "S", note: "INT count" }, { role: "outbound" });
+  assert.equal(count.status, 200, JSON.stringify(count.body));
+  aliAwb = stored(W.a).orders.find((o) => o.awb === awbs[0]).id;
+  abuAwb = stored(W.a).orders.find((o) => o.awb === awbs[1]).id;
+  for (const [id, packer] of [[aliAwb, ali], [abuAwb, abu]]) {
+    const r = await post(outC, "assign-orders", { ids: [id], packer, pic: "S" }, { role: "outbound" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  }
+});
+
+await check("C: on the shared packer sign-in, Ali taps his name, enters his PIN and records his own AWB", async () => {
+  await packers.page.goto("/?view=packing");
+  await packers.page.getByText("Who is packing?").waitFor();
+  await packers.page.locator("label.pic-option", { hasText: "Synthetic Ali" }).click();
+  await packers.page.locator('input[type="password"]').fill("1111");
+  await packers.page.getByRole("button", { name: /Open my AWBs/ }).click();
+  await packers.page.getByText("Wrong PIN. Try again.").waitFor();
+  await packers.page.locator('input[type="password"]').fill("2468");
+  await packers.page.getByRole("button", { name: /Open my AWBs/ }).click();
+  await packers.page.getByText(/Recording as/).waitFor();
+  await packers.page.getByText("NVMYINTPK0001").waitFor();
+  assert.equal(await packers.page.getByText("NVMYINTPK0002").count(), 0, "Abu's AWB visible to Ali");
+  await packers.page.locator("section.packing-card", { hasText: "NVMYINTPK0001" }).getByRole("button", { name: /Record what I packed/ }).click();
+  const dialog = packers.page.getByRole("dialog");
+  await dialog.locator('input[name="actual"]').fill("2");
+  await dialog.getByRole("button", { name: /Save my count/ }).click();
+  await dialog.waitFor({ state: "hidden" });
+  const o = stored(W.a).orders.find((x) => x.id === aliAwb);
+  assert.equal(o.actual, 2);
+  assert.equal(o.packer, ali);
+  assert.equal(o.packRecordedBy.userId, people.packerA.id);
+  assert.equal(sql(`select command from public.operator_commits where user_id='${people.packerA.id}' order by committed_at desc limit 1`), "pack-own");
+});
+
+await check("C: a packer cannot record another packer's AWB, re-record, or save without an unlocked PIN", async () => {
+  const before = revision(W.a);
+  const spoof = await post(packers, "pack-own", { id: abuAwb, actual: 2, packer: abu, pic: abu }, { role: "packer" });
+  assert.equal(spoof.status, 400, JSON.stringify(spoof.body));
+  assert.match(spoof.body.error, /assigned to another packer/);
+  const again = await post(packers, "pack-own", { id: aliAwb, actual: 1 }, { role: "packer" });
+  assert.equal(again.status, 400, JSON.stringify(again.body));
+  await packers.page.getByRole("button", { name: /^Done$/ }).click();
+  await packers.page.getByText("Who is packing?").waitFor();
+  const locked = await post(packers, "pack-own", { id: abuAwb, actual: 2 }, { role: "packer" });
+  assert.equal(locked.status, 403);
+  assert.equal(locked.body.code, "packer-locked");
+  // A forged or copied cookie for another account does not unlock anything.
+  const other = await session("packerA");
+  await other.context.addCookies([{ name: "operator-packer", value: "v1.x.y.z.1.ab", url: app + "/api" }]);
+  assert.equal((await post(other, "pack-own", { id: abuAwb, actual: 2 }, { role: "packer" })).status, 403);
+  await other.context.close();
+  for (const [path, method, body] of [
+    ["/api/staff-pins", "POST", { workspaceId: W.a, profileId: abu, pin: "0000" }],
+    ["/api/staff-pins?workspace=" + W.a, "GET", null],
+  ])
+    assert.equal((await pins(packers, method, body, path)).status, 403, method + " " + path);
+  const jwt = await token("packerA");
+  assert.equal((await rest("rpc/operator_set_staff_pin", jwt, { method: "POST", body: JSON.stringify({ p_workspace: W.a, p_profile: abu, p_pin: "0000" }) })).status, 403);
+  assert.ok(!(await rest("staff_pins", jwt)).ok, "PIN table exposed through the Data API");
+  assert.equal(revision(W.a), before);
+});
+
+await check("C: five wrong PINs lock the profile until the supervisor sets a new PIN", async () => {
+  const unlock = (pin) => pins(packers, "POST", { workspaceId: W.a, profileId: abu, pin }, "/api/packer-session");
+  for (let i = 0; i < 4; i++) assert.equal((await unlock("0000")).status, 403);
+  assert.equal((await unlock("0000")).status, 423);
+  assert.equal((await unlock("8642")).status, 423, "right PIN accepted while locked");
+  const status = (await pins(outC, "GET", null, "/api/staff-pins?workspace=" + W.a)).body.pins;
+  assert.ok(status.find((p) => p.profileId === abu).lockedUntil);
+  assert.equal((await pins(outC, "POST", { workspaceId: W.a, profileId: abu, pin: "97531" }, "/api/staff-pins")).status, 200);
+  assert.equal((await unlock("97531")).status, 200);
+  const r = await post(packers, "pack-own", { id: abuAwb, actual: 2 }, { role: "packer" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(stored(W.a).orders.find((o) => o.id === abuAwb).packer, abu);
+  // The supervisor still corrects a saved count, with a reason.
+  const fix = await post(outC, "correct", { id: abuAwb, field: "actual", qty: 1, reason: "INT recount" }, { role: "outbound" });
+  assert.equal(fix.status, 200, JSON.stringify(fix.body));
+  await pins(packers, "DELETE", null, "/api/packer-session");
+});
+
+await check("C: drivers share one sign-in; each trip keeps the typed driver name", async () => {
+  const d = await session("driverA");
+  for (const name of ["Synthetic Driver Ali", "Synthetic Driver Abu"]) {
+    await d.page.goto("/?view=trips");
+    await d.page.getByRole("button", { name: /Log a trip/ }).first().click();
+    const dialog = d.page.getByRole("dialog");
+    await dialog.locator('input[name="driver"]').fill(name);
+    await dialog.getByRole("button", { name: /Save trip/ }).click();
+    await dialog.waitFor({ state: "hidden" });
+    await d.page.getByText(name).first().waitFor();
+  }
+  const trips = stored(W.a).trips;
+  assert.deepEqual(trips.slice(0, 2).map((t) => t.driver), ["Synthetic Driver Abu", "Synthetic Driver Ali"]);
+  assert.ok(trips.slice(0, 2).every((t) => t.recordedBy.userId === people.driverA.id));
+  const unnamed = await post(d, "trip", { pickupAt: mytToday + "T08:00" }, { role: "driver" });
+  assert.equal(unnamed.status, 400);
+  await d.context.close();
+});
+await outC.context.close();
+await packers.context.close();
 
 await browser.close();
 const failed = results.filter((r) => r[0] === "FAIL");

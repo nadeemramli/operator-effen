@@ -29,6 +29,15 @@ import {
 } from "@/lib/access";
 import { validateImport } from "@/lib/awb-import";
 import { rebaseLoop, STALE_MESSAGE, type RebaseStep } from "@/lib/rebase";
+import { commandRules } from "@/lib/capabilities";
+import {
+  openPackerSession,
+  PACKER_COOKIE,
+  PACKER_IDLE_MS,
+  packerCookieOptions,
+  sealPackerSession,
+  type PackerSession,
+} from "@/lib/packer-session";
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, {
     status,
@@ -213,6 +222,8 @@ export async function POST(request: NextRequest) {
             name: roleLabel(role) + " (test view)",
             userId: user.id,
           },
+          // Fictional sandbox: no PINs; the previewed packer picks a sample profile.
+          performer: typeof input.profile === "string" ? input.profile : undefined,
         });
         if (operationId)
           recordOperation(state, {
@@ -266,6 +277,24 @@ export async function POST(request: NextRequest) {
       503,
     );
   const operationId: string = body.operationId ?? randomUUID();
+  // Shared packer sign-in: a packer's own count is saved only for the profile their PIN
+  // unlocked on this device (signed cookie), never for a profile named in the request.
+  let packer: PackerSession | null = null;
+  if (commandRules[type]?.capability === "packing.record") {
+    packer = openPackerSession(secret, request.cookies.get(PACKER_COOKIE)?.value, {
+      userId: user.id,
+      workspaceId: membership.workspaceId,
+    });
+    if (!packer)
+      return json(
+        {
+          error:
+            "Your packer session ended. Choose your name and enter your PIN again. Nothing was saved.",
+          code: "packer-locked",
+        },
+        403,
+      );
+  }
   const recorder: Recorder = {
     kind: "member",
     role: membership.role as Role,
@@ -340,6 +369,7 @@ export async function POST(request: NextRequest) {
         input,
         actor: recorder,
         capabilities: membership.capabilities,
+        performer: packer?.profileId,
       });
       if (
         outOfScopeKeys(
@@ -402,13 +432,20 @@ export async function POST(request: NextRequest) {
       result.data as { new_state: Draft; new_revision: number; replayed: boolean }[]
     )?.[0];
     if (!saved) return { stale: true };
-    return {
-      done: json({
-        state: withBatchReferences(saved.new_state),
-        revision: saved.new_revision,
-        replayed: saved.replayed,
-      }),
-    };
+    const response = json({
+      state: withBatchReferences(saved.new_state),
+      revision: saved.new_revision,
+      replayed: saved.replayed,
+      ...(packer ? { packerExpiresAt: Date.now() + PACKER_IDLE_MS } : {}),
+    });
+    // Each save keeps the packer's session open for another idle period.
+    if (packer)
+      response.cookies.set(
+        PACKER_COOKIE,
+        sealPackerSession(secret, { ...packer, expiresAt: Date.now() + PACKER_IDLE_MS }),
+        packerCookieOptions(PACKER_IDLE_MS),
+      );
+    return { done: response };
   }, staleResponse);
 }
 
