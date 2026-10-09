@@ -645,4 +645,103 @@ end $$;
 select pg_temp.expect(pg_temp.commit_as(:SACHET, :A, 'step',
   jsonb_set(pg_temp.state(), '{batches,0,target}', '7')), 'ok', 'cleared scope covers the bottle factory');
 
+-- 20261008: packer profiles and PINs for the shared packer sign-in. PINs live only in
+-- operator_private.staff_pins (bcrypt); the stock-out SV or HR sets them, packing.record
+-- verifies them, five wrong PINs lock the profile, and nobody reads the hashes.
+update public.operator_workspaces
+set state = state || '{"staffProfiles":[
+  {"id":"p-ali","name":"Synthetic Ali","role":"packer","active":true},
+  {"id":"p-old","name":"Synthetic Old","role":"packer","active":false},
+  {"id":"p-pic","name":"Synthetic PIC","role":"production"}]}'::jsonb
+where site_id = 'site-a';
+create function pg_temp.expect_text(p_actual text, p_expected text, p_label text) returns void
+language plpgsql as $$
+begin
+  if p_actual is distinct from p_expected then
+    raise exception 'FAIL: % expected %, got %', p_label, p_expected, p_actual; end if;
+end $$;
+create function pg_temp.expect_invalid(p_sql text, p_label text) returns void language plpgsql as $$
+begin
+  begin
+    execute p_sql;
+  exception when invalid_parameter_value then return;
+  end;
+  raise exception 'FAIL: % was not rejected', p_label;
+end $$;
+\set SO '''00000000-0000-4000-8000-000000000009'''
+\set PK '''00000000-0000-4000-8000-000000000002'''
+begin;
+select pg_temp.as_user(:SV);
+select pg_temp.expect_denied(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-ali', '2468'), 'production SV sets a packer PIN');
+rollback;
+begin;
+select pg_temp.as_user(:PK);
+select pg_temp.expect_denied(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-ali', '2468'), 'packer sets a packer PIN');
+select pg_temp.expect_denied(format('select * from public.operator_staff_pin_status(%s)', :'A'), 'packer reads PIN status');
+select pg_temp.expect_denied('select * from operator_private.staff_pins', 'packer reads PIN hashes');
+rollback;
+begin;
+select pg_temp.as_user(:SO);
+select pg_temp.expect_invalid(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-ali', '12a4'), 'non-numeric PIN');
+select pg_temp.expect_invalid(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-ali', '123'), 'three-digit PIN');
+select pg_temp.expect_invalid(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-old', '2468'), 'PIN for an inactive profile');
+select pg_temp.expect_invalid(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-pic', '2468'), 'PIN for a non-packer profile');
+select pg_temp.expect_invalid(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-nobody', '2468'), 'PIN for an unknown profile');
+select pg_temp.expect_denied(format('select public.operator_set_staff_pin(%s, %L, %L)', :'B', 'p-ali', '2468'), 'stock-out SV sets a PIN at another site');
+select public.operator_set_staff_pin(:A, 'p-ali', '2468');
+select pg_temp.expect_text((select count(*)::text from public.operator_staff_pin_status(:A) where profile_id = 'p-ali' and locked_until is null), '1', 'PIN status after set');
+commit;
+do $$ begin
+  if (select pin_hash from operator_private.staff_pins where profile_id = 'p-ali') !~ '^\$2[abxy]\$'
+    or exists (select 1 from operator_private.staff_pins where pin_hash like '%2468%') then
+    raise exception 'FAIL: PIN not stored as a bcrypt hash'; end if;
+  if (select state::text from public.operator_workspaces where site_id = 'site-a') like '%2468%' then
+    raise exception 'FAIL: PIN leaked into workspace state'; end if;
+end $$;
+begin;
+select pg_temp.as_user(:SV);
+select pg_temp.expect_denied(format('select public.operator_verify_staff_pin(%s, %L, %L)', :'A', 'p-ali', '2468'), 'production SV checks a packer PIN');
+rollback;
+begin;
+select pg_temp.as_user(:PK);
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '2468'), 'ok', 'right PIN');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-old', '2468'), 'unset', 'inactive profile');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-nobody', '2468'), 'unset', 'unknown profile');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '1111'), 'wrong', 'wrong PIN 1');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '1111'), 'wrong', 'wrong PIN 2');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', 'abcd'), 'wrong', 'wrong PIN 3');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', null), 'wrong', 'wrong PIN 4');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '1111'), 'locked', 'fifth wrong PIN locks');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '2468'), 'locked', 'right PIN while locked');
+select pg_temp.expect_denied(format('select public.operator_verify_staff_pin(%s, %L, %L)', :'B', 'p-ali', '2468'), 'packer checks a PIN at another site');
+commit;
+begin;
+select pg_temp.as_user(:SO);
+select pg_temp.expect_text((select count(*)::text from public.operator_staff_pin_status(:A) where locked_until is not null), '1', 'lock visible to the supervisor');
+select public.operator_set_staff_pin(:A, 'p-ali', '135790');
+commit;
+begin;
+select pg_temp.as_user(:PK);
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '2468'), 'wrong', 'old PIN after reset');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '135790'), 'ok', 'new PIN clears the lock');
+commit;
+do $$ begin
+  if (select failed_attempts from operator_private.staff_pins where profile_id = 'p-ali') <> 0 then
+    raise exception 'FAIL: a right PIN did not reset the wrong-PIN count'; end if;
+end $$;
+-- All-sites HR can set a PIN; the packer's own count is a signed commit like any other.
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000008');
+select public.operator_set_staff_pin(:A, 'p-ali', '9753');
+commit;
+select pg_temp.expect(pg_temp.commit_as(:PK, :A, 'pack-own',
+  jsonb_set(pg_temp.state(), '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(pg_temp.ev('e-pack', '00000000-0000-4000-8000-000000000002')))),
+  'ok', 'packer commits a signed pack-own');
+select pg_temp.expect(pg_temp.commit_as(:PK, :A, 'staff-profile-create',
+  jsonb_set(pg_temp.state(), '{staffProfiles}', '[]')), '42501', 'packer changes packer profiles');
+select pg_temp.expect(pg_temp.commit_as(:PK, :A, 'pack-own',
+  jsonb_set(pg_temp.state(), '{staffProfiles}', '[]')), '42501', 'pack-own outside its scope');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'staff-profile-update',
+  jsonb_set(pg_temp.state(), '{staffProfiles,0,name}', '"Synthetic Ali B"')), 'ok', 'stock-out SV renames a packer profile');
+
 select 'operator access tests passed' as result;
