@@ -69,3 +69,21 @@ test("the return path after sign-in stays on this site", () => {
   assert.equal(returnPath("/?view=orders\n"), "/");
   assert.equal(returnPath("/?" + "a".repeat(3000)), "/");
 });
+
+test("office admin can open Stock-in, Packing and Daily tally, and still opens on Input orders", () => {
+  for (const view of ["warehouse", "packing", "tally", "input", "orders", "overview", "feedback"])
+    assert.ok(allowedViews("admin").includes(view), view);
+  assert.equal(homeView("admin"), "input");
+  assert.equal(resolveView("admin", null), "input");
+  assert.equal(resolveView("admin", "warehouse"), "warehouse");
+  assert.equal(resolveView("admin", "tally"), "tally");
+  assert.equal(resolveView("admin", "packing"), "packing");
+  // Still not production, trips or reports.
+  for (const view of ["production", "trips", "reports"])
+    assert.equal(resolveView("admin", view), "input", view);
+});
+
+test("view-only access for admin: no stock or fulfilment capability was added", async () => {
+  const { roleCapabilities } = await import("../apps/web/src/lib/capabilities.ts");
+  assert.deepEqual(roleCapabilities.admin, ["orders.import", "orders.enter", "sources.read", "feedback.post"]);
+});
