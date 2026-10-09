@@ -162,8 +162,9 @@ are never converted into box inventory. Previously counted boxes remain stock.
   old day's checkpoint is flagged because its order set changed.
 
 TikTok printing does not sync orders into Operator. No TikTok API, printer listener,
-camera scanner or automatic ingestion integration has been added. Refresh retrieves
-other users' changes; optimistic revision checks prevent concurrent overwrites.
+camera scanner or automatic ingestion integration has been added. Other users'
+changes load automatically (see "Shared records and conflicts" below); a save never
+overwrites a change it did not see.
 
 #### Staff accounts
 
@@ -275,3 +276,16 @@ refresh never passes through another role's screens. Management's "view as" lens
 for the browser tab, refreshes included, and ends with it. Signing in again after a
 refresh or an expired session returns to the screen that was open; only paths on this
 site are accepted as the return address.
+
+### Shared records and conflicts (9 October 2026)
+
+All of a site's records are still one document with one revision. A save no longer fails
+just because someone else saved first: the server loads the latest records, re-applies the
+change on top (re-running every check against them) and commits, up to three attempts. Only
+a real conflict on the same record (for example a stage edit based on a version someone else
+already changed) is refused; the screen then loads the latest version, keeps the open form
+with its values and offers **Try again**. Screens refresh on their own when the tab becomes
+visible again and every minute while no form is open. Errors appear next to the button that
+caused them, in a high-contrast box, and page-level errors also appear at the bottom of the
+screen.
+

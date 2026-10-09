@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Panel, units } from "./draft-primitives";
+import { FormError, Panel, units } from "./draft-primitives";
 import {
   products,
   today,
@@ -43,6 +43,7 @@ type Props = {
   onCommand: (
     type: string,
     input: Record<string, unknown>,
+    options?: { onError?: (message: string) => void },
   ) => Promise<Draft | null>;
   children: ReactNode;
 };
@@ -67,7 +68,8 @@ export function AwbIntake({
     [progress, setProgress] = useState(""),
     [error, setError] = useState(""),
     [dirty, setDirty] = useState(false),
-    [forceOcr, setForceOcr] = useState(false);
+    [forceOcr, setForceOcr] = useState(false),
+    [receiveError, setReceiveError] = useState("");
   const [filter, setFilter] = useState("all"),
     [preview, setPreview] = useState<{ file: ImportFile; page: number } | null>(
       null,
@@ -210,7 +212,7 @@ export function AwbIntake({
       setScreen("review");
       setSelected(b.rows[0]?.id ?? "");
       setDirty(true);
-      const saved = await onCommand("import-save", { batch: b });
+      const saved = await onCommand("import-save", { batch: b }, { onError: setError });
       if (saved) open(saved.awbImports!.find((x) => x.id === b.id)!);
     } catch (e) {
       setError(
@@ -237,11 +239,15 @@ export function AwbIntake({
   async function save(release = false) {
     if (!batch) return;
     setError("");
-    const saved = await onCommand("import-save", { batch });
+    const saved = await onCommand("import-save", { batch }, { onError: setError });
     if (!saved) return;
     open(saved.awbImports!.find((b) => b.id === batch.id)!);
     if (release) {
-      const released = await onCommand("import-release", { id: batch.id });
+      const released = await onCommand(
+        "import-release",
+        { id: batch.id },
+        { onError: setError },
+      );
       if (released) open(released.awbImports!.find((b) => b.id === batch.id)!);
     }
   }
@@ -299,11 +305,6 @@ export function AwbIntake({
           </Button>
         ))}
       </nav>
-      {error && (
-        <div className="form-error" role="alert">
-          {error}
-        </div>
-      )}
       {screen === "register" ? children : null}
       {screen === "upload" && (
         <Panel
@@ -407,6 +408,7 @@ export function AwbIntake({
                 "Teks dibaca dahulu; halaman imej menggunakan OCR secara automatik. Biarkan halaman ini terbuka semasa pemprosesan. Jumlah diekstrak memerlukan pengesahan Admin.",
               )}
             </p>
+            <FormError message={error} />
             <div className="awb-actions">
               {processing ? (
                 <>
@@ -510,6 +512,7 @@ export function AwbIntake({
               )}
             </div>
           </div>
+          <FormError message={error} />
           {batch.confirmedAt ? (
             <div className="inline-note">
               <Check size={17} />
@@ -574,11 +577,13 @@ export function AwbIntake({
               className="awb-receive"
               onSubmit={async (e) => {
                 e.preventDefault();
+                setReceiveError("");
                 const pic = String(new FormData(e.currentTarget).get("pic"));
-                const saved = await onCommand("import-receive", {
-                  id: batch.id,
-                  pic,
-                });
+                const saved = await onCommand(
+                  "import-receive",
+                  { id: batch.id, pic },
+                  { onError: setReceiveError },
+                );
                 if (saved)
                   open(saved.awbImports!.find((b) => b.id === batch.id)!);
               }}
@@ -587,6 +592,7 @@ export function AwbIntake({
                 {t("Received by", "Diterima oleh")}
                 <Input name="pic" required maxLength={100} />
               </label>
+              <FormError message={receiveError} />
               <Button type="submit" disabled={busy}>
                 {t("Acknowledge receipt", "Sahkan penerimaan")}
               </Button>

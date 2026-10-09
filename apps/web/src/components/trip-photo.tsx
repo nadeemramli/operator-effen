@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
+import { FormError } from "./form-error";
 import {
   Dialog,
   DialogContent,
@@ -143,11 +144,7 @@ export function TripPhotoInput({
         // eslint-disable-next-line @next/next/no-img-element
         <img src={preview} alt={t("Selected trip photo", "Gambar perjalanan dipilih")} />
       )}
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
-      )}
+      <FormError message={error} />
     </div>
   );
 }
