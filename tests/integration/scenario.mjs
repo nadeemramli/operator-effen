@@ -65,7 +65,11 @@ for (const p of Object.values(people))
   if (p.role)
     sql(`insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values (${p.ws ? `'${p.ws}'` : "null"}, '${p.id}', '${p.role}', '${p.name}', '${p.scope ?? "site"}')`);
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+// PW_CHROMIUM points at a system Chromium (the cloud container keeps one at
+// /opt/pw-browsers/chromium); otherwise Playwright's own installed browser is used.
+const browser = await chromium.launch(
+  process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {},
+);
 async function session(key) {
   const context = await browser.newContext({ baseURL: app, viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
@@ -198,6 +202,8 @@ await check("A: machines added by production are shared with stock-in", async ()
     assert.equal(r.status, 200, JSON.stringify(r.body));
   }
   await intake.page.goto("/?view=warehouse");
+  // The machine list sits behind the gear button on the Stock-in page.
+  await intake.page.getByRole("button", { name: "Sachet machines" }).click();
   await intake.page.getByText("INT Holo Alpha").first().waitFor();
 });
 
