@@ -137,6 +137,13 @@ are never converted into box inventory. Previously counted boxes remain stock.
   manually enter an AWB, including keyboard-style barcode input, without a PDF.
   Manual entries must be reviewed before joining demand; pending records can be edited.
   Scanning a barcode supplies only the reference, not the parcel contents.
+  Since 9 October 2026 PDF intake reads text first and runs OCR automatically on any page
+  whose text has no AWB and no order reference ("Force OCR on every page" remains as a slow,
+  unticked fallback). Pages with no tracking number, order reference or known SKU (cover,
+  title or separator pages, on any page number) produce no label and are counted as
+  skipped in the review summary; **Add missed label** can still point at one. A label read
+  by OCR is marked "compare with the PDF" but does not block confirmation. Only labels with
+  a real problem need the "I checked" box, and only excluding a label needs a note.
 - **Order management:** Filter by Malaysia fulfilment day, product/brand, package,
   or AWB/order/channel text. Package summaries show AWBs and required bottle/box units.
 - **Incoming orders:** Record already-printed labels, then save the supervisor's
