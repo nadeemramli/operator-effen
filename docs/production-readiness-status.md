@@ -1,4 +1,4 @@
-# Production readiness — status review (9 October 2026)
+# Production readiness — status review (9 October 2026, updated 11 October)
 
 Status: review of the repository and hosted configuration against the
 [readiness plan](production-readiness-plan.md) and [execution backlog](production-readiness-backlog.md).
@@ -12,6 +12,24 @@ model allows) is implemented and tested well beyond what the plan assumed at pub
 Workstreams #8, #11, #12, #13 and #14 have not started. The tracking process the backlog
 prescribes is not being followed: no issue carries evidence or ticked acceptance boxes, and
 the live database runs one migration that `main` does not yet contain.
+
+## Update, 11 October 2026
+
+Between the review and this update the October floor improvements plan (ten work packages,
+pull requests #21 to #32) merged and its three migrations were applied; the live schema and
+`main` now carry the same ten migrations, so the schema-drift finding below is closed. CI
+gained an `integration` job that runs the migration rehearsal with rollback and the
+real-stack browser scenarios on every push, which closes the "CI skips the strongest tests"
+finding except for a dependency-audit step. Workstream #10 moved: on a revision mismatch the
+server now reloads the latest records and re-applies the command (up to three attempts), so
+unrelated saves at a site no longer conflict; the records are still one document per site.
+
+Still pending from the recommended order: leaked-password protection is still disabled in
+Supabase Auth; MFA for HR and management is undecided; the two `operator_private` tables
+still have RLS off and the two foreign keys are still unindexed; no readiness issue has
+received evidence or a ticked box since 1 October; workstreams #8, #11, #12, #13 and #14
+have not started. The browser security policy and dependency patches from this review are
+on their branch awaiting merge.
 
 ## What this review changed
 
@@ -153,31 +171,28 @@ pilot, load, outage or restore gates the plan requires; the owner accepted that 
 
 ## Process findings
 
-1. **Schema drift.** The live project has seven migrations applied; `main` carries six.
-   `20261008090000_operator_packer_self_entry` (packer PINs, `operator_private.staff_pins`,
-   four new RPCs) is applied to the live database but lives only on the open pull request
+1. **Schema drift (closed 9 October).** At review time the live project had seven
+   migrations applied and `main` six; the packer-PIN migration lived only on pull request
    [nadeemramli/operator-effen#20](https://github.com/nadeemramli/operator-effen/pull/20).
-   The production deployment is built from `main`, so the app that staff use does not
-   contain the code that goes with the live schema. Decide: merge #20 (after review of the
-   PIN verification path for rate limiting and lockout) or roll the migration back with its
-   `.down.sql`. Pull request [#19](https://github.com/nadeemramli/operator-effen/pull/19)
-   carries only the factory-scope rollout record and should be merged.
+   Both #19 and #20 have merged and the floor-improvement migrations were applied with the
+   same discipline (applied, then the PR merged); `main` and the live project agree.
 2. **No evidence on the issues.** Every acceptance box on #8–#14 is unticked and none of
    the issues has a comment, although #9 and #10 have substantial, dated evidence in the
    repository. Use the backlog's evidence template on #9 and #10 now; it is what the plan
    says closes a workstream.
-3. **CI does not run the strongest tests.** `supabase/tests/operator_access.test.sql` and
-   `tests/integration/scenario.mjs` only run by hand. Add a PostgreSQL service job for the
-   SQL tests and a `pnpm audit --prod --audit-level=high` step.
+3. **CI does not run the strongest tests (closed 9 October, one item left).** The
+   `integration` job now runs `scripts/verify-migrations-local.sh` and
+   `tests/integration/run-real-stack.sh` on every push. Still missing: a
+   `pnpm audit --prod --audit-level=high` step.
 4. **Documentation drift.** The README described a pre-authentication placeholder; fixed
    in this review. Keep the go-live record (currently on #19 and #20) on `main`.
 
 ## Recommended order of work
 
-1. Settle #19 and #20 so `main`, the deployment and the live schema agree.
+1. ~~Settle #19 and #20 so `main`, the deployment and the live schema agree.~~ Done.
 2. Enable leaked-password protection; decide and record MFA for HR and management; next
    migration: RLS on the two `operator_private` tables and the two missing indexes.
-3. Run the SQL access tests and dependency audit in CI.
+3. ~~Run the SQL access tests~~ (done) and the dependency audit in CI.
 4. Post evidence on #9 and #10 with the template; tick what passes; leave the one-revision
    item on #10 open.
 5. Start #8 on real devices and the factory connection; without it #11 and #12 have no

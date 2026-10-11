@@ -10,22 +10,23 @@ The [production readiness plan](docs/production-readiness-plan.md) and [executio
 
 Confirmed sizing: 7–10 packers on phones, up to 2 production users and 2 supervisors on laptops (11–14 concurrent users). Architecture and release targets are proposals; publishing this plan does not establish live factory readiness. See the dated baseline and decision register before continuing on another computer.
 
+The [readiness status review](docs/production-readiness-status.md) (9 October 2026, updated
+11 October) records what each workstream has implemented, the evidence for it, and what
+remains open.
+
 ## Floor improvements (October 2026)
 
 The [floor improvements plan](docs/floor-improvements-plan-2026-10.md) covers the owner's
 October request list: capsule QC count, Adypocide factory/warehouse stage split, stock
 returns, driver assistants and drop-offs, daily tally inventory, admin screen access, PDF
 intake changes, packer self-declared counts, the shared-records conflict bug and error
-visibility. It is a plan; nothing in it is live until its PRs merge and the owner applies the
-migrations it lists.
-
-The [readiness status review](docs/production-readiness-status.md) (9 October 2026) records what
-each workstream has implemented, the evidence for it, and what remains open.
+visibility. All ten packages merged and their migrations were applied on 2026-10-09; see the
+rollout record in [role-based entry](docs/sv-entry-and-sachet-route.md#floor-improvements-rollout-2026-10-09-owner-approved).
 
 ## Stack
 
 - Node.js 24 (see `.nvmrc`), pnpm 11.16.0
-- Next.js 16.3.5, React 19.2.4, TypeScript
+- Next.js 16.3.8, React 19.2.4, TypeScript
 - Tailwind CSS 4, shadcn-compatible theme, Geist typography
 - Supabase for the operational database, authentication and private file storage; CLI pinned to 2.117.0
 - Vercel for hosting
