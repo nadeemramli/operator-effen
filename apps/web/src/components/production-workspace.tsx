@@ -28,6 +28,7 @@ import {
 export { ProcessPicHistory } from "./sachet-records";
 import {
   Empty,
+  FormError,
   Panel,
   ProductName,
   fmt,
@@ -41,6 +42,13 @@ import {
   batchComplete,
   batchTransferred,
   batchRoute,
+  factoryStagesDone,
+  isFactoryStage,
+  routeStages,
+  stageDone,
+  stageStep,
+  warehouseStages,
+  isQcStep,
   products,
   product,
   stepNames,
@@ -107,6 +115,7 @@ export function ProductionWorkspace({
   command: (
     type: string,
     input: Record<string, unknown>,
+    options?: { onError?: (message: string) => void },
   ) => Promise<Draft | null>;
   show: (spec: FormSpec) => void;
   pic: (name?: string, label?: string) => Field;
@@ -116,6 +125,23 @@ export function ProductionWorkspace({
   const router = useRouter(),
     params = useSearchParams();
   const t = (en: string, ms: string) => tr(lang, en, ms);
+  const qcField: Field = {
+    name: "qc",
+    label: t("QC result", "Keputusan QC"),
+    type: "select",
+    value: "not-recorded",
+    options: [
+      {
+        value: "not-recorded",
+        label: t("Not recorded / not checked", "Tidak direkod / tidak diperiksa"),
+      },
+      { value: "pass", label: t("Checked — passed", "Diperiksa — lulus") },
+      {
+        value: "issue",
+        label: t("Checked — issue found", "Diperiksa — isu ditemui"),
+      },
+    ],
+  };
   const mode = params.get("production");
   const tab: ProductionView =
     mode === "plan" || mode === "history" || mode === "machines"
@@ -307,24 +333,40 @@ export function ProductionWorkspace({
                       onClick={() =>
                         show({
                           type: "step",
-                          title: stepNames(b)[i][lang === "ms" ? 1 : 0],
+                          title: isQcStep(b, i)
+                            ? stepNames(b)[i][lang === "ms" ? 1 : 0] +
+                              " · " +
+                              t(
+                                "QC count (finished bottles)",
+                                "Kiraan QC (botol siap)",
+                              )
+                            : stepNames(b)[i][lang === "ms" ? 1 : 0],
                           description:
                             b.code +
                             " · " +
-                            t(
-                              "Enter completed output and the actual performer.",
-                              "Masukkan hasil siap dan pelaksana sebenar.",
-                            ),
+                            (isQcStep(b, i)
+                              ? t(
+                                  "Enter the QC count of finished bottles at the end of the line. It becomes the batch's finished quantity.",
+                                  "Masukkan kiraan QC botol siap di hujung barisan. Ia menjadi kuantiti siap kelompok.",
+                                )
+                              : t(
+                                  "Record who ran this machine. No output count is needed; QC counts the finished bottles on the last step.",
+                                  "Rekod siapa yang menjalankan mesin ini. Tiada kiraan hasil diperlukan; QC mengira botol siap pada langkah terakhir.",
+                                )),
                           hidden: { id: b.id, step: i },
                           fields: [
                             { ...pic(), value: step.pic || undefined },
-                            number(
-                              "qty",
-                              t("Output quantity", "Jumlah hasil") +
-                                " (" +
-                                units(lang, batchUnit(b)) +
-                                ")",
-                            ),
+                            ...(isQcStep(b, i)
+                              ? [
+                                  number(
+                                    "qty",
+                                    t(
+                                      "QC count (finished bottles)",
+                                      "Kiraan QC (botol siap)",
+                                    ),
+                                  ),
+                                ]
+                              : []),
                             {
                               name: "start",
                               label: t("Start time", "Masa mula"),
@@ -337,38 +379,9 @@ export function ProductionWorkspace({
                               type: "time",
                               required: false,
                             },
-                            {
-                              name: "qc",
-                              label: t(
-                                "QC result, if performed",
-                                "Keputusan QC, jika dilakukan",
-                              ),
-                              type: "select",
-                              value: "not-recorded",
-                              options: [
-                                {
-                                  value: "not-recorded",
-                                  label: t(
-                                    "Not recorded / not checked",
-                                    "Tidak direkod / tidak diperiksa",
-                                  ),
-                                },
-                                {
-                                  value: "pass",
-                                  label: t(
-                                    "Checked — passed",
-                                    "Diperiksa — lulus",
-                                  ),
-                                },
-                                {
-                                  value: "issue",
-                                  label: t(
-                                    "Checked — issue found",
-                                    "Diperiksa — isu ditemui",
-                                  ),
-                                },
-                              ],
-                            },
+                            ...(isQcStep(b, i)
+                              ? [qcField]
+                              : []),
                           ],
                         })
                       }
@@ -405,11 +418,18 @@ export function ProductionWorkspace({
                           </small>
                         )}
                       </span>
-                      {step.done ? (
+                      {step.done &&
+                      (isQcStep(b, i) || step.qty !== null) ? (
                         <span className="process-output">
                           <span>{fmt(step.qty ?? 0)}</span>
-                          <small>{units(lang, batchUnit(b))}</small>
+                          <small>
+                            {isQcStep(b, i)
+                              ? t("QC count", "Kiraan QC")
+                              : units(lang, batchUnit(b))}
+                          </small>
                         </span>
+                      ) : step.done ? (
+                        <Check size={14} className="process-add" />
                       ) : (
                         <Plus size={14} className="process-add" />
                       )}
@@ -543,7 +563,10 @@ export function ProductionWorkspace({
           defaultDate={workDate}
           peopleOptions={pic().options ?? []}
           onSave={async (input) => {
-            const result = await command("batch", input);
+            let error = "";
+            const result = await command("batch", input, {
+              onError: (message) => (error = message),
+            });
             if (result)
               router.push(
                 href(
@@ -552,6 +575,7 @@ export function ProductionWorkspace({
                   result.batches[0].date,
                 ).replace(/&factory=[^&]+/, ""),
               );
+            return error;
           }}
         />
       ) : tab === "history" ? (
@@ -809,8 +833,8 @@ function AdypocideProductionCard({
       </div>
       <p className="field-hint mt-4">
         {t(
-          "Record who actually performed each stage of this batch's route. A planned PIC is not completed work. Finished boxes are counted at stock-in.",
-          "Rekod siapa yang sebenarnya melakukan setiap peringkat laluan kelompok ini. PIC dirancang bukan kerja yang siap. Kotak siap dikira semasa stok masuk.",
+          "Record the mixing and filling PICs, then send the batch to the warehouse. Batching, hologram and wrapping are recorded by stock-in before the box count.",
+          "Rekod PIC pengadunan dan pengisian, kemudian hantar kelompok ke gudang. Nombor kelompok, hologram dan balutan direkod oleh stok masuk sebelum kiraan kotak.",
         )}
       </p>
       <StageRecords
@@ -820,20 +844,50 @@ function AdypocideProductionCard({
         show={show}
         pic={pic}
         role={role}
+        stageFilter="factory"
       />
+      {warehouseStages(b).length > 0 && (
+        <div className="warehouse-stage-list">
+          <small className="text-muted-foreground">
+            {t("Recorded at stock-in", "Direkod semasa stok masuk")}
+          </small>
+          <ul>
+            {routeStages(b)
+              .filter((stage) => !isFactoryStage(stage.id))
+              .map((stage) => {
+                const step = stageStep(b, stage.id);
+                return (
+                  <li key={stage.id}>
+                    <span>{t(stage.en, stage.ms)}</span>
+                    <span
+                      className={
+                        "status-pill " +
+                        (stageDone(b, stage.id) ? "tone-success" : "tone-muted")
+                      }
+                    >
+                      {stageDone(b, stage.id)
+                        ? step!.pic
+                        : t("Not yet", "Belum")}
+                    </span>
+                  </li>
+                );
+              })}
+          </ul>
+        </div>
+      )}
       <div className="batch-footer">
         <small>{b.date}</small>
         <Button
           size="sm"
           variant="outline"
-          disabled={sent || needsReview || !batchComplete(b)}
+          disabled={sent || needsReview || !factoryStagesDone(b)}
           onClick={() =>
             show({
               type: "transfer",
               title: t("Send batch to warehouse", "Hantar kelompok ke gudang"),
               description: t(
-                "Confirm that every stage in this batch's route has an actual PIC. Stock-in will count finished boxes after boxing.",
-                "Sahkan setiap peringkat dalam laluan kelompok ini mempunyai PIC sebenar. Stok masuk akan mengira kotak siap selepas pengkotakan.",
+                "Confirm that mixing and filling have an actual PIC. Stock-in records batching, hologram and wrapping, then counts finished boxes.",
+                "Sahkan pengadunan dan pengisian mempunyai PIC sebenar. Stok masuk merekod nombor kelompok, hologram dan balutan, kemudian mengira kotak siap.",
               ),
               hidden: { id: b.id },
               fields: [pic()],
@@ -866,10 +920,12 @@ function BatchPlanForm({
   defaultDate: string;
   peopleOptions: { value: string; label: string }[];
   backHref: string;
-  onSave: (input: Record<string, unknown>) => Promise<void>;
+  /** Resolves to an error message, or "" once saved. */
+  onSave: (input: Record<string, unknown>) => Promise<string>;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [productId, setProductId] = useState(defaultProduct);
+  const [error, setError] = useState("");
   const route = isSachet(productId)
     ? sachetRoutes[currentSachetRoute].stages.map((key) => {
         const stage = sachetStage(key)!;
@@ -888,7 +944,10 @@ function BatchPlanForm({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void onSave(Object.fromEntries(new FormData(e.currentTarget)));
+          setError("");
+          void onSave(Object.fromEntries(new FormData(e.currentTarget))).then(
+            setError,
+          );
         }}
       >
         {isSachet(productId) && (
@@ -982,12 +1041,12 @@ function BatchPlanForm({
               <p>
                 {isSachet(productId)
                   ? t(
-                      "Five fixed stages, including Hologram. Assign planned PICs now or later; planning does not mark a stage complete. No sachet quantity is required.",
-                      "Lima peringkat tetap, termasuk Hologram. Tetapkan PIC dirancang sekarang atau kemudian; perancangan tidak menandakan peringkat siap. Kuantiti sachet tidak diperlukan.",
+                      "Five fixed stages. Production records mixing and filling; the warehouse records batching, hologram and wrapping during stock-in. Planning does not mark a stage complete. No sachet quantity is required.",
+                      "Lima peringkat tetap. Pengeluaran merekod pengadunan dan pengisian; gudang merekod nombor kelompok, hologram dan balutan semasa stok masuk. Perancangan tidak menandakan peringkat siap. Kuantiti sachet tidak diperlukan.",
                     )
                   : t(
-                      "Assign PICs now or later. Record completed output in the production log when the work takes place.",
-                      "Pilih PIC sebenar dan masukkan hasil apabila setiap proses direkodkan dalam log pengeluaran.",
+                      "Assign PICs now or later. The QC count is recorded on the last step.",
+                      "Tetapkan PIC sekarang atau kemudian. Kiraan QC direkod pada langkah terakhir.",
                     )}
               </p>
             </div>
@@ -1032,8 +1091,8 @@ function BatchPlanForm({
           <p className="field-hint">
             {isSachet(productId)
               ? t(
-                  "Save the batch, record every machine and PIC involved, then send the batch to the warehouse for boxing.",
-                  "Simpan kelompok, rekod setiap mesin dan PIC terlibat, kemudian hantar kelompok ke gudang untuk pengkotakan.",
+                  "Save the batch, record the mixing and filling machines and PICs, then send the batch to the warehouse.",
+                  "Simpan kelompok, rekod mesin dan PIC pengadunan dan pengisian, kemudian hantar kelompok ke gudang.",
                 )
               : t(
                   "Planning does not create finished stock. Actual output and sending stock to fulfilment are recorded after the work takes place.",
@@ -1041,6 +1100,7 @@ function BatchPlanForm({
                 )}
           </p>
         </fieldset>
+        <FormError message={error} className="mt-4" />
         <div className="plan-actions">
           <Button asChild variant="outline">
             <Link href={backHref}>{t("Cancel", "Batal")}</Link>
@@ -1141,7 +1201,7 @@ function BatchRecord({
               {[
                 t("Process", "Proses"),
                 t("Person responsible (PIC)", "Orang bertanggungjawab (PIC)"),
-                t("Output", "Hasil"),
+                t("QC count", "Kiraan QC"),
                 t("Time", "Masa"),
                 t("QC record", "Rekod QC"),
               ].map((h) => (
@@ -1177,9 +1237,10 @@ function BatchRecord({
                   )}
                   <ProcessPicHistory step={s} lang={lang} />
                 </td>
-                <td data-label={t("Output", "Hasil")}>
+                <td data-label={t("QC count", "Kiraan QC")}>
+                  {/* Machine steps have no output; older records may still carry one. */}
                   {s.qty ?? "—"}
-                  <small>{units(lang, batchUnit(b))}</small>
+                  {s.qty !== null && <small>{units(lang, batchUnit(b))}</small>}
                 </td>
                 <td data-label={t("Time", "Masa")}>
                   {s.start || "—"} – {s.end || "—"}

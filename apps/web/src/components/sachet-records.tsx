@@ -23,9 +23,11 @@ import {
 import { PersonBadge } from "./person-profile";
 import { Empty, Panel, ProductName, type Field, type FormSpec } from "./draft-primitives";
 import {
+  adypocideReceipts,
   batchComplete,
   batchRoute,
   batchTransferred,
+  isFactoryStage,
   isSachet,
   product,
   recorderLabel,
@@ -399,6 +401,7 @@ export function StageRecords({
   show,
   pic,
   role,
+  stageFilter,
 }: {
   batch: Batch;
   state: Draft;
@@ -406,11 +409,25 @@ export function StageRecords({
   show?: Show;
   pic?: Pic;
   role?: Role;
+  /** Show only the factory stages (production) or only the warehouse stages (stock-in). */
+  stageFilter?: "factory" | "warehouse";
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const editable = !!show && !!pic;
   const sent = batchTransferred(b);
-  const stages = routeStages(b);
+  const boxed = adypocideReceipts(state).some(
+    (r) => r.batchId === b.id && !!r.stockedAt,
+  );
+  // Factory stages close at transfer; warehouse stages stay open until the box count.
+  const closed = (key: string) => sent && (isFactoryStage(key) || boxed);
+  // Changes after transfer are revisions, except warehouse stages before the box count.
+  const revised = (key: string) => closed(key);
+  const route = routeStages(b);
+  const stages = route.filter(
+    (stage) =>
+      !stageFilter ||
+      (stageFilter === "factory") === isFactoryStage(stage.id),
+  );
   const legacy = b.steps
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => !step.sachetStage && step.done);
@@ -473,7 +490,7 @@ export function StageRecords({
           : t("Correct completion time", "Betulkan masa siap"),
       description:
         `${b.code} · ${t(stage.en, stage.ms)}` +
-        (sent
+        (revised(stage.id)
           ? " · " +
             t(
               "This batch is already transferred. The correction is flagged as a revision; stock and transfer records are not changed.",
@@ -504,13 +521,13 @@ export function StageRecords({
           </tr>
         </thead>
         <tbody>
-          {stages.map((stage, position) => {
+          {stages.map((stage) => {
             const step = stageStep(b, stage.id);
             const index = step ? b.steps.indexOf(step) : -1;
             return (
               <tr key={stage.id}>
                 <td data-label={t("Stage / machine", "Peringkat / mesin")}>
-                  {position + 1}. {t(stage.en, stage.ms)}
+                  {route.indexOf(stage) + 1}. {t(stage.en, stage.ms)}
                   {step?.done && (
                     <small>
                       {step.machineName ??
@@ -548,7 +565,7 @@ export function StageRecords({
                     </small>
                   ))}
                   <div className="stage-actions">
-                  {editable && !step?.done && !sent && (
+                  {editable && !step?.done && !closed(stage.id) && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -580,7 +597,7 @@ export function StageRecords({
                       >
                         {t("Correct time", "Betulkan masa")}
                       </Button>
-                      {!sent && (
+                      {!closed(stage.id) && (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -607,7 +624,7 @@ export function StageRecords({
               </tr>
             );
           })}
-          {legacy.map(({ step, index }) => (
+          {stageFilter !== "warehouse" && legacy.map(({ step, index }) => (
             <tr key={`legacy-${index}`}>
               <td data-label={t("Historical record", "Rekod terdahulu")}>
                 {stepNames(b)[index][lang === "ms" ? 1 : 0]}
@@ -639,7 +656,9 @@ export function StageRecords({
           ))}
         </tbody>
       </table>
-      <RouteReview batch={b} lang={lang} show={show} role={role} />
+      {stageFilter !== "warehouse" && (
+        <RouteReview batch={b} lang={lang} show={show} role={role} />
+      )}
     </div>
   );
 }

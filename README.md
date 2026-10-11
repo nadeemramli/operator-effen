@@ -10,6 +10,15 @@ The [production readiness plan](docs/production-readiness-plan.md) and [executio
 
 Confirmed sizing: 7–10 packers on phones, up to 2 production users and 2 supervisors on laptops (11–14 concurrent users). Architecture and release targets are proposals; publishing this plan does not establish live factory readiness. See the dated baseline and decision register before continuing on another computer.
 
+## Floor improvements (October 2026)
+
+The [floor improvements plan](docs/floor-improvements-plan-2026-10.md) covers the owner's
+October request list: capsule QC count, Adypocide factory/warehouse stage split, stock
+returns, driver assistants and drop-offs, daily tally inventory, admin screen access, PDF
+intake changes, packer self-declared counts, the shared-records conflict bug and error
+visibility. It is a plan; nothing in it is live until its PRs merge and the owner applies the
+migrations it lists.
+
 The [readiness status review](docs/production-readiness-status.md) (9 October 2026) records what
 each workstream has implemented, the evidence for it, and what remains open.
 
@@ -118,8 +127,11 @@ are evidence of recorded work, not a physical guarantee of parcel contents.
 New sachet batches use the versioned five-stage route under one batch number: Mixer
 machine (mixing), Sachet filling machine (filling), Inkjet printer (batching), Hologram
 machine, and Shrink machine (plastic wrapping). Each stage records its actual PIC and
-optionally the physical machine and actual time, with no sachet quantities. All five
-actual stage records are required before warehouse handoff. Completed four-stage batches
+optionally the physical machine and actual time, with no sachet quantities. Since 9 October
+2026 production records the two factory stages (mixing, filling) and sends the batch to the
+warehouse once both have a PIC; stock-in records batching, hologram and wrapping on the
+receipt, and the box count can be finalized only when all five stages have a PIC (migration
+`20261009090001_operator_warehouse_stages.sql`). Completed four-stage batches
 keep their historical route; unfinished ones need an explicit route review. Production
 and Stock-in edit the same stage records. See
 [role-based entry and the five-stage route](docs/sv-entry-and-sachet-route.md).
@@ -140,6 +152,13 @@ are never converted into box inventory. Previously counted boxes remain stock.
   manually enter an AWB, including keyboard-style barcode input, without a PDF.
   Manual entries must be reviewed before joining demand; pending records can be edited.
   Scanning a barcode supplies only the reference, not the parcel contents.
+  Since 9 October 2026 PDF intake reads text first and runs OCR automatically on any page
+  whose text has no AWB and no order reference ("Force OCR on every page" remains as a slow,
+  unticked fallback). Pages with no tracking number, order reference or known SKU (cover,
+  title or separator pages, on any page number) produce no label and are counted as
+  skipped in the review summary; **Add missed label** can still point at one. A label read
+  by OCR is marked "compare with the PDF" but does not block confirmation. Only labels with
+  a real problem need the "I checked" box, and only excluding a label needs a note.
 - **Order management:** Filter by Malaysia fulfilment day, product/brand, package,
   or AWB/order/channel text. Package summaries show AWBs and required bottle/box units.
 - **Incoming orders:** Record already-printed labels, then save the supervisor's
@@ -147,22 +166,32 @@ are never converted into box inventory. Previously counted boxes remain stock.
   Issue stock from a rack carton to selected AWBs, then assign them to a packer.
   Each issue retains carton/batch traceability. Bulk issues fill remaining AWB demand
   in displayed order; they cannot overdraw stock or silently allocate excess units.
-- **Packing station:** The stock-out supervisor selects a packer and records the
-  actual packed count for that packer. Unassigned AWBs are rejected; a different actual
-  packer needs a reason. Packers do not save records. Saved counts require a supervisor
-  correction.
+- **Packing station:** On the shared packer sign-in, each packer taps their name, enters
+  their own PIN and records the actual packed count for the AWBs assigned to them. The
+  stock-out supervisor sets up packer profiles and PINs, can also record for a packer (a
+  different actual packer needs a reason), and corrects saved counts. Unassigned AWBs are
+  rejected. See [shared packer sign-in](docs/sv-entry-and-sachet-route.md#shared-packer-sign-in-and-pins).
 - **Daily tally:** Compare required units, supervisor count, issued stock and actual
   packed units per product and per assigned packer. Missing entries and mismatched
   AWBs remain visible even if opposite errors cancel in the aggregate. Each count
   preserves the demand snapshot, PIC, timestamp and reason. New/changed orders mark
   the earlier count stale and require a fresh count before more allocation/assignment.
+  Since 9 October 2026 "Tally by assigned packer" shows who keyed each count (packer with PIN
+  or supervisor), and a parcel's record shows "Count entered by".
+- **Inventory for the day** (Daily tally, since 9 October 2026): per product, the balance
+  on the racks before the day, what was received, issued, returned and adjusted that
+  Malaysia day, and the balance after deduction ("On rack now" for today, "Closing" for past
+  days). Derived from stock movements only; no new records. Δ compares stock that left the
+  racks with the tally's issued-to-orders figure, which should match. **Export inventory**
+  downloads the same figures; the parcel CSV is unchanged.
 - The day changes at midnight in Asia/Kuala_Lumpur. Supervisors can manually carry
   unpacked AWBs forward; stock allocations and assignments follow the AWB, and the
   old day's checkpoint is flagged because its order set changed.
 
 TikTok printing does not sync orders into Operator. No TikTok API, printer listener,
-camera scanner or automatic ingestion integration has been added. Refresh retrieves
-other users' changes; optimistic revision checks prevent concurrent overwrites.
+camera scanner or automatic ingestion integration has been added. Other users'
+changes load automatically (see "Shared records and conflicts" below); a save never
+overwrites a change it did not see.
 
 #### Staff accounts
 
@@ -190,9 +219,12 @@ rollout separate until the owner supplies the roster and access administrator.
 
 ### Driver trips
 
-Driver and assistant driver are one role. Drivers sign in and log their own trips: the
-assistant driver's name, pickup time, arrival time and a photo; the arrival and photo can be
-added later. Stock-out supervisors and management review every trip at the site. See
+Driver and assistant driver are one role. Drivers share one sign-in and log each trip with
+the driver's and assistant driver's names, pickup time, arrival time and a photo; the
+arrival and photo can be added later. Since 9 October 2026 a trip can list up to five assistant
+drivers, and **+ Drop-off** records each drop-off along the way with its own time and photo
+(before or after arrival; migration `20261009090003_operator_trip_dropoffs.sql`). Stock-out
+supervisors and management review every trip at the site. See
 [driver trips](docs/sv-entry-and-sachet-route.md#driver-trips).
 
 ### Production PIC planning and changes
@@ -207,6 +239,12 @@ in Malaysia time and a reason. Both preserve the previous PIC and an audit event
 A handover must have an existing PIC, cannot precede the batch date or previous
 handover, and cannot be recorded after factory transfer. Historical misclicks can
 still be corrected with a reason. Process output totals are not split between PICs.
+
+Capsule (bottle) batches since 9 October 2026: the three machine steps (filling machine,
+capsule counter & silica gel, bottle cap & capping) record their PIC only, with optional
+start/end time. The last step, Batching, Sticker & QC, records the QC count of finished
+bottles and the QC result; that count is the batch's finished quantity and the limit for
+sending to fulfilment. Older batches whose machine steps carry an output keep and show it.
 
 Previous batches → View record → Open production log selects that batch's work
 date. A prominent date banner and date picker control the daily production list.
@@ -226,6 +264,16 @@ text are unchanged. The factory batch picker shows product name before batch cod
 Sachet intake labels are generic. The catalog's factory type controls the route,
 so additional sachet products use the same process and stock-in rules when added
 to the catalog. This change does not invent additional product entries.
+
+### Stock returns by batch (9 October 2026)
+
+Stock-in → **Record a return**: choose the batch (newest first, with its racks and what is
+available), then the carton if the batch has more than one, the quantity, the reason, an
+optional AWB of the returned parcel and the PIC. The quantity goes back into that existing
+stock carton on its rack and is available again. A return is its own append-only movement:
+the original stock issue stays as recorded, and returns are never edited or removed. "On the
+racks", the stock tables on Overview and Reports, and a carton's record show what was
+returned. Requires migration `20261009090002_operator_stock_returns.sql`.
 
 ### Outbound packages (25 September 2026)
 
@@ -251,6 +299,14 @@ records without stock or packing activity can be explicitly separated in Order
 management with a reason and actual AWBs. Historical activity is preserved and
 requires supervisor reconciliation; it is never silently split or duplicated.
 
+### Office admin on stock screens (9 October 2026)
+
+Office admin can open **Stock in & inventory**, **Packing station** and **Daily tally** in
+addition to Input orders and Order management, and still opens on Input orders. Access is
+view only (owner decision 2026-10-09): no stock or fulfilment capability was added, so the
+record buttons on those screens are hidden and the server and database refuse those
+commands as before.
+
 ### Landing screen and return after sign-in (9 October 2026)
 
 The screen comes from `?view=` when the signed-in role may open it; otherwise the
@@ -261,6 +317,18 @@ refresh never passes through another role's screens. Management's "view as" lens
 for the browser tab, refreshes included, and ends with it. Signing in again after a
 refresh or an expired session returns to the screen that was open; only paths on this
 site are accepted as the return address.
+
+### Shared records and conflicts (9 October 2026)
+
+All of a site's records are still one document with one revision. A save no longer fails
+just because someone else saved first: the server loads the latest records, re-applies the
+change on top (re-running every check against them) and commits, up to three attempts. Only
+a real conflict on the same record (for example a stage edit based on a version someone else
+already changed) is refused; the screen then loads the latest version, keeps the open form
+with its values and offers **Try again**. Screens refresh on their own when the tab becomes
+visible again and every minute while no form is open. Errors appear next to the button that
+caused them, in a high-contrast box, and page-level errors also appear at the bottom of the
+screen.
 
 ### Browser security policy and dependency patches (9 October 2026)
 

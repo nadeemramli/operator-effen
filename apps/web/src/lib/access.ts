@@ -23,9 +23,12 @@ export function authorizeMember(
   const rule = commandRules[type];
   if (!rule) return "This action is not available in operational workspaces.";
   if (!capabilities.includes(rule.capability))
-    return capabilities.every((c) => c === "feedback.post" || c === "trips.log")
+    return capabilities.every(
+      (c) => c === "feedback.post" || c === "trips.log" || c === "packing.record",
+    )
       ? "Operational records are entered by your supervisor. You can view records" +
           (capabilities.includes("trips.log") ? ", log your own trips" : "") +
+          (capabilities.includes("packing.record") ? ", record your own packing" : "") +
           " and post feedback."
       : "Your role at this site does not permit this action.";
   return null;

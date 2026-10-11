@@ -150,7 +150,13 @@ export const sachetRoutes: Record<
   },
 };
 export const currentSachetRoute = "sachet-v2";
-const countWords = ["zero", "one", "two", "three", "four", "five", "six"];
+/**
+ * Factory stages are recorded by production and gate the transfer to the warehouse; every
+ * later stage of a route is a warehouse stage, recorded by stock-in before the box count.
+ * Mirrored in SQL by operator_private.factory_stage(text) (a test keeps them identical).
+ */
+export const factoryStages = ["mixing", "filling"];
+export const isFactoryStage = (key: string) => factoryStages.includes(key);
 // Labels for historical records created before the fixed sachet route.
 export const sachetSteps = [
   ["Filling & sealing", "Pengisian & pengedapan"],
@@ -365,6 +371,22 @@ export interface Count {
   at: string;
   adjusted: boolean;
 }
+/**
+ * Stock that came back (for example a parcel returned by the courier) and was put back into
+ * an existing stock carton of its batch, on that carton's rack. Append-only: never edited or
+ * removed. It does not reverse the original stock issue, which stays as recorded.
+ */
+export interface Return {
+  id: string;
+  cartonId: string;
+  qty: number;
+  reason: string;
+  pic: string;
+  /** Optional AWB of the returned parcel; not checked against orders (it may predate Operator). */
+  awb?: string;
+  at: string;
+  recordedBy?: Recorder;
+}
 export interface Adjustment {
   id: string;
   cartonId: string;
@@ -414,8 +436,12 @@ export interface Trip {
   /** Malaysia date of the pickup. */
   date: string;
   driver: string;
-  /** Assistant driver's name; empty when driving alone. */
+  /** First assistant driver's name (kept for older readers); empty when driving alone. */
   assistant: string;
+  /** Every assistant driver on the trip (since 2026-10-09); absent on older trips. */
+  assistants?: string[];
+  /** Drop-offs along the trip, each with its own time and photo; appended, never changed. */
+  dropoffs?: Dropoff[];
   pickupAt: string;
   arriveAt?: string;
   /** Storage path of the trip photo. */
@@ -426,13 +452,50 @@ export interface Trip {
   arrivalRecordedAt?: string;
   photoRecordedAt?: string;
 }
+export interface Dropoff {
+  id: string;
+  /** Actual drop-off time. */
+  at: string;
+  /** Storage path of the proof photo. */
+  photo: string;
+  note?: string;
+  recordedAt: string;
+}
+export const MAX_ASSISTANTS = 5;
+export const MAX_DROPOFFS = 20;
+/** Assistant names to show: the list on newer trips, the single name on older ones. */
+export const tripAssistants = (trip: Pick<Trip, "assistant" | "assistants">) =>
+  trip.assistants ?? (trip.assistant ? [trip.assistant] : []);
 export const tripPhotoPath = /^([0-9a-f-]{36}\/){1,2}[a-f0-9]{64}\.jpg$/;
-// A performer profile. It never grants sign-in or write permission.
+// A performer profile. It never grants sign-in or write permission by itself: a packer
+// profile records work only on the shared packer sign-in, after its PIN (kept outside the
+// workspace state) unlocks it.
 export interface StaffProfile {
   id: string;
   name: string;
   role: Role;
+  /** False once a supervisor deactivates it; absent means active. */
+  active?: boolean;
+  createdAt?: string;
+  createdBy?: Recorder;
 }
+export const staffProfileId =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/**
+ * Packers who can be assigned or record work: the site's active packer profiles, or the
+ * sample packers while a workspace has no staff profiles yet.
+ */
+export const packerProfiles = (s: Pick<Draft, "staffProfiles">) =>
+  s.staffProfiles
+    ? s.staffProfiles
+        .filter((p) => p.role === "packer" && p.active !== false)
+        .map((p) => ({ id: p.id, name: p.name }))
+    : people
+        .filter((p) => p.includes("Packer"))
+        .map((p) => ({ id: p, name: p }));
+/** Display name for a stored performer reference (profile ID or legacy name). */
+export const staffName = (s: Pick<Draft, "staffProfiles">, ref?: string) =>
+  (ref && s.staffProfiles?.find((p) => p.id === ref)?.name) || ref || "";
 export interface Draft {
   staffProfiles?: StaffProfile[];
   trips?: Trip[];
@@ -449,6 +512,7 @@ export interface Draft {
   boxing: Boxing[];
   counts: Count[];
   adjustments: Adjustment[];
+  returns?: Return[];
   events: Event[];
   notes: Note[];
   closedDays: string[];
@@ -505,11 +569,29 @@ export function batchRoute(b: Batch): {
 }
 export const routeStages = (b: Batch) =>
   batchRoute(b).stages.map((key) => sachetStage(key)!);
+/**
+ * Bottle (capsule) batches record one QC count at the end: the last step's quantity is the
+ * finished bottles. Earlier steps record their PIC only (older records may carry a quantity).
+ */
+export const isQcStep = (b: Pick<Batch, "product" | "steps">, index: number) =>
+  !isSachet(b.product) && index === b.steps.length - 1;
 export const batchComplete = (b: Batch) => {
   if (!isSachet(b.product)) return b.steps.every((step) => step.done);
   const { stages } = batchRoute(b);
   return !!stages.length && stages.every((key) => stageDone(b, key));
 };
+/** The batch's route stages recorded in the factory (mixing, filling). */
+export const factoryStagesOf = (b: Batch) =>
+  batchRoute(b).stages.filter(isFactoryStage);
+/** The batch's route stages recorded at stock-in (batching, hologram, wrapping, …). */
+export const warehouseStages = (b: Batch) =>
+  batchRoute(b).stages.filter((key) => !isFactoryStage(key));
+export const factoryStagesDone = (b: Batch) => {
+  const stages = factoryStagesOf(b);
+  return !!stages.length && stages.every((key) => stageDone(b, key));
+};
+export const warehouseStagesDone = (b: Batch) =>
+  warehouseStages(b).every((key) => stageDone(b, key));
 export const batchRevised = (b: Batch) => !!b.revisions?.length;
 export const batchTransferred = (b: Batch) => !!b.transferredAt || b.sent > 0;
 export const stockCartons = (s: Draft) =>
@@ -542,7 +624,18 @@ export const available = (s: Draft, c: Carton) =>
     .reduce((n, i) => n + i.boxes * i.ratio + i.loss, 0) +
   s.adjustments
     .filter((i) => i.cartonId === c.id)
-    .reduce((n, i) => n + i.delta, 0);
+    .reduce((n, i) => n + i.delta, 0) +
+  cartonReturned(s, c);
+/** Units returned to this carton. */
+export const cartonReturned = (s: Draft, c: Carton) =>
+  (s.returns ?? [])
+    .filter((r) => r.cartonId === c.id)
+    .reduce((n, r) => n + r.qty, 0);
+/** Units returned to any stock carton of this batch. */
+export const batchReturned = (s: Draft, b: Batch) =>
+  s.cartons
+    .filter((c) => c.batchId === b.id)
+    .reduce((n, c) => n + cartonReturned(s, c), 0);
 export const orderLines = (o: Order): OrderLine[] => o.lines ?? [o];
 export const orderIssued = (s: Draft, o: Order, productId?: string) =>
   s.issues
@@ -635,6 +728,63 @@ export const dailyTally = (s: Draft, date: string) =>
       stale: !!count && count.fingerprint !== demandFingerprint(s, date, p.id),
     };
   });
+/** Malaysia calendar day of a timestamp; "" when the timestamp cannot be read. */
+const mytDay = (iso: string) => {
+  const time = Date.parse(iso);
+  return Number.isFinite(time) ? toMyt(new Date(time).toISOString()).slice(0, 10) : "";
+};
+export type DailyInventory = {
+  product: string;
+  /** Balance on the racks before the day's movements. */
+  opening: number;
+  received: number;
+  issued: number;
+  returned: number;
+  /** Count adjustments (and any historical boxing out of a stock carton). */
+  adjusted: number;
+  /** opening + received + returned + adjusted − issued. For today: on the racks now. */
+  closing: number;
+};
+/**
+ * Stock-side figures for one Malaysia day, per product, derived only from stock cartons,
+ * their issues, returns, adjustments and boxing by timestamp. No records are created.
+ * Movements whose time cannot be read count as before the day (opening).
+ */
+export function dailyInventory(s: Draft, date: string): DailyInventory[] {
+  return products.map((p) => {
+    const row: DailyInventory = {
+      product: p.id,
+      opening: 0,
+      received: 0,
+      issued: 0,
+      returned: 0,
+      adjusted: 0,
+      closing: 0,
+    };
+    const ids = new Set(
+      s.cartons
+        .filter((c) => c.product === p.id && c.unit === p.unit)
+        .map((c) => c.id),
+    );
+    const move = (at: string, qty: number, kind: Exclude<keyof DailyInventory, "product" | "opening" | "closing">) => {
+      const day = mytDay(at);
+      if (day === date) row[kind] += qty;
+      else if (day < date)
+        row.opening += kind === "issued" ? -qty : qty;
+    };
+    for (const c of s.cartons) if (ids.has(c.id)) move(c.at, c.qty, "received");
+    for (const i of s.issues) if (ids.has(i.cartonId)) move(i.at, i.qty, "issued");
+    for (const r of s.returns ?? [])
+      if (ids.has(r.cartonId)) move(r.at, r.qty, "returned");
+    for (const a of s.adjustments)
+      if (ids.has(a.cartonId)) move(a.at, a.delta, "adjusted");
+    for (const b of s.boxing)
+      if (ids.has(b.sourceId)) move(b.at, -(b.boxes * b.ratio + b.loss), "adjusted");
+    row.closing =
+      row.opening + row.received + row.returned + row.adjusted - row.issued;
+    return row;
+  });
+}
 export const batchReceived = (s: Draft, b: Batch) =>
   s.cartons
     .filter((c) => c.batchId === b.id && c.unit === batchUnit(b))
@@ -901,6 +1051,11 @@ export type Command = {
   actor?: Recorder;
   /** Server-derived effective capabilities at this site. Preview: role defaults. */
   capabilities?: readonly Capability[] | readonly string[];
+  /**
+   * The packer profile unlocked with its PIN on the shared packer sign-in (pack-own only).
+   * Set by the API server from its signed packer session; never taken from the input.
+   */
+  performer?: string;
 };
 /** A stale edit. Carries the current record so the supervisor can review it. */
 export class ConflictError extends Error {
@@ -912,6 +1067,20 @@ export class ConflictError extends Error {
 }
 export const roleLabel = (role: Role) =>
   roles.find((r) => r.id === role)?.en ?? role;
+/**
+ * Who keyed a parcel's packed count: the packer on the shared packer sign-in (PIN), a
+ * supervisor, or unknown for older records saved before the recorder was kept.
+ */
+export const packEntrySource = (
+  o: Pick<Order, "actual" | "packRecordedBy">,
+): "packer" | "supervisor" | "unknown" | null =>
+  o.actual === null
+    ? null
+    : !o.packRecordedBy
+      ? "unknown"
+      : o.packRecordedBy.role === "packer"
+        ? "packer"
+        : "supervisor";
 export const recorderLabel = (r?: Recorder) =>
   !r
     ? ""
@@ -1104,7 +1273,13 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
     return machine;
   };
-  // Post-transfer corrections are flagged so downstream views/reports show a revision.
+  // Changes after transfer are flagged as revisions, except warehouse-stage records made
+  // before the box count: those stages are recorded at stock-in by design.
+  const isRevision = (b: Batch, stage: string) =>
+    batchTransferred(b) &&
+    (!sachetStage(stage) ||
+      isFactoryStage(stage) ||
+      adypocideReceipts(s).some((r) => r.batchId === b.id && !!r.stockedAt));
   const markRevision = (
     b: Batch,
     stage: string,
@@ -1113,7 +1288,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     to: string,
     reason: string,
   ) => {
-    if (!batchTransferred(b)) return;
+    if (!isRevision(b, stage)) return;
     (b.revisions ??= []).push({
       id: id(),
       stage,
@@ -1274,7 +1449,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (kind === "handover") {
         if (!step.pic)
           throw new Error("Assign the first PIC before recording a handover.");
-        if (batchTransferred(b))
+        if (
+          batchTransferred(b) &&
+          !(step.sachetStage && !isFactoryStage(step.sachetStage) && !step.done)
+        )
           throw new Error(
             "This batch is already transferred; use a correction for mistaken records.",
           );
@@ -1323,7 +1501,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
             ? "Production PIC reassigned"
             : "Production PIC corrected",
         `${stepNames(b)[index][0]} · ${previous || "Unassigned"} → ${pic} · ${effectiveAt ?? at} · ${reason}` +
-          (batchTransferred(b) ? " · revised after transfer" : ""),
+          (kind === "correction" && isRevision(b, step.sachetStage ?? String(index))
+            ? " · revised after transfer"
+            : ""),
         { performer: pic, occurredAt: effectiveAt },
       );
       break;
@@ -1333,9 +1513,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const b = inSite(find(s.batches));
       if (!isSachet(b.product))
         throw new Error("Machine-only records are for sachet products.");
-      if (batchTransferred(b))
-        throw new Error("This batch has already been sent to the warehouse.");
       const stage = resolveStage(b);
+      // Factory stages close at transfer; warehouse stages are recorded after it.
+      if (batchTransferred(b) && isFactoryStage(stage.id))
+        throw new Error("This batch has already been sent to the warehouse.");
       const previous = stageStep(b, stage.id);
       if (previous?.done)
         throw new Error(
@@ -1381,11 +1562,20 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "stage-rework": {
       allow("production", "intake");
       const b = inSite(find(s.batches));
-      if (!isSachet(b.product) || batchTransferred(b))
+      if (!isSachet(b.product))
         throw new Error(
           "Rework can be recorded for sachet batches still in production.",
         );
       const stage = resolveStage(b);
+      // Factory-stage rework ends at transfer; warehouse-stage rework ends at the box count.
+      if (
+        batchTransferred(b) &&
+        (isFactoryStage(stage.id) ||
+          adypocideReceipts(s).some((r) => r.batchId === b.id && !!r.stockedAt))
+      )
+        throw new Error(
+          "Rework can be recorded for sachet batches still in production.",
+        );
       const step = stageStep(b, stage.id);
       if (!step?.done)
         throw new Error("Record the first completion of this stage first.");
@@ -1443,7 +1633,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         if (!str("occurredAt", false))
           throw new Error("Enter the actual completion time.");
         from = step.occurredAt ?? "";
-        to = occurrence("occurredAt", b.date, b.transferredAt);
+        to = occurrence(
+          "occurredAt",
+          b.date,
+          isFactoryStage(stage.id) ? b.transferredAt : undefined,
+        );
         if (to === from) throw new Error("Enter a different time.");
         step.occurredAt = to;
       } else throw new Error("Choose the machine or the completion time to correct.");
@@ -1462,7 +1656,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         b.id,
         "Stage record corrected",
         `${b.code} · ${stage.en} · ${field}: ${from || "—"} → ${to} · ${reason}` +
-          (batchTransferred(b) ? " · revised after transfer" : ""),
+          (isRevision(b, stage.id) ? " · revised after transfer" : ""),
       );
       break;
     }
@@ -1588,34 +1782,40 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error(
           "This step is already recorded; use a correction workflow.",
         );
-      const qc = str("qc");
+      // Only the last step (Batching, Sticker & QC) records a count: the QC count of
+      // finished bottles. Earlier machine steps record who did the work, never an output.
+      const qcStep = isQcStep(b, index);
+      const qc = qcStep ? str("qc") : "not-recorded";
       if (!["not-recorded", "pass", "issue"].includes(qc))
         throw new Error("Choose a QC result.");
       if (st.pic && st.pic !== str("pic"))
         throw new Error(
           "Use Edit PIC or Shift handover to change the assigned person first.",
         );
+      const qty = qcStep ? num("qty") : null;
       b.steps[index] = {
         ...st,
         pic: str("pic"),
-        qty: num("qty"),
+        qty,
         start: str("start", false),
         end: str("end", false),
         done: true,
         qc: qc as Step["qc"],
       };
-      if (index === b.steps.length - 1) b.actual = num("qty");
+      if (qcStep) b.actual = qty!;
       log(
         b.id,
         "Process recorded",
-        stepNames(b)[index][0] +
-          " · " +
-          str("pic") +
-          " · " +
-          num("qty") +
-          " " +
-          batchUnit(b) +
-          (qc === "not-recorded" ? " · QC not recorded" : " · QC: " + qc),
+        qcStep
+          ? "QC count " +
+              qty +
+              " " +
+              batchUnit(b) +
+              "s" +
+              (qc === "not-recorded" ? " · QC not recorded" : " · QC: " + qc) +
+              " · " +
+              str("pic")
+          : stepNames(b)[index][0] + " · " + str("pic"),
       );
       break;
     }
@@ -1630,9 +1830,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           throw new Error(
             "This batch was started before the five-stage route. Review its route (upgrade to five stages or keep the recorded four-stage route) before transfer.",
           );
-        if (!batchComplete(b))
+        if (!factoryStagesDone(b))
           throw new Error(
-            `Record a machine and PIC for all ${countWords[route.stages.length] ?? route.stages.length} stages of this batch's route before transfer.`,
+            "Record a machine and PIC for the mixing and filling stages before sending to the warehouse.",
           );
         b.transferredAt = at;
         b.transferPic = str("pic");
@@ -1726,6 +1926,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const batch = s.batches.find((b) => b.id === receipt.batchId);
       if (!batch || !isSachet(batch.product))
         throw new Error("Choose a sachet batch.");
+      // Batches planned with a route need every stage recorded before box stock exists.
+      // Historical batches without a route snapshot are not re-checked.
+      if (batch.route && !batchComplete(batch))
+        throw new Error(
+          "Record the warehouse stages (batching, hologram, wrapping) with their PICs before finalizing the box count.",
+        );
       const boxes = num("boxes"),
         pic = str("pic"),
         ref = batch.code;
@@ -1893,11 +2099,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const targets = v.packers.map((packer, i) => {
         if (
           typeof packer !== "string" ||
-          !(s.staffProfiles
-            ? s.staffProfiles.some(
-                (p) => p.id === packer && p.role === "packer",
-              )
-            : people.includes(packer))
+          !packerProfiles(s).some((p) => p.id === packer)
         )
           throw new Error("Choose a packer profile.");
         return { packer, count: num("allocation_" + i) };
@@ -2064,13 +2266,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         }
       } else if (cmd.type === "assign-orders") {
         const packer = str("packer");
-        if (
-          !(s.staffProfiles
-            ? s.staffProfiles.some(
-                (p) => p.id === packer && p.role === "packer",
-              )
-            : people.includes(packer))
-        )
+        if (!packerProfiles(s).some((p) => p.id === packer))
           throw new Error("Choose a packer profile.");
         for (const o of orders) {
           if (o.actual !== null)
@@ -2172,9 +2368,13 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
       break;
     }
-    case "pack": {
-      // SV-only entry: the stock-out supervisor records the actual packer's count.
-      allow("outbound");
+    case "pack":
+    case "pack-own": {
+      // The stock-out supervisor records the actual packer's count (pack), or a packer
+      // records their own first count on the shared packer sign-in (pack-own). For
+      // pack-own the packer is the profile the server unlocked with its PIN, never input.
+      const own = cmd.type === "pack-own";
+      allow(own ? "packer" : "outbound");
       const o = find(s.orders);
       if (!singleProductOrder(o))
         throw new Error(
@@ -2188,18 +2388,25 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error(
           "Only an assigned packer's work can be recorded. Assign this AWB first.",
         );
-      const packer = str("pic");
-      if (
+      const packer = own ? (cmd.performer ?? "") : str("pic");
+      if (own) {
+        if (!packerProfiles(s).some((p) => p.id === packer))
+          throw new Error("Choose your name and enter your PIN before recording.");
+        if (packer !== o.assignedPacker)
+          throw new Error(
+            "This AWB is assigned to another packer. Ask your supervisor to reassign it.",
+          );
+      } else if (
         s.staffProfiles &&
         !s.staffProfiles.some((p) => p.id === packer && p.role === "packer")
       )
         throw new Error("Choose the actual packer's profile.");
-      const reason = str("reason", false);
+      const reason = own ? "" : str("reason", false);
       if (packer !== o.assignedPacker && !reason)
         throw new Error(
           "The actual packer differs from the assigned packer. Enter a reason.",
         );
-      const packedAt = occurrence("occurredAt");
+      const packedAt = own ? at : occurrence("occurredAt");
       if (o.lines) {
         o.lines.forEach((l) => {
           l.actual = num("actual_" + l.product);
@@ -2207,7 +2414,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         o.actual = o.lines.reduce((n, l) => n + l.actual!, 0);
       } else o.actual = num("actual");
       o.packer = packer;
-      o.labelPic = str("labelPic");
+      // A packer recording their own parcel also attached its AWB.
+      o.labelPic = own ? packer : str("labelPic");
       o.packedAt = packedAt;
       o.packRecordedAt = at;
       o.packRecordedBy = recorder;
@@ -2221,13 +2429,89 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           )
           .join(" · ") +
           " · packed by " +
-          o.packer +
+          staffName(s, o.packer) +
           " · AWB attached by " +
-          o.labelPic +
+          staffName(s, o.labelPic) +
+          (own ? " · entered by the packer with their PIN" : "") +
           (packer !== o.assignedPacker
-            ? ` · assigned to ${o.assignedPacker}: ${reason}`
+            ? ` · assigned to ${staffName(s, o.assignedPacker)}: ${reason}`
             : ""),
         { performer: packer, occurredAt: packedAt },
+      );
+      break;
+    }
+    case "staff-profile-create": {
+      // Packer profiles for the shared packer sign-in. The PIN is set separately and is
+      // never part of the workspace state.
+      allow("outbound", "hr");
+      const profileId = str("profileId");
+      if (!staffProfileId.test(profileId))
+        throw new Error("Invalid profile reference. Refresh and try again.");
+      const name = str("name");
+      if (name.length > 60) throw new Error("Use a shorter name.");
+      if ((s.staffProfiles ?? []).some((p) => p.id === profileId))
+        throw new Error("This profile already exists. Refresh and try again.");
+      if (
+        packerProfiles({ staffProfiles: s.staffProfiles ?? [] }).some(
+          (p) => p.name.toLowerCase() === name.toLowerCase(),
+        )
+      )
+        throw new Error(
+          "An active packer already has this name. Add an initial or surname.",
+        );
+      (s.staffProfiles ??= []).push({
+        id: profileId,
+        name,
+        role: "packer",
+        active: true,
+        createdAt: at,
+        createdBy: recorder,
+      });
+      log("staff:" + profileId, "Packer profile added", name);
+      break;
+    }
+    case "staff-profile-update": {
+      allow("outbound", "hr");
+      const profile = find(s.staffProfiles ?? []);
+      if (profile.role !== "packer")
+        throw new Error("Only packer profiles are managed here.");
+      const name = str("name", false),
+        active = v.active;
+      if (name.length > 60) throw new Error("Use a shorter name.");
+      if (active !== undefined && typeof active !== "boolean")
+        throw new Error("Choose whether the profile is active.");
+      const changes: string[] = [];
+      if (name && name !== profile.name) {
+        if (
+          packerProfiles(s).some(
+            (p) =>
+              p.id !== profile.id && p.name.toLowerCase() === name.toLowerCase(),
+          )
+        )
+          throw new Error(
+            "An active packer already has this name. Add an initial or surname.",
+          );
+        changes.push(`${profile.name} → ${name}`);
+        profile.name = name;
+      }
+      if (typeof active === "boolean" && active !== (profile.active !== false)) {
+        if (
+          active &&
+          packerProfiles(s).some(
+            (p) => p.name.toLowerCase() === profile.name.toLowerCase(),
+          )
+        )
+          throw new Error(
+            "An active packer already has this name. Rename one of them first.",
+          );
+        changes.push(active ? "reactivated" : "deactivated");
+        profile.active = active;
+      }
+      if (!changes.length) throw new Error("Nothing to change.");
+      log(
+        "staff:" + profile.id,
+        "Packer profile updated",
+        profile.name + " · " + changes.join(" · "),
       );
       break;
     }
@@ -2353,6 +2637,42 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
       break;
     }
+    case "return": {
+      allow("intake");
+      const c = s.cartons.find((x) => x.id === str("cartonId"));
+      if (!c || c.unit !== product(c.product).unit)
+        throw new Error(
+          "Choose a stock carton of the batch. Returns go back into an existing carton on its rack.",
+        );
+      const batch = s.batches.find((b) => b.id === c.batchId);
+      if (batch) inSite(batch);
+      const qty = num("qty", 1);
+      const reason = str("reason");
+      const awb = normalizeAwb(str("awb", false));
+      if (awb.length > 40) throw new Error("Use an AWB of up to 40 characters.");
+      const pic = str("pic");
+      if ((s.returns?.length ?? 0) >= 2000)
+        throw new Error("The returns list is full for this workspace.");
+      (s.returns ??= []).unshift({
+        id: id(),
+        cartonId: c.id,
+        qty,
+        reason,
+        pic,
+        ...(awb ? { awb } : {}),
+        at,
+        recordedBy: recorder,
+      });
+      log(
+        c.batchId,
+        "Stock returned to rack",
+        `${c.ref} · ${qty} ${c.unit} · rack ${c.rack} · ${reason}` +
+          (awb ? " · AWB " + awb : "") +
+          " · " +
+          pic,
+      );
+      break;
+    }
     case "review": {
       allow("management");
       const text = str("text");
@@ -2367,9 +2687,24 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       break;
     }
     case "trip": {
-      // Drivers log their own trip; the driver is always the signed-in recorder.
-      const assistant = str("assistant", false);
-      if (assistant.length > 100) throw new Error("Use a shorter assistant name.");
+      // Drivers share one sign-in, so each trip names its driver; the signed-in account
+      // stays the recorder.
+      const driver = str("driver");
+      if (driver.length > 100) throw new Error("Use a shorter driver name.");
+      // Assistants come from the repeatable list field (assistant_0, assistant_1, …) or,
+      // from older clients, the single "assistant" field.
+      const listed = Object.keys(v)
+        .filter((k) => /^assistant_\d{1,2}$/.test(k))
+        .sort((a, b) => Number(a.slice(10)) - Number(b.slice(10)))
+        .map((k) => str(k, false));
+      const assistants = (listed.length ? listed : [str("assistant", false)]).filter(Boolean);
+      if (assistants.length > MAX_ASSISTANTS)
+        throw new Error(`Record up to ${MAX_ASSISTANTS} assistant drivers.`);
+      if (assistants.some((a) => a.length > 100))
+        throw new Error("Use a shorter assistant name.");
+      if (new Set(assistants.map((a) => a.toLowerCase())).size !== assistants.length)
+        throw new Error("Each assistant driver is listed once.");
+      const assistant = assistants[0] ?? "";
       const pickupAt = tripTime("pickupAt")!;
       const arriveAt = tripTime("arriveAt", false);
       if (arriveAt && arriveAt < pickupAt)
@@ -2381,8 +2716,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         id: id(),
         ...(site ? { siteId: site } : {}),
         date: toMyt(pickupAt).slice(0, 10),
-        driver: recorder.name,
+        driver,
         assistant,
+        assistants,
         pickupAt,
         ...(arriveAt ? { arriveAt, arrivalRecordedAt: at } : {}),
         ...(photo ? { photo, photoRecordedAt: at } : {}),
@@ -2395,14 +2731,17 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         "trip:" + trip.id,
         "Trip logged",
         [
-          "Pickup " + toMyt(pickupAt).replace("T", " "),
+          "Driver " + driver,
+          "pickup " + toMyt(pickupAt).replace("T", " "),
           arriveAt ? "arrival " + toMyt(arriveAt).replace("T", " ") : "arrival pending",
-          assistant ? "assistant " + assistant : "no assistant",
+          assistants.length
+            ? (assistants.length > 1 ? "assistants " : "assistant ") + assistants.join(", ")
+            : "no assistant",
           photo ? "photo attached" : "",
         ]
           .filter(Boolean)
           .join(" · "),
-        { performer: recorder.name, occurredAt: pickupAt },
+        { performer: driver, occurredAt: pickupAt },
       );
       break;
     }
@@ -2440,6 +2779,42 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
       break;
     }
+    case "trip-dropoff": {
+      // A drop-off along the trip, with its own actual time and a proof photo. Logged by the
+      // sign-in that logged the trip, before or after arrival (owner decision 2026-10-09).
+      const trip = inSite(find(s.trips ?? []));
+      if (trip.recordedBy?.userId !== recorder.userId)
+        throw new Error("Only the driver who logged this trip can add to it.");
+      const dropAt = tripTime("at")!;
+      if (dropAt < trip.pickupAt)
+        throw new Error("A drop-off cannot be before the pickup time.");
+      const photo = tripPhoto();
+      if (!photo) throw new Error("Add a photo of the drop-off as proof.");
+      const note = str("note", false);
+      if (note.length > 300) throw new Error("Use a shorter drop-off note.");
+      if ((trip.dropoffs?.length ?? 0) >= MAX_DROPOFFS)
+        throw new Error(`A trip can have up to ${MAX_DROPOFFS} drop-offs.`);
+      (trip.dropoffs ??= []).push({
+        id: id(),
+        at: dropAt,
+        photo,
+        ...(note ? { note } : {}),
+        recordedAt: at,
+      });
+      log(
+        "trip:" + trip.id,
+        "Trip drop-off logged",
+        [
+          "Drop-off " + toMyt(dropAt).replace("T", " "),
+          "photo attached",
+          note,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        { performer: trip.driver, occurredAt: dropAt },
+      );
+      break;
+    }
     case "close": {
       allow("production", "intake", "outbound");
       const date = str("date"),
@@ -2471,6 +2846,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     (s.sortCounts?.length ?? 0) > 1000 ||
     s.notes.length > 200 ||
     (s.trips?.length ?? 0) > 500 ||
+    (s.returns?.length ?? 0) > 2000 ||
     (s.machines?.length ?? 0) > 300
   )
     throw new Error(

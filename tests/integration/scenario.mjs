@@ -32,6 +32,7 @@ const people = {
   intakeA: { role: "intake", ws: W.a, name: "Synthetic Stock-in SV A" },
   outA: { role: "outbound", ws: W.a, name: "Synthetic Stock-out SV A" },
   packerA: { role: "packer", ws: W.a, name: "Synthetic Packer A" },
+  driverA: { role: "driver", ws: W.a, name: "Synthetic Drivers A" },
   prodB: { role: "production", ws: W.b, name: "Synthetic Production SV B" },
   outB: { role: "outbound", ws: W.b, name: "Synthetic Stock-out SV B" },
   mgmt: { role: "management", scope: "all-sites", name: "Synthetic Manager" },
@@ -64,7 +65,11 @@ for (const p of Object.values(people))
   if (p.role)
     sql(`insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values (${p.ws ? `'${p.ws}'` : "null"}, '${p.id}', '${p.role}', '${p.name}', '${p.scope ?? "site"}')`);
 
-const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+// PW_CHROMIUM points at a system Chromium (the cloud container keeps one at
+// /opt/pw-browsers/chromium); otherwise Playwright's own installed browser is used.
+const browser = await chromium.launch(
+  process.env.PW_CHROMIUM ? { executablePath: process.env.PW_CHROMIUM } : {},
+);
 async function session(key) {
   const context = await browser.newContext({ baseURL: app, viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
@@ -154,8 +159,13 @@ await check("A: plan a five-stage batch in the UI; route order shows Hologram 4t
   const batch = stored(W.a).batches.find((b) => b.code === "INT-ADY-001");
   batchId = batch.id;
   assert.deepEqual(batch.route.stages, ["mixing", "filling", "batching", "hologram", "wrapping"]);
-  const rows = await prod.page.locator("section.batch-card", { hasText: "INT-ADY-001" }).locator("table.machine-records tbody tr td:first-child").allInnerTexts();
-  assert.match(rows.join("|"), /1\. Mixer.*\|2\. Sachet filling.*\|3\. Inkjet.*\|4\. Hologram machine.*\|5\. Shrink/s);
+  // Production records the two factory stages; the other three are listed, in route order,
+  // as recorded at stock-in.
+  const card = prod.page.locator("section.batch-card", { hasText: "INT-ADY-001" });
+  const rows = await card.locator("table.machine-records tbody tr td:first-child").allInnerTexts();
+  assert.match(rows.join("|"), /^1\. Mixer.*\|2\. Sachet filling[^|]*$/s);
+  const later = await card.locator(".warehouse-stage-list li > span:first-child").allInnerTexts();
+  assert.deepEqual(later.map((x) => x.split(" ")[0]), ["Inkjet", "Hologram", "Shrink"]);
 });
 
 await check("A: supervisor's direct RPC with a replacement state is refused by the database", async () => {
@@ -197,12 +207,15 @@ await check("A: machines added by production are shared with stock-in", async ()
     assert.equal(r.status, 200, JSON.stringify(r.body));
   }
   await intake.page.goto("/?view=warehouse");
+  // The machine list sits behind the gear button on the Stock-in page.
+  await intake.page.getByRole("button", { name: "Sachet machines" }).click();
   await intake.page.getByText("INT Holo Alpha").first().waitFor();
 });
 
 await check("A: invalid stock, route and correction operations are rejected without side effects", async () => {
   const machines = stored(W.a).machines;
-  for (const stage of ["mixing", "filling", "batching", "wrapping"]) {
+  // Transfer needs the factory stages (mixing, filling); with only mixing it is refused.
+  for (const stage of ["mixing"]) {
     const r = await post(prod, "machine", {
       id: batchId, stage, pic: "Sample PIC A", expectedVersion: 0,
       ...(stage === "mixing" ? { machineId: machines.find((m) => m.name === "INT Mixer").id } : {}),
@@ -211,7 +224,7 @@ await check("A: invalid stock, route and correction operations are rejected with
   }
   const before = revision(W.a);
   const cases = [
-    [prod, "transfer", { id: batchId, pic: "Sample PIC B" }, /all five stages/, "production"],
+    [prod, "transfer", { id: batchId, pic: "Sample PIC B" }, /mixing and filling stages/, "production"],
     [prod, "machine", { id: batchId, stage: "laminating", pic: "X" }, /Unknown production stage/, "production"],
     [prod, "stage-correct", { id: batchId, stage: "mixing", field: "machine", machineId: machines[0].id, reason: "x" }, /Reopen/, "production"],
     [prod, "change-step-pic", { id: batchId, stage: "mixing", kind: "correction", pic: "Sample PIC B" }, /reason/, "production"],
@@ -226,6 +239,14 @@ await check("A: invalid stock, route and correction operations are rejected with
   const card = prod.page.locator("section.batch-card", { hasText: "INT-ADY-001" });
   await prod.page.goto("/?view=production&production=log&date=2026-10-03");
   assert.equal(await card.getByRole("button", { name: /Send to warehouse/ }).isDisabled(), true);
+  for (const stage of ["filling", "batching", "wrapping"]) {
+    const r = await post(prod, "machine", { id: batchId, stage, pic: "Sample PIC A", expectedVersion: 0 });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  }
+  // The production card shows the factory stages; the rest are listed as recorded at stock-in.
+  await prod.page.reload();
+  await card.getByText("Recorded at stock-in").waitFor();
+  assert.equal(await card.getByRole("button", { name: /Send to warehouse/ }).isDisabled(), false);
 });
 
 await check("A: stock-in records Hologram through the UI person picker (visible card click)", async () => {
@@ -254,11 +275,11 @@ await check("A: stock-in records Hologram through the UI person picker (visible 
   assert.equal(commit, "intake:machine");
   await prod.page.reload();
   const card = prod.page.locator("section.batch-card", { hasText: "INT-ADY-001" });
-  await card.getByText(/Entered by Synthetic Stock-in SV A/).first().waitFor();
+  await card.locator(".warehouse-stage-list").getByText("Sample PIC C").waitFor();
   assert.equal(await card.getByRole("button", { name: /Send to warehouse/ }).isDisabled(), false);
 });
 
-await check("A: transfer succeeds once all five stages and PICs exist", async () => {
+await check("A: transfer succeeds once mixing and filling have PICs", async () => {
   const t = await post(prod, "transfer", { id: batchId, pic: "Sample PIC B" });
   assert.equal(t.status, 200, JSON.stringify(t.body));
   assert.ok(stored(W.a).batches.find((b) => b.id === batchId).transferredAt);
@@ -281,7 +302,9 @@ await check("A: response-loss retry applies once; reused ID with different input
   assert.equal(reused.body.code, "operation-mismatch");
 });
 
-await check("A: concurrent saves — one wins, the other gets a reviewable conflict", async () => {
+// Saves of different records no longer conflict (the server re-applies a save that lost the
+// race); two edits of the same record still do.
+await check("A: concurrent edits of the same record — one wins, the other gets a reviewable conflict", async () => {
   const holo = stored(W.a).batches.find((b) => b.id === batchId).steps.find((s) => s.sachetStage === "hologram");
   const beta = stored(W.a).machines.find((m) => m.name === "INT Holo Beta").id;
   const rev = revision(W.a);
@@ -300,11 +323,24 @@ await check("A: concurrent saves — one wins, the other gets a reviewable confl
   assert.equal(retry.body.conflict.currentVersion, holo.version + 1);
 });
 
-await check("A: post-transfer correction keeps stock/custody facts and flags the revision", async () => {
+await check("A: an unrelated save after a teammate's save succeeds without a refresh", async () => {
+  const seen = await load(intake);
+  const a = await post(prod, "feedback", { text: "Saved first by production" });
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  // Stock-in still holds the revision it loaded before production saved.
+  const b = await api(intake, "POST", { command: { type: "feedback", role: "intake", input: { text: "Saved second without refreshing" } }, revision: seen.revision, operationId: randomUUID(), workspaceId: W.a });
+  assert.equal(b.status, 200, JSON.stringify(b.body));
+  assert.equal(b.body.revision, seen.revision + 2);
+  const texts = stored(W.a).notes.map((n) => n.text);
+  assert.ok(texts.includes("Saved first by production") && texts.includes("Saved second without refreshing"));
+});
+
+// Factory-stage corrections after transfer are revisions; warehouse-stage records before the
+// box count are the normal stock-in flow and are not (see the INT-ADY-002 case).
+await check("A: post-transfer correction of a factory stage keeps stock/custody facts and flags the revision", async () => {
   const before = stored(W.a);
-  const holo = before.batches.find((b) => b.id === batchId).steps.find((s) => s.sachetStage === "hologram");
-  const target = before.machines.find((m) => m.name === (holo.machineName === "INT Holo Beta" ? "INT Holo Alpha" : "INT Holo Beta")).id;
-  const r = await post(intake, "stage-correct", { id: batchId, stage: "hologram", field: "machine", machineId: target, reason: "Line log shows the other machine", expectedVersion: holo.version }, { role: "intake" });
+  const mixing = before.batches.find((b) => b.id === batchId).steps.find((s) => s.sachetStage === "mixing");
+  const r = await post(intake, "stage-correct", { id: batchId, stage: "mixing", field: "occurredAt", occurredAt: "2026-10-03T09:00", reason: "Line log shows the actual mixing time", expectedVersion: mixing.version }, { role: "intake" });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const after = stored(W.a);
   assert.deepEqual([after.cartons, after.adypocideReceipts, after.issues, after.adjustments], [before.cartons, before.adypocideReceipts, before.issues, before.adjustments]);
@@ -331,7 +367,7 @@ await check("A: packer cannot write through the API or the database", async () =
   assert.equal(rpc.status, 403);
   assert.equal(revision(W.a), before);
   await packer.page.goto("/?view=packing");
-  await packer.page.getByText(/Your supervisor records this count|Supervisors record/).first().waitFor();
+  await packer.page.getByText(/Who is packing\?/).first().waitFor();
   await packer.context.close();
 });
 
@@ -373,6 +409,38 @@ await check("A: legacy four-stage batches — history readable, in-progress need
   await prod.page.goto("/?view=production&production=history&batch=legacy-sent");
   await prod.page.getByText(/Four-stage sachet route/).waitFor();
   assert.equal(stored(W.a).batches.find((b) => b.id === "legacy-sent").route, undefined);
+});
+
+await check("A: warehouse stages are recorded at stock-in after transfer and gate the box count", async () => {
+  const planned = await post(prod, "batch", { product: "ady", code: "INT-ADY-002", date: "2026-10-03", route: "sachet-v2" });
+  assert.equal(planned.status, 200, JSON.stringify(planned.body));
+  const id = stored(W.a).batches.find((b) => b.code === "INT-ADY-002").id;
+  for (const stage of ["mixing", "filling"]) {
+    const r = await post(prod, "machine", { id, stage, pic: "Sample PIC A", expectedVersion: 0 });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  }
+  const sent = await post(prod, "transfer", { id, pic: "Sample PIC B" });
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  const received = await post(intake, "receive-ady", { batchId: id, pic: "Sample PIC C" }, { role: "intake" });
+  assert.equal(received.status, 200, JSON.stringify(received.body));
+  const receiptId = stored(W.a).adypocideReceipts.find((r) => r.batchId === id).id;
+  const early = await post(intake, "stock-in-ady", { receiptId, boxes: 5, rack: "R-1", pic: "Sample PIC C" }, { role: "intake" });
+  assert.equal(early.status, 400, JSON.stringify(early.body));
+  assert.match(early.body.error, /warehouse stages/);
+  // The stock-in receipt row shows the open warehouse stages and keeps the box count disabled.
+  await intake.page.goto("/?view=warehouse");
+  const row = intake.page.locator("table.ady-receipts tr", { hasText: "INT-ADY-002" }).first();
+  await row.getByText(/0\/3 warehouse stages/).waitFor();
+  assert.equal(await row.getByRole("button", { name: /Finalize box count/ }).isDisabled(), true);
+  for (const stage of ["batching", "hologram", "wrapping"]) {
+    const r = await post(intake, "machine", { id, stage, pic: "Sample PIC C", expectedVersion: 0 }, { role: "intake" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  }
+  const b = stored(W.a).batches.find((x) => x.id === id);
+  assert.equal(b.revisions, undefined, "warehouse stages after transfer are not revisions");
+  await intake.page.reload();
+  await row.getByText(/3\/3 warehouse stages/).waitFor();
+  assert.equal(await row.getByRole("button", { name: /Finalize box count/ }).isDisabled(), false);
 });
 
 // ============ Objective B: memberships, cross-site roles, files and policy ============
@@ -611,6 +679,190 @@ await check("B: expired session keeps the unsaved entry and resubmits it once af
   assert.equal(stored(W.a).machines.filter((m) => m.name === "INT Shrink After Expiry").length, 1);
   await s.context.close();
 });
+
+// ============ Objective C: shared packer and driver sign-ins (20261008) ============
+const mytToday = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kuala_Lumpur" }).format(new Date());
+const pins = (s, method, body, query = "") =>
+  s.page.evaluate(
+    async ([path, method, body]) => {
+      const res = await fetch(path, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: res.status, body: await res.json().catch(() => null) };
+    },
+    [query, method, body],
+  );
+const outC = await session("outA");
+const packers = await session("packerA");
+let ali, abu, aliAwb, abuAwb;
+
+await check("C: stock-out SV adds packer profiles with PINs; PINs never reach the workspace state", async () => {
+  await outC.page.goto("/?view=packing");
+  for (const [name, pin] of [["Synthetic Ali", "2468"], ["Synthetic Abu", "8642"]]) {
+    await outC.page.getByLabel("Packer name").fill(name);
+    await outC.page.getByLabel(/PIN \(4–6 digits\)/).fill(pin);
+    await outC.page.getByRole("button", { name: /Add packer/ }).click();
+    await outC.page.getByText(`${name} added with their PIN.`).waitFor();
+  }
+  const profiles = stored(W.a).staffProfiles;
+  ali = profiles.find((p) => p.name === "Synthetic Ali").id;
+  abu = profiles.find((p) => p.name === "Synthetic Abu").id;
+  assert.equal(sql(`select count(*) from operator_private.staff_pins where workspace_id='${W.a}'`), "2");
+  const text = JSON.stringify(stored(W.a));
+  assert.ok(!text.includes("2468") && !text.includes("8642"), "PIN in workspace state");
+  assert.equal((await pins(outC, "GET", null, "/api/staff-pins?workspace=" + W.a)).body.pins.length, 2);
+});
+
+await check("C: the supervisor assigns today's AWBs to Ali and Abu", async () => {
+  const awbs = ["NVMYINTPK0001", "NVMYINTPK0002"];
+  for (const awb of awbs) {
+    const r = await post(outC, "order", { awb, product: "cav", channel: "TikTok", package: "INT pack", expected: 2, date: mytToday }, { role: "outbound" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const id = stored(W.a).orders.find((o) => o.awb === awb).id;
+    assert.equal((await post(outC, "review-order", { id, pic: "S" }, { role: "outbound" })).status, 200);
+  }
+  const counted = stored(W.a).orders.filter((o) => o.date === mytToday && o.product === "cav").reduce((n, o) => n + o.expected, 0);
+  const count = await post(outC, "sort-count", { date: mytToday, product: "cav", counted, pic: "S", note: "INT count" }, { role: "outbound" });
+  assert.equal(count.status, 200, JSON.stringify(count.body));
+  aliAwb = stored(W.a).orders.find((o) => o.awb === awbs[0]).id;
+  abuAwb = stored(W.a).orders.find((o) => o.awb === awbs[1]).id;
+  for (const [id, packer] of [[aliAwb, ali], [abuAwb, abu]]) {
+    const r = await post(outC, "assign-orders", { ids: [id], packer, pic: "S" }, { role: "outbound" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  }
+});
+
+await check("C: on the shared packer sign-in, Ali taps his name, enters his PIN and records his own AWB", async () => {
+  await packers.page.goto("/?view=packing");
+  await packers.page.getByText("Who is packing?").waitFor();
+  await packers.page.locator("label.pic-option", { hasText: "Synthetic Ali" }).click();
+  await packers.page.locator('input[type="password"]').fill("1111");
+  await packers.page.getByRole("button", { name: /Open my AWBs/ }).click();
+  await packers.page.getByText("Wrong PIN. Try again.").waitFor();
+  await packers.page.locator('input[type="password"]').fill("2468");
+  await packers.page.getByRole("button", { name: /Open my AWBs/ }).click();
+  await packers.page.getByText(/Recording as/).waitFor();
+  await packers.page.getByText("NVMYINTPK0001").waitFor();
+  assert.equal(await packers.page.getByText("NVMYINTPK0002").count(), 0, "Abu's AWB visible to Ali");
+  await packers.page.locator("section.packing-card", { hasText: "NVMYINTPK0001" }).getByRole("button", { name: /Record what I packed/ }).click();
+  const dialog = packers.page.getByRole("dialog");
+  await dialog.locator('input[name="actual"]').fill("2");
+  await dialog.getByRole("button", { name: /Save my count/ }).click();
+  await dialog.waitFor({ state: "hidden" });
+  const o = stored(W.a).orders.find((x) => x.id === aliAwb);
+  assert.equal(o.actual, 2);
+  assert.equal(o.packer, ali);
+  assert.equal(o.packRecordedBy.userId, people.packerA.id);
+  assert.equal(sql(`select command from public.operator_commits where user_id='${people.packerA.id}' order by committed_at desc limit 1`), "pack-own");
+});
+
+await check("C: a packer cannot record another packer's AWB, re-record, or save without an unlocked PIN", async () => {
+  const before = revision(W.a);
+  const spoof = await post(packers, "pack-own", { id: abuAwb, actual: 2, packer: abu, pic: abu }, { role: "packer" });
+  assert.equal(spoof.status, 400, JSON.stringify(spoof.body));
+  assert.match(spoof.body.error, /assigned to another packer/);
+  const again = await post(packers, "pack-own", { id: aliAwb, actual: 1 }, { role: "packer" });
+  assert.equal(again.status, 400, JSON.stringify(again.body));
+  await packers.page.getByRole("button", { name: /^Done$/ }).click();
+  await packers.page.getByText("Who is packing?").waitFor();
+  const locked = await post(packers, "pack-own", { id: abuAwb, actual: 2 }, { role: "packer" });
+  assert.equal(locked.status, 403);
+  assert.equal(locked.body.code, "packer-locked");
+  // A forged or copied cookie for another account does not unlock anything.
+  const other = await session("packerA");
+  await other.context.addCookies([{ name: "operator-packer", value: "v1.x.y.z.1.ab", url: app + "/api" }]);
+  assert.equal((await post(other, "pack-own", { id: abuAwb, actual: 2 }, { role: "packer" })).status, 403);
+  await other.context.close();
+  for (const [path, method, body] of [
+    ["/api/staff-pins", "POST", { workspaceId: W.a, profileId: abu, pin: "0000" }],
+    ["/api/staff-pins?workspace=" + W.a, "GET", null],
+  ])
+    assert.equal((await pins(packers, method, body, path)).status, 403, method + " " + path);
+  const jwt = await token("packerA");
+  assert.equal((await rest("rpc/operator_set_staff_pin", jwt, { method: "POST", body: JSON.stringify({ p_workspace: W.a, p_profile: abu, p_pin: "0000" }) })).status, 403);
+  assert.ok(!(await rest("staff_pins", jwt)).ok, "PIN table exposed through the Data API");
+  assert.equal(revision(W.a), before);
+});
+
+await check("C: five wrong PINs lock the profile until the supervisor sets a new PIN", async () => {
+  const unlock = (pin) => pins(packers, "POST", { workspaceId: W.a, profileId: abu, pin }, "/api/packer-session");
+  for (let i = 0; i < 4; i++) assert.equal((await unlock("0000")).status, 403);
+  assert.equal((await unlock("0000")).status, 423);
+  assert.equal((await unlock("8642")).status, 423, "right PIN accepted while locked");
+  const status = (await pins(outC, "GET", null, "/api/staff-pins?workspace=" + W.a)).body.pins;
+  assert.ok(status.find((p) => p.profileId === abu).lockedUntil);
+  assert.equal((await pins(outC, "POST", { workspaceId: W.a, profileId: abu, pin: "97531" }, "/api/staff-pins")).status, 200);
+  assert.equal((await unlock("97531")).status, 200);
+  const r = await post(packers, "pack-own", { id: abuAwb, actual: 2 }, { role: "packer" });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(stored(W.a).orders.find((o) => o.id === abuAwb).packer, abu);
+  // The supervisor still corrects a saved count, with a reason.
+  const fix = await post(outC, "correct", { id: abuAwb, field: "actual", qty: 1, reason: "INT recount" }, { role: "outbound" });
+  assert.equal(fix.status, 200, JSON.stringify(fix.body));
+  await pins(packers, "DELETE", null, "/api/packer-session");
+});
+
+await check("C: drivers share one sign-in; each trip keeps the typed driver name", async () => {
+  const d = await session("driverA");
+  for (const name of ["Synthetic Driver Ali", "Synthetic Driver Abu"]) {
+    await d.page.goto("/?view=trips");
+    await d.page.getByRole("button", { name: /Log a trip/ }).first().click();
+    const dialog = d.page.getByRole("dialog");
+    await dialog.locator('input[name="driver"]').fill(name);
+    await dialog.getByRole("button", { name: /Save trip/ }).click();
+    await dialog.waitFor({ state: "hidden" });
+    await d.page.getByText(name).first().waitFor();
+  }
+  const trips = stored(W.a).trips;
+  assert.deepEqual(trips.slice(0, 2).map((t) => t.driver), ["Synthetic Driver Abu", "Synthetic Driver Ali"]);
+  assert.ok(trips.slice(0, 2).every((t) => t.recordedBy.userId === people.driverA.id));
+  const unnamed = await post(d, "trip", { pickupAt: mytToday + "T08:00" }, { role: "driver" });
+  assert.equal(unnamed.status, 400);
+  await d.context.close();
+});
+await check("C: a driver lists two assistants and logs a drop-off with its own time and photo", async () => {
+  const d = await session("driverA");
+  const myt = (ms) => new Date(ms + 8 * 3600e3).toISOString().slice(0, 16);
+  const now = Date.now();
+  const trip = await post(d, "trip", { driver: "Synthetic Driver Ali", assistant_0: "Synthetic Helper A", assistant_1: "Synthetic Helper B", pickupAt: myt(now - 60 * 60e3) }, { role: "driver" });
+  assert.equal(trip.status, 200, JSON.stringify(trip.body));
+  const logged = stored(W.a).trips[0];
+  assert.deepEqual(logged.assistants, ["Synthetic Helper A", "Synthetic Helper B"]);
+  assert.equal(logged.assistant, "Synthetic Helper A");
+  // Upload a proof photo the way the browser does: sign, then PUT to the signed URL.
+  const bytes = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from("synthetic drop-off " + randomUUID()), Buffer.alloc(200)]);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const uploaded = await d.page.evaluate(async ([hash, bytes, ws]) => {
+    const res = await fetch("/api/trip-photos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hash, size: bytes.length, workspace: ws }) });
+    const signed = await res.json();
+    if (!res.ok) return { status: res.status, signed };
+    if (!signed.exists) {
+      const put = await fetch(signed.url, { method: "PUT", headers: { "Content-Type": "image/jpeg" }, body: new Uint8Array(bytes) });
+      if (!put.ok) return { status: put.status, signed };
+    }
+    return { status: 200, path: signed.path };
+  }, [hash, [...bytes], W.a]);
+  assert.equal(uploaded.status, 200, JSON.stringify(uploaded));
+  const noPhoto = await post(d, "trip-dropoff", { id: logged.id, at: myt(now - 30 * 60e3) }, { role: "driver" });
+  assert.equal(noPhoto.status, 400);
+  assert.match(noPhoto.body.error, /photo/);
+  const drop = await post(d, "trip-dropoff", { id: logged.id, at: myt(now - 30 * 60e3), photo: uploaded.path, note: "INT shop" }, { role: "driver" });
+  assert.equal(drop.status, 200, JSON.stringify(drop.body));
+  const after = stored(W.a).trips.find((t) => t.id === logged.id);
+  assert.equal(after.dropoffs.length, 1);
+  assert.equal(after.dropoffs[0].photo, uploaded.path);
+  // Another sign-in cannot add to this trip.
+  const other = await post(outC, "trip-dropoff", { id: logged.id, at: myt(now - 20 * 60e3), photo: uploaded.path }, { role: "outbound" });
+  assert.equal(other.status, 403);
+  await d.page.goto("/?view=trips");
+  await d.page.getByText("Synthetic Helper A, Synthetic Helper B").first().waitFor();
+  await d.page.locator(".dropoff-list", { hasText: "INT shop" }).first().waitFor();
+  await d.context.close();
+});
+await outC.context.close();
+await packers.context.close();
 
 await browser.close();
 const failed = results.filter((r) => r[0] === "FAIL");

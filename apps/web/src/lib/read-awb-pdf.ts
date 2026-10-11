@@ -1,4 +1,4 @@
-import type { ParsedPage } from "./awb-import";
+import { needsOcr, type ParsedPage } from "./awb-import";
 
 export async function readAwbPdf(
   file: File,
@@ -54,7 +54,8 @@ export async function readAwbPdf(
           )
           .join("\n");
         let method: "text" | "ocr" = "text";
-        if (forceOcr || text.replace(/\s/g, "").length < 60) {
+        // OCR whenever the text layer yields no AWB and no order reference.
+        if (needsOcr(text, forceOcr)) {
           method = "ocr";
           progress(i, doc.numPages, true);
           if (!worker) {

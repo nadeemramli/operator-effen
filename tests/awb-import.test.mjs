@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  OCR_NOTE,
+  detectReferences,
+  isLabelPage,
+  needsOcr,
+  parseImport,
   parsePages,
   rowProblems,
   rowStatus,
@@ -108,15 +113,14 @@ test("unknown/missing details never become a complete zero or default single pac
   ]);
   assert.equal(u.rows[0].lines[0].units, null);
 });
-test("multiple labels on one page do not all inherit the same contents; OCR requires review", () => {
+test("multiple labels on one page do not all inherit the same contents; OCR is a note, not a block", () => {
   const b = batch([page(ninja() + "\nNVMYTEST000002")]);
   assert.equal(b.rows.length, 2);
   assert.equal(b.rows[0].lines.length, 0);
   const o = batch([page(ninja(), 1, "ocr")]);
-  assert.match(rowProblems(o.rows[0]).join(), /OCR/);
-  o.rows[0].reviewed = true;
-  o.rows[0].reviewNote = "Checked against source";
+  assert.deepEqual(o.rows[0].notes, [OCR_NOTE]);
   assert.deepEqual(rowProblems(o.rows[0]), []);
+  assert.equal(rowStatus(o.rows[0], o, createDraft()), "ready");
 });
 test("reprint duplicates are skipped; conflicting labels block handoff", () => {
   const b = batch([page(ninja()), page(ninja(), 2)]),
@@ -184,7 +188,11 @@ test("review and exclusion require notes, roles are enforced and split orders ne
   const b = batch([page(ninja()), page(ninja("NVMYTEST000002"), 2)]);
   assert.equal(rowStatus(b.rows[0], b, createDraft()), "review");
   b.rows[0].reviewed = true;
-  assert.throws(() => validateImport(b), /Explain/);
+  // Marking a label checked needs no note; excluding one does.
+  validateImport(b);
+  b.rows[1].excluded = true;
+  assert.throws(() => validateImport(b), /Explain why the label is excluded/);
+  b.rows[1].excluded = false;
   b.rows[0].reviewNote = "First parcel allocation checked";
   assert.throws(
     () => run(createDraft(), "import-save", { batch: b }, "management"),
@@ -212,4 +220,45 @@ test("a stale review cannot overwrite a teammate's saved batch", () => {
     () => run(s, "import-save", { batch: stale }),
     /teammate updated/,
   );
+});
+
+// WP7: cover pages are skipped, OCR is automatic and informational.
+test("a cover or title page without references produces no row and is listed as skipped", () => {
+  const cover = page("Daily orders\nNuvital HQ MY\nPrinted 9 Oct 2026", 1);
+  const label = page(ninja(), 2);
+  const { rows, skipped } = parseImport([cover, label], "Luxana", "Store");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].awb, "NVMYTEST000001");
+  assert.deepEqual(skipped, [{ file: file.id, page: 1 }]);
+  // Not special to page 1: a separator page in the middle is skipped the same way.
+  const middle = parseImport([label, page("— end of batch —", 2), page(ninja("NVMYTEST000003"), 3)], "Luxana", "Store");
+  assert.deepEqual(middle.skipped.map((p) => p.page), [2]);
+  // A packing list (order reference and SKU, no AWB) and an unreadable page are kept.
+  assert.ok(isLabelPage(page("Order ID: TEST-1\nSKU: cave01 Qty: 1")));
+  assert.ok(isLabelPage(page("cave02 x 2")));
+  assert.ok(isLabelPage({ ...page(""), error: "Page could not be read; review original PDF" }));
+  assert.equal(isLabelPage(page("")), false);
+  // The skipped page list is validated on save.
+  const b = batch([label]);
+  b.files = [{ ...file, skippedPages: [1] }];
+  validateImport(b);
+  b.files[0].skippedPages = [99];
+  assert.throws(() => validateImport(b), /Invalid source file/);
+});
+
+test("OCR runs when the text has no AWB and no order reference, even if it has some text", () => {
+  const storeHeader = "Nuvital HQ MY ".repeat(10); // plenty of text, no references
+  assert.equal(needsOcr(storeHeader), true);
+  assert.equal(needsOcr(""), true);
+  assert.equal(needsOcr(ninja()), false);
+  assert.equal(needsOcr("Order ID: TEST-9"), false);
+  assert.equal(needsOcr(ninja(), true), true, "forced OCR reads every page");
+  assert.deepEqual(detectReferences(ninja()).knownSkus, ["cave04"]);
+});
+
+test("an OCR-read label with no other issue is ready without a check or a note", () => {
+  const b = batch([page(ninja(), 1, "ocr")]);
+  let s = run(createDraft(), "import-save", { batch: b });
+  s = run(s, "import-release", { id: b.id });
+  assert.ok(s.orders.some((o) => o.awb === "NVMYTEST000001"));
 });

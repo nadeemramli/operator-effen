@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Fragment,
   useCallback,
   useEffect,
   useRef,
@@ -35,12 +36,14 @@ import {
   Download,
   ScanLine,
   LoaderCircle,
+  Undo2,
 } from "lucide-react";
 import { ProductionWorkspace, ProcessPicHistory } from "./production-workspace";
-import { SachetProductionRecords } from "./sachet-records";
+import { SachetProductionRecords, StageRecords } from "./sachet-records";
 import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { DriverTrips } from "./driver-trips";
+import { PackerProfiles, PackerUnlock } from "./packer-station";
 import { channels } from "@/lib/awb-import";
 import {
   allowedViews,
@@ -70,6 +73,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   ActionForm,
+  ErrorToast,
+  FormError,
+  fieldMessage,
   Empty,
   Metric,
   Panel,
@@ -88,18 +94,25 @@ import {
   isSachet,
   batchComplete,
   batchTransferred,
+  cartonReturned,
+  stageDone,
+  warehouseStages,
+  isQcStep,
   adypocideReceipts,
   stockCartons,
   type AdypocideReceipt,
   batchUnit,
   orderIssued,
   orderLines,
+  packEntrySource,
+  packerProfiles,
   people,
   previewCapabilities,
   product,
   products,
   recorderLabel,
   roles,
+  staffName,
   stepNames,
   today,
   tr,
@@ -143,8 +156,8 @@ const copy: Record<View, [string, string, string, string]> = {
   production: [
     "From plan to finished batch",
     "Dari pelan ke kelompok siap",
-    "Record batches, machine responsibilities and bottle output.",
-    "Rekod kelompok, tanggungjawab mesin dan hasil botol.",
+    "Record batches, machine responsibilities and the QC count of finished bottles.",
+    "Rekod kelompok, tanggungjawab mesin dan kiraan QC botol siap.",
   ],
   warehouse: [
     "A place for every unit",
@@ -173,14 +186,14 @@ const copy: Record<View, [string, string, string, string]> = {
   packing: [
     "One parcel. An honest count.",
     "Satu bungkusan. Kiraan sebenar.",
-    "Supervisors record what each packer actually packed and who attached the AWB.",
-    "Penyelia merekod jumlah sebenar setiap pembungkus dan siapa yang melekatkan AWB.",
+    "Each packer records what they actually packed under their own name and PIN. Supervisors correct and review.",
+    "Setiap pembungkus merekod jumlah sebenar yang dibungkus atas nama dan PIN sendiri. Penyelia membetulkan dan menyemak.",
   ],
   trips: [
     "Driver trips",
     "Perjalanan pemandu",
-    "Drivers log each trip: assistant driver, pickup and arrival time, and a photo.",
-    "Pemandu merekod setiap perjalanan: pembantu pemandu, masa ambil dan tiba, serta gambar.",
+    "Drivers log each trip: driver and assistant names, pickup and arrival time, and a photo.",
+    "Pemandu merekod setiap perjalanan: nama pemandu dan pembantu, masa ambil dan tiba, serta gambar.",
   ],
   trace: [
     "Follow the record",
@@ -246,6 +259,9 @@ const storedRole = (storage: () => Storage, key: string): Role | undefined => {
     return undefined;
   }
 };
+// The shared packer phone locks the unlocked packer after this long without a touch, so the
+// next person cannot save under the previous packer's name. The server session is longer.
+const PACKER_IDLE_MS = 3 * 60 * 1000;
 // Assistant drivers are drivers now; a server still on the older role list maps across.
 const viewRole = (role?: string): Role =>
   role === "assistant"
@@ -283,7 +299,10 @@ export function DraftApp() {
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [form, setForm] = useState<FormSpec | null>(null),
-    [formError, setFormError] = useState("");
+    [formError, setFormError] = useState(""),
+    [formField, setFormField] = useState<string | undefined>(),
+    [formConflict, setFormConflict] = useState(false),
+    [toast, setToast] = useState("");
   const [mobile, setMobile] = useState(false),
     [light, setLight] = useState(false),
     [reset, setReset] = useState(false),
@@ -332,7 +351,9 @@ export function DraftApp() {
     localStorage.setItem("operator-language", next);
     document.documentElement.lang = next;
   };
-  const load = useCallback(async (workspace?: string) => {
+  // `silent`: a background refresh. It keeps the open screen, form and selections and
+  // never shows an error; the next save or manual refresh reports any problem.
+  const load = useCallback(async (workspace?: string, silent = false) => {
     try {
       const res = await fetch(
         "/api/draft" +
@@ -347,6 +368,14 @@ export function DraftApp() {
       if (!res.ok)
         throw new Error("Workspace could not be loaded. Please refresh.");
       const data = await res.json();
+      if (silent) {
+        // Another site may have been chosen meanwhile; only refresh the one on screen.
+        if (workspace && data.actor?.workspaceId !== workspace) return;
+        setState(data.state);
+        setRevision(data.revision);
+        revisionRef.current = data.revision;
+        return;
+      }
       setState(data.state);
       setRevision(data.revision);
       revisionRef.current = data.revision;
@@ -363,12 +392,48 @@ export function DraftApp() {
             : viewRole(data.actor.role)
           : (storedRole(() => localStorage, PREVIEW_ROLE_KEY) ?? "management"),
       );
+      if (
+        data.actor?.kind === "member" &&
+        data.actor.capabilities?.includes("packing.record")
+      ) {
+        const session = await fetch(
+          "/api/packer-session?workspace=" +
+            encodeURIComponent(data.actor.workspaceId),
+          { cache: "no-store" },
+        )
+          .then((r): Promise<{ profileId?: string | null }> =>
+            r.ok ? r.json() : Promise.resolve({}),
+          )
+          .catch(() => ({ profileId: null }));
+        setPackerProfile(session.profileId ?? "");
+      }
       setPendingSave(readPending());
       setError("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Connection error.");
+      if (silent) return;
+      const message = e instanceof Error ? e.message : "Connection error.";
+      setError(message);
+      setToast(message);
     }
   }, [router]);
+  const dismissToast = useCallback(() => setToast(""), []);
+  // Keep the shared records fresh: when the tab becomes visible again, and every minute
+  // while nobody is filling in a form or waiting for a save.
+  const idle = !form && !busy && !reset;
+  const workspaceId = actor?.workspaceId;
+  const ready = !!actor;
+  useEffect(() => {
+    if (!ready || !idle) return;
+    const refresh = () => {
+      if (document.visibilityState === "visible") void load(workspaceId, true);
+    };
+    const timer = setInterval(refresh, 60000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [ready, idle, workspaceId, load]);
   useEffect(() => {
     void Promise.resolve().then(() => {
       try {
@@ -384,6 +449,34 @@ export function DraftApp() {
       void load();
     });
   }, [load]);
+  // Hooks stay above the early return below so they run in the same order every render.
+  // Shared packer sign-in: the packer currently unlocked on this device.
+  const packerStation = role === "packer" && !viewingAs;
+  const lastPackerTouch = useRef(0);
+  const lockPacker = useCallback(async () => {
+    setPackerProfile("");
+    setPackingSelection([]);
+    setForm(null);
+    if (member)
+      await fetch("/api/packer-session", { method: "DELETE" }).catch(() => null);
+  }, [member]);
+  useEffect(() => {
+    if (!packerStation || !packerProfile) return;
+    lastPackerTouch.current = Date.now();
+    const touch = () => {
+      lastPackerTouch.current = Date.now();
+    };
+    window.addEventListener("pointerdown", touch);
+    window.addEventListener("keydown", touch);
+    const timer = window.setInterval(() => {
+      if (Date.now() - lastPackerTouch.current > PACKER_IDLE_MS) void lockPacker();
+    }, 10000);
+    return () => {
+      window.removeEventListener("pointerdown", touch);
+      window.removeEventListener("keydown", touch);
+      window.clearInterval(timer);
+    };
+  }, [packerStation, packerProfile, lockPacker]);
   // Until the server says who is signed in, no screen is chosen: the role decides the
   // screen, and a guessed role sent every refresh to that guess's first screen.
   if (!actor)
@@ -404,18 +497,31 @@ export function DraftApp() {
         )}
       </main>
     );
+  /** A page-level error: shown under the heading and as a toast at the bottom. */
+  const fail = (message: string) => {
+    setError(message);
+    setToast(message);
+  };
   async function command(
     type: string,
     input: Record<string, unknown>,
-    retry?: PendingSave,
+    options: {
+      retry?: PendingSave;
+      /** Show the error next to the caller's own button instead of at page level. */
+      onError?: (message: string) => void;
+    } = {},
   ) {
+    const { retry, onError } = options;
     if (viewingAs) {
-      setError(viewOnlyMessage());
+      if (onError) onError(viewOnlyMessage());
+      else fail(viewOnlyMessage());
       return null;
     }
     setBusy(true);
     setFormError("");
+    setFormField(undefined);
     setError("");
+    setToast("");
     // One operation ID per intended change; retries reuse it so the server applies it once.
     const pending: PendingSave = retry ?? {
       operationId: crypto.randomUUID(),
@@ -444,6 +550,7 @@ export function DraftApp() {
       setPendingSave(null);
     };
     keep();
+    let conflicted = false;
     try {
       let res: Response;
       try {
@@ -478,19 +585,27 @@ export function DraftApp() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (res.status < 500) clear();
-        const conflict = data.conflict as
-          | { currentVersion?: number; last?: { to?: string; recordedBy?: unknown } }
-          | undefined;
-        throw new Error(
-          (data.error ?? "Unable to save. Please refresh.") +
-            (conflict
-              ? " " +
-                t(
-                  "Refresh, check the current record, then reopen the form.",
-                  "Muat semula, semak rekod semasa, kemudian buka semula borang.",
-                )
-              : ""),
-        );
+        if (data.code === "packer-locked") {
+          setPackerProfile("");
+          setForm(null);
+          fail(data.error);
+          return null;
+        }
+        // Someone else changed the same record: load their version now, keep the open form
+        // and its values, and let the person check and save again.
+        if (res.status === 409 && (data.code === "record" || data.code === "revision")) {
+          await load(pending.workspaceId, true);
+          conflicted = true;
+          throw new Error(
+            (data.error ?? "") +
+              " " +
+              t(
+                "The latest version has been loaded — check it, then save again.",
+                "Versi terkini telah dimuatkan — semak, kemudian simpan semula.",
+              ),
+          );
+        }
+        throw new Error(data.error ?? "Unable to save. Please refresh.");
       }
       clear();
       setState(data.state);
@@ -513,9 +628,14 @@ export function DraftApp() {
       );
       return data.state as Draft;
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Unable to save.";
-      if (form) setFormError(message);
-      else setError(message);
+      const raw = e instanceof Error ? e.message : "Unable to save.";
+      setFormConflict(conflicted);
+      if (onError) onError(fieldMessage(raw, null, lang).message);
+      else if (form) {
+        const mapped = fieldMessage(raw, form, lang);
+        setFormError(mapped.message);
+        setFormField(mapped.field);
+      } else fail(raw);
       return null;
     } finally {
       setBusy(false);
@@ -528,9 +648,10 @@ export function DraftApp() {
     );
   function show(spec: FormSpec) {
     setFormError("");
+    setFormField(undefined);
     setNotice("");
     if (viewingAs) {
-      setError(viewOnlyMessage());
+      fail(viewOnlyMessage());
       return;
     }
     setForm(spec);
@@ -542,8 +663,12 @@ export function DraftApp() {
     name,
     label,
     type: "person",
-    options: state?.staffProfiles
-      ? state.staffProfiles.map((p) => ({ value: p.id, label: p.name }))
+    // Packer profiles exist only for the shared packer sign-in; they never replace the
+    // people offered as process PICs.
+    options: state?.staffProfiles?.some((p) => p.role !== "packer")
+      ? state.staffProfiles
+          .filter((p) => p.role !== "packer")
+          .map((p) => ({ value: p.id, label: p.name }))
       : people.map((p) => ({ value: p, label: p })),
     hint: t(
       "Sample people for this draft. Real staff will be added later.",
@@ -712,6 +837,121 @@ export function DraftApp() {
       ],
       submit: t("Confirm box stock-in", "Sahkan stok masuk kotak"),
     });
+  // Returns are recorded in two steps: choose the batch, then its carton and the details.
+  const recordReturn = () =>
+    show({
+      type: "return-pick",
+      title: t("Record a return", "Rekod pemulangan"),
+      description: t(
+        "Choose the batch the returned stock belongs to. It goes back into that batch's carton on its rack.",
+        "Pilih kelompok stok yang dipulangkan. Ia dimasukkan semula ke karton kelompok itu di raknya.",
+      ),
+      fields: [
+        {
+          name: "batchId",
+          label: t("Batch", "Kelompok"),
+          type: "select",
+          options: (state?.batches ?? [])
+            .filter((b) => inventoryCartons.some((c) => c.batchId === b.id))
+            .sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id))
+            .map((b) => {
+              const cartons = inventoryCartons.filter((c) => c.batchId === b.id);
+              return {
+                value: b.id,
+                label: [
+                  product(b.product).name,
+                  b.code,
+                  [...new Set(cartons.map((c) => c.rack))].join(", "),
+                  fmt(cartons.reduce((n, c) => n + available(state!, c), 0)) +
+                    " " +
+                    units(lang, product(b.product).unit),
+                ].join(" · "),
+              };
+            }),
+        },
+      ],
+      submit: t("Next", "Seterusnya"),
+    });
+  const returnDetails = (batchId: string) => {
+    const batch = state?.batches.find((b) => b.id === batchId);
+    const cartons = inventoryCartons.filter((c) => c.batchId === batchId);
+    if (!batch || !cartons.length) return;
+    show({
+      type: "return",
+      title: t("Record a return", "Rekod pemulangan"),
+      description:
+        product(batch.product).name +
+        " · " +
+        batch.code +
+        " · " +
+        t(
+          "The quantity goes back into the carton below and becomes available again. The original stock issue stays as recorded.",
+          "Kuantiti dimasukkan semula ke karton di bawah dan tersedia semula. Pengeluaran stok asal kekal seperti direkod.",
+        ),
+      hidden: cartons.length === 1 ? { cartonId: cartons[0].id } : {},
+      summary:
+        cartons.length === 1
+          ? [
+              { label: t("Carton", "Karton"), value: cartons[0].ref },
+              { label: t("Rack", "Rak"), value: cartons[0].rack },
+              {
+                label: t("Available now", "Tersedia sekarang"),
+                value:
+                  fmt(available(state!, cartons[0])) +
+                  " " +
+                  units(lang, cartons[0].unit),
+              },
+            ]
+          : undefined,
+      fields: [
+        ...(cartons.length > 1
+          ? [
+              {
+                name: "cartonId",
+                label: t("Carton / rack", "Karton / rak"),
+                type: "select" as const,
+                options: cartons.map((c) => ({
+                  value: c.id,
+                  label:
+                    c.ref +
+                    " · " +
+                    c.rack +
+                    " · " +
+                    fmt(available(state!, c)) +
+                    " " +
+                    units(lang, c.unit),
+                })),
+              },
+            ]
+          : []),
+        number(
+          "qty",
+          t("Quantity returned", "Kuantiti dipulangkan") +
+            " (" +
+            units(lang, product(batch.product).unit) +
+            ")",
+          undefined,
+          1,
+        ),
+        {
+          name: "reason",
+          label: t("Reason for the return", "Sebab pemulangan"),
+          type: "textarea",
+        },
+        {
+          name: "awb",
+          label: t("AWB of the returned parcel", "AWB bungkusan dipulangkan"),
+          required: false,
+          hint: t(
+            "Optional. Not checked against orders; the parcel may be older than Operator.",
+            "Pilihan. Tidak disemak dengan pesanan; bungkusan mungkin lebih lama daripada Operator.",
+          ),
+        },
+        pic(),
+      ],
+      submit: t("Record return", "Rekod pemulangan"),
+    });
+  };
   const count = (c: Carton) =>
     show({
       type: "count",
@@ -796,6 +1036,46 @@ export function DraftApp() {
         },
       ],
       submit: t("Save actual count", "Simpan kiraan sebenar"),
+    });
+  // A packer's own count on the shared packer sign-in. The server takes the packer from the
+  // PIN-unlocked session; the preview passes its sample profile instead.
+  const packOwn = (o: Order) =>
+    show({
+      type: "pack-own",
+      title: t("Record what I packed", "Rekod apa yang saya bungkus"),
+      description:
+        o.awb +
+        " · " +
+        orderLines(o)
+          .map(
+            (l) =>
+              `${product(l.product).name}: ${l.expected} ${units(lang, product(l.product).unit)}`,
+          )
+          .join(" · ") +
+        " · " +
+        t(
+          "Saved once under your name. Your supervisor corrects any mistake.",
+          "Disimpan sekali atas nama anda. Penyelia anda membetulkan sebarang kesilapan.",
+        ),
+      hidden: { id: o.id, ...(member ? {} : { profile: packerProfile }) },
+      summary: [
+        {
+          label: t("Packer", "Pembungkus"),
+          value: staffName(state ?? { staffProfiles: undefined }, packerProfile),
+        },
+      ],
+      fields: orderLines(o).map((l) =>
+        number(
+          o.lines ? "actual_" + l.product : "actual",
+          product(l.product).name +
+            " · " +
+            t("I packed", "Saya bungkus") +
+            " (" +
+            units(lang, product(l.product).unit) +
+            ")",
+        ),
+      ),
+      submit: t("Save my count", "Simpan kiraan saya"),
     });
   const correct = (o: Order) =>
     show({
@@ -1093,6 +1373,7 @@ export function DraftApp() {
               <th className="num">
                 {t("Issued to packing", "Untuk pembungkusan")}
               </th>
+              <th className="num">{t("Returned", "Dipulangkan")}</th>
               <th>{t("Unit", "Unit")}</th>
             </tr>
           </thead>
@@ -1129,6 +1410,13 @@ export function DraftApp() {
                           ),
                         )
                         .reduce((n, i) => n + i.qty, 0),
+                    )}
+                  </td>
+                  <td className="num">
+                    {fmt(
+                      state!.cartons
+                        .filter((c) => c.product === p.id && c.unit === unit)
+                        .reduce((n, c) => n + cartonReturned(state!, c), 0),
                     )}
                   </td>
                   <td className="text-muted-foreground">{units(lang, unit)}</td>
@@ -1448,17 +1736,29 @@ export function DraftApp() {
               {t("Carton-level balances", "Baki setiap karton")}
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={receiveAdypocide}>
-                <Boxes size={16} />
-                {t(
-                  "Receive sachets for boxing",
-                  "Terima sachet untuk pengkotakan",
-                )}
-              </Button>
-              <Button className="action-primary" onClick={receive}>
-                <Plus size={16} />
-                {t("Receive bottle carton", "Terima karton botol")}
-              </Button>
+              {can("stock.receive") ? (
+                <>
+                  <Button variant="outline" onClick={recordReturn}>
+                    <Undo2 size={16} />
+                    {t("Record a return", "Rekod pemulangan")}
+                  </Button>
+                  <Button variant="outline" onClick={receiveAdypocide}>
+                    <Boxes size={16} />
+                    {t(
+                      "Receive sachets for boxing",
+                      "Terima sachet untuk pengkotakan",
+                    )}
+                  </Button>
+                  <Button className="action-primary" onClick={receive}>
+                    <Plus size={16} />
+                    {t("Receive bottle carton", "Terima karton botol")}
+                  </Button>
+                </>
+              ) : (
+                <span className="status-pill tone-muted">
+                  {t("View only", "Lihat sahaja")}
+                </span>
+              )}
             </div>
           </div>
           <Panel
@@ -1488,8 +1788,20 @@ export function DraftApp() {
                     </tr>
                   </thead>
                   <tbody>
-                    {receipts.map((receipt) => (
-                      <tr key={receipt.id}>
+                    {receipts.map((receipt) => {
+                      const batch = state.batches.find(
+                        (b) => b.id === receipt.batchId,
+                      );
+                      // Batches planned with a route need their warehouse stages first.
+                      const gated = !!batch?.route && !receipt.stockedAt;
+                      const stages = batch ? warehouseStages(batch) : [];
+                      const recorded = batch
+                        ? stages.filter((k) => stageDone(batch, k)).length
+                        : 0;
+                      const ready = !gated || batchComplete(batch!);
+                      return (
+                      <Fragment key={receipt.id}>
+                      <tr>
                         <td
                           data-label={t("Product / batch", "Produk / kelompok")}
                         >
@@ -1536,6 +1848,17 @@ export function DraftApp() {
                                   "Menunggu kiraan kotak",
                                 )}
                           </span>
+                          {gated && (
+                            <span
+                              className={
+                                "status-pill ml-1 " +
+                                (ready ? "tone-success" : "tone-info")
+                              }
+                            >
+                              {recorded}/{stages.length}{" "}
+                              {t("warehouse stages", "peringkat gudang")}
+                            </span>
+                          )}
                         </td>
                         <td
                           className="actions"
@@ -1549,22 +1872,57 @@ export function DraftApp() {
                             >
                               {t("View stock", "Lihat stok")}
                             </Button>
+                          ) : !can("stock.receive") ? (
+                            <span className="text-muted-foreground">—</span>
                           ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={busy}
-                              onClick={() => finalizeAdypocide(receipt)}
-                            >
-                              {t(
-                                "Finalize box count",
-                                "Muktamadkan kiraan kotak",
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={busy || !ready}
+                                aria-describedby={
+                                  ready ? undefined : "box-gate-" + receipt.id
+                                }
+                                onClick={() => finalizeAdypocide(receipt)}
+                              >
+                                {t(
+                                  "Finalize box count",
+                                  "Muktamadkan kiraan kotak",
+                                )}
+                              </Button>
+                              {!ready && (
+                                <small
+                                  id={"box-gate-" + receipt.id}
+                                  className="field-hint block"
+                                >
+                                  {t(
+                                    `${recorded} of ${stages.length} warehouse stages recorded. Record the rest below first.`,
+                                    `${recorded} daripada ${stages.length} peringkat gudang direkod. Rekod selebihnya di bawah dahulu.`,
+                                  )}
+                                </small>
                               )}
-                            </Button>
+                            </>
                           )}
                         </td>
                       </tr>
-                    ))}
+                      {gated && batch && (
+                        <tr className="receipt-stages">
+                          <td colSpan={4}>
+                            <StageRecords
+                              batch={batch}
+                              state={state}
+                              lang={lang}
+                              show={can("stage.record") ? show : undefined}
+                              pic={can("stage.record") ? pic : undefined}
+                              role={role}
+                              stageFilter="warehouse"
+                            />
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1592,6 +1950,7 @@ export function DraftApp() {
                     <th>{t("Product", "Produk")}</th>
                     <th>{t("Rack", "Rak")}</th>
                     <th className="num">{t("Received", "Diterima")}</th>
+                    <th className="num">{t("Returned", "Dipulangkan")}</th>
                     <th className="num">{t("Available", "Tersedia")}</th>
                     <th>{t("Unit", "Unit")}</th>
                     <th className="actions" />
@@ -1623,18 +1982,25 @@ export function DraftApp() {
                       </td>
                       <td className="mono text-muted-foreground">{c.rack}</td>
                       <td className="num">{fmt(c.qty)}</td>
+                      <td className="num">
+                        {cartonReturned(state, c)
+                          ? fmt(cartonReturned(state, c))
+                          : "—"}
+                      </td>
                       <td className="num font-semibold">
                         {fmt(available(state, c))}
                       </td>
                       <td>{units(lang, c.unit)}</td>
                       <td className="actions">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => count(c)}
-                        >
-                          {t("Count stock", "Kira stok")}
-                        </Button>
+                        {can("stock.receive") && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => count(c)}
+                          >
+                            {t("Count stock", "Kira stok")}
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1690,6 +2056,10 @@ export function DraftApp() {
                           ) : c.actual === c.book ? (
                             <span className="status-pill tone-muted">
                               {t("Balanced", "Seimbang")}
+                            </span>
+                          ) : !can("stock.adjust") ? (
+                            <span className="status-pill tone-warning">
+                              {t("Difference", "Perbezaan")}
                             </span>
                           ) : (
                             <Button
@@ -1747,12 +2117,14 @@ export function DraftApp() {
             onTrace={(id) => setTrace(id)}
             machineShow={can("machines.manage") ? show : undefined}
           />
-          <div className="page-actions">
-            <Button variant="outline" onClick={closeDay}>
-              <ClipboardList size={16} />
-              {t("End-of-day review", "Semakan akhir hari")}
-            </Button>
-          </div>
+          {can("day.close") && (
+            <div className="page-actions">
+              <Button variant="outline" onClick={closeDay}>
+                <ClipboardList size={16} />
+                {t("End-of-day review", "Semakan akhir hari")}
+              </Button>
+            </div>
+          )}
         </>
       );
     if (view === "input")
@@ -1806,9 +2178,40 @@ export function DraftApp() {
           dispatch={dispatch}
         />
       );
+    if (view === "packing" && packerStation && !packerProfile)
+      return (
+        <PackerUnlock
+          state={state}
+          lang={lang}
+          date={packingDate}
+          workspaceId={actor?.workspaceId}
+          preview={!member}
+          onUnlock={(id) => {
+            setPackerProfile(id);
+            setPackingSelection([]);
+            setError("");
+          }}
+        />
+      );
     if (view === "packing")
       return (
         <>
+          {packerStation ? (
+            <div className="inline-note">
+              <ShieldCheck size={18} />
+              <span className="flex-1">
+                {t("Recording as", "Merekod sebagai")}{" "}
+                <strong>{staffName(state, packerProfile)}</strong>.{" "}
+                {t(
+                  "Tap Done when you finish so the next person can choose their name.",
+                  "Tekan Selesai apabila habis supaya orang seterusnya boleh memilih nama mereka.",
+                )}
+              </span>
+              <Button variant="outline" size="sm" onClick={() => void lockPacker()}>
+                {t("Done", "Selesai")}
+              </Button>
+            </div>
+          ) : (
           <label className="order-profile">
             {t("Packer", "Pembungkus")}
             <select
@@ -1825,12 +2228,7 @@ export function DraftApp() {
                   "Pilih pembungkus untuk melihat pakej ditugaskan",
                 )}
               </option>
-              {(state.staffProfiles
-                ? state.staffProfiles
-                    .filter((p) => p.role === "packer")
-                    .map((p) => ({ id: p.id, name: p.name }))
-                : people.map((p) => ({ id: p, name: p }))
-              ).map((p) => (
+              {packerProfiles(state).map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
@@ -1838,11 +2236,22 @@ export function DraftApp() {
             </select>
             <small>
               {t(
-                "Supervisors record each packer's actual count. Packer profiles do not sign in or save records.",
-                "Penyelia merekod kiraan sebenar setiap pembungkus. Profil pembungkus tidak log masuk atau menyimpan rekod.",
+                "Packers record their own counts on the shared packer sign-in with their PIN. You can also record for them and correct saved counts.",
+                "Pembungkus merekod kiraan sendiri pada log masuk pembungkus bersama dengan PIN mereka. Anda juga boleh merekod bagi pihak mereka dan membetulkan kiraan tersimpan.",
               )}
             </small>
           </label>
+          )}
+          {role === "outbound" && can("members.manage") && (
+            <PackerProfiles
+              state={state}
+              lang={lang}
+              busy={busy}
+              workspaceId={actor?.workspaceId}
+              live={member}
+              command={command}
+            />
+          )}
           <label className="order-profile">
             {t("Packing day (Malaysia)", "Hari pembungkusan (Malaysia)")}
             <Input
@@ -1954,8 +2363,8 @@ export function DraftApp() {
                   </div>
                   {o.actual !== null ? (
                     <p className="text-xs text-muted-foreground mb-4">
-                      {t("Packed by", "Dibungkus oleh")} {o.packer} ·{" "}
-                      {t("AWB", "AWB")}: {o.labelPic}
+                      {t("Packed by", "Dibungkus oleh")} {staffName(state, o.packer)} ·{" "}
+                      {t("AWB", "AWB")}: {staffName(state, o.labelPic)}
                       {o.packRecordedBy && (
                         <>
                           <br />
@@ -1965,12 +2374,33 @@ export function DraftApp() {
                       )}
                     </p>
                   ) : null}
-                  {role !== "outbound" ? (
+                  {packerStation ? (
+                    o.actual === null ? (
+                      <Button
+                        className="action-primary w-full"
+                        onClick={() => packOwn(o)}
+                      >
+                        {t("Record what I packed", "Rekod apa yang saya bungkus")}
+                      </Button>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {t(
+                          "Saved. Ask your supervisor if it needs a correction.",
+                          "Disimpan. Minta penyelia anda jika perlu pembetulan.",
+                        )}
+                      </p>
+                    )
+                  ) : role !== "outbound" ? (
                     <p className="text-xs text-muted-foreground">
-                      {t(
-                        "Your supervisor records this count.",
-                        "Penyelia anda merekod kiraan ini.",
-                      )}
+                      {role === "packer"
+                        ? t(
+                            "The packer or their supervisor records this count.",
+                            "Pembungkus atau penyelia mereka merekod kiraan ini.",
+                          )
+                        : t(
+                            "View only. The stock-out supervisor records packed counts.",
+                            "Lihat sahaja. Penyelia stok keluar merekod kiraan dibungkus.",
+                          )}
                     </p>
                   ) : o.actual === null ? (
                     <Button
@@ -2415,7 +2845,13 @@ export function DraftApp() {
               if (res.ok) {
                 router.replace("/login");
                 router.refresh();
-              } else setError("Unable to sign out. Please retry.");
+              } else
+                fail(
+                  t(
+                    "Unable to sign out. Please retry.",
+                    "Tidak dapat log keluar. Sila cuba lagi.",
+                  ),
+                );
             }}
           >
             <LogOut size={16} />
@@ -2598,18 +3034,19 @@ export function DraftApp() {
               <span>{t("Refresh", "Muat semula")}</span>
             </Button>
           </div>
-          {error && (
-            <div className="form-error mb-5" role="alert">
-              {error}{" "}
+          <FormError
+            className="mb-5"
+            message={error}
+            action={
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
                 onClick={() => void load(actor?.workspaceId)}
               >
                 {t("Refresh records", "Muat semula rekod")}
               </Button>
-            </div>
-          )}
+            }
+          />
           {pendingSave && !busy && (
             <div className="form-error mb-5" role="status">
               {pendingSave.userId &&
@@ -2633,7 +3070,9 @@ export function DraftApp() {
                     variant="ghost"
                     size="sm"
                     onClick={() =>
-                      void command(pendingSave.type, pendingSave.input, pendingSave)
+                      void command(pendingSave.type, pendingSave.input, {
+                        retry: pendingSave,
+                      })
                     }
                   >
                     {t("Resubmit", "Hantar semula")}
@@ -2686,9 +3125,23 @@ export function DraftApp() {
         lang={lang}
         busy={busy}
         error={formError}
+        invalidField={formField}
+        errorAction={
+          formConflict ? (
+            <Button type="submit" variant="outline" size="sm" disabled={busy}>
+              <RefreshCw size={14} />
+              {t("Try again", "Cuba lagi")}
+            </Button>
+          ) : undefined
+        }
         onClose={() => setForm(null)}
-        onSubmit={command}
+        onSubmit={async (type, values) => {
+          if (type !== "return-pick") return command(type, values);
+          returnDetails(String(values.batchId ?? ""));
+          return null;
+        }}
       />
+      <ErrorToast message={toast} lang={lang} onDismiss={dismissToast} />
       <AlertDialog open={reset} onOpenChange={setReset}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -2799,6 +3252,20 @@ export function DraftApp() {
                       />
                     }
                   />
+                  {selectedOrder.actual !== null && (
+                    <Detail
+                      label={t("Count entered by", "Kiraan direkod oleh")}
+                      value={
+                        packEntrySource(selectedOrder) === "unknown"
+                          ? t("Not recorded", "Tidak direkod")
+                          : (packEntrySource(selectedOrder) === "packer"
+                              ? t("Packer with PIN", "Pembungkus dengan PIN")
+                              : t("Supervisor", "Penyelia")) +
+                            " · " +
+                            recorderLabel(selectedOrder.packRecordedBy)
+                      }
+                    />
+                  )}
                   <Detail
                     label={t("AWB attached by", "AWB dilekatkan oleh")}
                     value={
@@ -2892,6 +3359,37 @@ export function DraftApp() {
                     }
                   />
                 </div>
+                {!!state.returns?.some(
+                  (r) => r.cartonId === selectedCarton.id,
+                ) && (
+                  <>
+                    <h3 className="section-label">
+                      {t("RETURNS", "PEMULANGAN")}
+                    </h3>
+                    {state.returns
+                      .filter((r) => r.cartonId === selectedCarton.id)
+                      .map((r) => (
+                        <div key={r.id} className="linked-record">
+                          <Undo2 size={16} />
+                          <span>
+                            +{r.qty} {units(lang, selectedCarton.unit)} ·{" "}
+                            {r.reason}
+                            <small>
+                              {[
+                                r.awb ? "AWB " + r.awb : null,
+                                r.pic,
+                                new Date(r.at).toLocaleString("en-MY", {
+                                  timeZone: "Asia/Kuala_Lumpur",
+                                }),
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </small>
+                          </span>
+                        </div>
+                      ))}
+                  </>
+                )}
               </>
             )}
             {linkedBatch && (
@@ -2926,12 +3424,15 @@ export function DraftApp() {
                               "Pelaksana direkodkan",
                             )}
                           />
-                          {!isSachet(linkedBatch.product) && (
-                            <>
-                              {st.qty ?? "—"}{" "}
-                              {units(lang, batchUnit(linkedBatch))}
-                            </>
-                          )}
+                          {!isSachet(linkedBatch.product) &&
+                            st.qty !== null && (
+                              <>
+                                {isQcStep(linkedBatch, i)
+                                  ? t("QC count", "Kiraan QC") + ": "
+                                  : ""}
+                                {st.qty} {units(lang, batchUnit(linkedBatch))}
+                              </>
+                            )}
                         </p>
                         {st.machineName && <small>{st.machineName}</small>}
                         <ProcessPicHistory step={st} lang={lang} />

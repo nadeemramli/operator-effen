@@ -14,11 +14,11 @@ Actual performer and authenticated recorder stay separate throughout.
 | Production SV | one site | plan batches, record and correct stages, machines, day close, staff memberships*, feedback |
 | Stock-in SV | one site | record and correct stages, machines, receive stock, **stock adjustments**, day close, staff memberships*, feedback |
 | Stock-out SV | one site | order entry, fulfilment, outbound corrections, read sources, read driver trips, day close, staff memberships*, feedback |
-| Office admin | site or all sites | order/AWB import and release, order entry, read sources, feedback |
+| Office admin | site or all sites | order/AWB import and release, order entry, read sources, feedback; reads the Stock-in, Packing station and Daily tally screens (view only, since 2026-10-09) |
 | HR | site or all sites | memberships (all roles, all sites), site capability policy, feedback |
 | Management | site or all sites | review comments, read sources, read driver trips, feedback |
-| Driver | one site | log their own trips (see [driver trips](#driver-trips)), view, feedback |
-| Packer | one site | view and feedback only |
+| Driver | one site | log trips on the shared driver sign-in, naming the driver (see [driver trips](#driver-trips)), view, feedback |
+| Packer | one site | record their own first packed count after unlocking their profile with a PIN (see [shared packer sign-in](#shared-packer-sign-in-and-pins)), view, feedback |
 
 \* Supervisors may grant or revoke only packer and driver memberships at their own site. "All access" never includes production corrections, stock adjustments, audit history or
 permission changes; those stay with the capabilities above. The catalogue lives in
@@ -38,11 +38,15 @@ JSON document per site with one revision (normalized per-record storage is #10).
    and the command's capability at that site, verifies the signature over the exact state text,
    user, revision, operation ID, command and payload fingerprint, limits the change to the
    command's top-level records, and enforces invariants itself: audit events, notes, stock
-   issues, adjustments and sort counts are append-only; new events, notes and history entries
+   issues, adjustments, sort counts and stock returns (since 2026-10-09) are append-only; a new
+   return has a positive whole quantity, an existing carton and the signed-in recorder, and
+   counts in that carton's balance; new events, notes and history entries
    are attributed to the caller; received cartons are immutable; no carton goes below zero;
    batches, custody (transfer) facts and route snapshots are fixed; stage completion is never
    undone and PIC/correction/rework history is append-only; a batch with a route snapshot needs
-   every stage completed with a PIC before transfer; machines and their history persist.
+   its factory stages (mixing, filling) completed with a PIC before transfer, and every route
+   stage completed with a PIC before a box carton is created for it (two gates since
+   2026-10-09, migration `20261009090001`); machines and their history persist.
 3. The commit, its audit row and the idempotency record (`operator_commits`) are one
    transaction. A retry with the same operation ID returns the established result; the same ID
    with different input is rejected.
@@ -125,9 +129,22 @@ author, site, optional record reference and time, and never edits operational re
 | `hologram` | Hologram machine | Mesin hologram |
 | `wrapping` | Shrink machine (plastic wrapping) | Mesin shrink (balutan plastik) |
 
-- New sachet batches snapshot route `sachet-v2` (above). Transfer needs an actual completion
-  with PIC for every stage in the snapshot. Planned PICs are not completions. QC is never
-  inferred.
+- New sachet batches snapshot route `sachet-v2` (above). Planned PICs are not completions. QC
+  is never inferred.
+- **Factory and warehouse stages (since 2026-10-09).** `mixing` and `filling` are factory
+  stages; every later stage of a route is a warehouse stage. Production records the factory
+  stages and **Send to warehouse** needs both completed with a PIC. Stock-in records
+  batching, hologram and wrapping on the receipt awaiting boxing; **Finalize box count**
+  needs every stage of the route completed with a PIC ("n/3 warehouse stages" until then).
+  Production may still record any stage; its screen shows the warehouse stages read-only.
+  Warehouse-stage records and corrections after transfer are the normal flow and are not
+  flagged as revisions until the box count is finalized; factory-stage corrections after
+  transfer still are. The split is defined once in TypeScript (`factoryStages`) and once in
+  SQL (`operator_private.factory_stage`), and a test keeps them identical. A four-stage
+  (`sachet-v1`) batch follows the same split. Historical batches without a route snapshot
+  are not re-checked at the box count. Batches already transferred with all five stages are
+  unchanged; a batch in production with some stages done transfers once mixing and filling
+  are done.
 - Batches without a snapshot: transferred ones keep their historical route (`sachet-v1`
   four-stage, or free-form legacy records). Untransferred ones need an explicit production
   route review: upgrade to five stages (adds an open Hologram stage) or keep the four-stage
@@ -138,6 +155,10 @@ author, site, optional record reference and time, and never edits operational re
   enforced on timestamps.
 
 ## Shared machine/PIC records (OPER-5)
+
+(Since 2026-10-09 the stock-in receipt row shows the warehouse stages inline; the full
+five-stage view below stays for history and corrections.)
+
 
 - Production and Stock-in edit the same batch stage records. Stock-in shows them under
   "Sachet production records"; both screens share the site machine registry.
@@ -159,24 +180,85 @@ and logs each trip; the assistant is recorded by name on the trip and does not s
 Migration `20261006090000_operator_driver_trips.sql` converts any existing `assistant`
 memberships to `driver` and removes the separate role.
 
-- **Log a trip** (`trip`, capability `trips.log`): assistant driver name (optional — blank when
-  driving alone), pickup time, arrival time (optional), photo (optional) and a short note.
-  Times are actual Malaysia times and cannot be in the future.
-- **Log arrival / add photo** (`trip-update`): the same driver adds the arrival time or photo
-  later, for example on arrival. Only missing values can be added; recorded values never change.
-- The driver is always the signed-in recorder; nobody can log a trip for another driver.
+Owner decision (2026-10-06, later): drivers change often, so they **share one driver sign-in**
+per site and type their name on every trip (free text for now; a pick list once there is
+enough data).
+
+- **Log a trip** (`trip`, capability `trips.log`): driver name (required, up to 100
+  characters), assistant driver name (optional — blank when driving alone), pickup time,
+  arrival time (optional), photo (optional) and a short note. Times are actual Malaysia times
+  and cannot be in the future.
+- **Log arrival / add photo** (`trip-update`): the sign-in that logged the trip adds the
+  arrival time or photo later, for example on arrival. Only missing values can be added;
+  recorded values never change.
+- **Several assistants** (since 2026-10-09): up to five assistant drivers per trip ("Add
+  another"), each 1–100 characters and listed once, stored in `assistants`; `assistant` keeps
+  the first name so older readers and older trips work unchanged.
+- **Drop-offs** (`trip-dropoff`, capability `trips.log`, since 2026-10-09; migration
+  `20261009090003_operator_trip_dropoffs.sql`): the sign-in that logged the trip adds a drop-off
+  with its actual time and a proof photo (both required) and an optional note, up to 20 per
+  trip. A drop-off is not before pickup and never in the future; it may be logged before or
+  after the arrival time (owner decision 2026-10-09). Drop-offs are appended only. The
+  database checks the same (append-only, own sign-in, time not before pickup, photo in the
+  signed-in account's folder, at most 20).
+- The signed-in account is always the recorder (`recordedBy`); the typed driver name is the
+  performer. On a shared sign-in the name is a declaration, not proof of identity, and any
+  driver using that sign-in can add a missing arrival or photo to its trips.
 - Stock-out supervisors and management (`trips.read`) see every trip and photo at the site.
   Drivers see their own trips and photos.
 - Database invariants: trips are never removed; recorded trip fields are fixed; only the
-  trip's own driver can add its missing arrival or photo; arrival is never before pickup; a
-  new photo must be in the signed-in driver's folder.
+  trip's own driver can add its missing arrival or photo, or append drop-offs; arrival and
+  drop-offs are never before pickup; a new photo must be in the signed-in driver's folder.
 - Photos are re-encoded in the browser as JPEG (max 1600 px, metadata removed) and stored in
   the private bucket `operator-trip-photos` at `<workspace id>/<driver user id>/<sha256>.jpg`
   (5 MB limit). `/api/trip-photos` signs uploads for drivers and 60-second read URLs for the
   driver or `trips.read` holders; storage RLS enforces the same rules. The fictional sandbox
   uses `trip-draft-photos/<account id>/…`.
-- Not included: supervisor correction of a mistaken trip time (there is no edit path yet),
-  vehicle or route fields, and links between trips and courier handovers.
+- Not included: supervisor correction of a mistaken trip time or driver name (there is no edit
+  path yet), vehicle or route fields, and links between trips and courier handovers.
+
+## Shared packer sign-in and PINs
+
+Owner decision (2026-10-06): packers **share one packer sign-in** per site. The stock-out
+supervisor sets up a profile and a PIN for each packer. On the shared sign-in a packer taps
+their name, enters their own PIN, sees only the AWBs assigned to them and records what they
+packed. The supervisor still corrects saved counts and reviews the daily tally. Migration
+`20261008090000_operator_packer_self_entry.sql`.
+
+- **Profiles** (`staff-profile-create`, `staff-profile-update`; capability `members.manage`,
+  allowed for the stock-out supervisor and HR): name, active flag, created by/at, in workspace
+  state (`staffProfiles`). Active packer names are unique (case-insensitive). Deactivated
+  packers cannot be assigned or unlock; their recorded work stays. Packing station → Packer
+  profiles & PINs.
+- **PINs** (4–6 digits) are never in workspace state, which every member of the site can read.
+  They are bcrypt hashes in `operator_private.staff_pins`, reachable only through
+  `operator_set_staff_pin` (stock-out supervisor or HR at that site), `operator_verify_staff_pin`
+  (`packing.record` holders) and `operator_staff_pin_status` (no hashes). Five wrong PINs in a
+  row lock that profile for 15 minutes; a new PIN from the supervisor clears the lock.
+- **Unlock**: `/api/packer-session` checks the PIN through the database and sets an HttpOnly,
+  SameSite=Strict cookie, signed with a key derived from `OPERATOR_COMMIT_SECRET`, for that
+  profile, account and site. It slides with each save and ends after 10 minutes without one.
+  The phone also locks after 3 minutes without a touch, and on **Done**.
+- **Own count** (`pack-own`, capability `packing.record`, scope `{orders,events}`): the server
+  takes the packer only from the unlocked session, never from the request. It allows a first
+  count only, only for an AWB assigned to that profile; the packer is recorded as packer and AWB
+  attacher, the shared account as recorder. Corrections stay `correct` (stock-out supervisor).
+  The supervisor's own `pack` entry is unchanged.
+- **Who keyed it** (since 2026-10-09): the daily tally's "Tally by assigned packer" has an
+  **Entered by** column (counts keyed by the packer with their PIN vs by a supervisor, from the
+  recorder's role), and the parcel record shows **Count entered by**. Older counts without a
+  recorder show "not recorded".
+- Limits: picking a name plus a PIN shows who claims the work, not a verified identity; a
+  shared PIN is as good as the person's own, so set a new one when it leaks. Anyone with the
+  shared password can lock a profile with wrong PINs (the supervisor unlocks it). All packers
+  saving at once still share one site document and revision (#10). Since 2026-10-09 the server
+  re-applies a save that lost the race on the latest records (see "Known limits"), so
+  simultaneous counts for different AWBs both save; only two saves of the same AWB conflict.
+- Rollout: apply the migration before deploying the app. Until then the app fails closed
+  (unlock answers 503; `pack-own` is refused by the database).
+- Applied to `operator-effen` on 2026-10-07 (owner-approved), recorded as version
+  `20261008090000` in the migration history; no packer profiles or PINs exist yet. The
+  stock-out supervisor adds them after the app is deployed.
 
 ## Factory scope (production supervisors)
 
@@ -259,7 +341,12 @@ commit;
 - Memberships (direct bootstrap inserts, each with an `operator_membership_audit` row):
   Production SV Faris (capsule) and Helmi (sachet); Stock-in SV Nurul; Stock-out SV Nadia;
   Office admin Hadera; Management, all sites: Nadeem and the shared `team@` account.
-- No user yet for HR, Packer or Driver. Without HR, membership changes need the SQL bootstrap.
+- Added later on 2026-10-06 (direct inserts, audit rows backfilled the same day): HR (`hr@`,
+  site scope), Driver (`driver@`) and Packers (`packers@`), all at site `operator`. Driver and
+  Packers are shared accounts, so trips and packer views are not attributed to an individual.
+  HR is site-scoped: it can grant and revoke memberships at `operator`, but setting a factory
+  scope or granting all-sites access needs an all-sites HR membership, so those still need the
+  owner's SQL.
 - The fictional preview flag (`ui_draft_access`) was removed from those seven accounts. Their
   old sandbox rows remain in `ui_draft_workspaces` but are no longer reachable.
 - `OPERATOR_COMMIT_SECRET` is set for Vercel Production only. Vercel Preview and Development
@@ -267,15 +354,53 @@ commit;
   them a separate staging project to re-enable them.
 - Known limit accepted for go-live: production supervisors are not limited to one factory;
   Faris and Helmi can both record capsule and sachet batches. Addressed by
-  `20261007090000_operator_factory_scope.sql` (see "Factory scope"); not yet applied to
-  `operator-effen` — awaiting the owner's go-ahead and the scope assignment script.
+  `20261007090000_operator_factory_scope.sql` (see "Factory scope").
+
+## Factory scope rollout (2026-10-06, owner-approved)
+
+- PR #18 merged and deployed to Vercel Production first (the app reads memberships without
+  the column until it exists; checked against PostgREST 13 on a local copy of the schema).
+- Before applying, the live `operator_commit_workspace` body was confirmed byte-identical to
+  `20261005090000` (the version this migration replaces and the rollback restores); the live
+  site had no saved records yet (revision 0).
+- The migration file was run unchanged in one transaction and its repository version
+  recorded in the migration history (as at go-live). Verified afterwards: new column and both
+  constraints, commit function body identical to the migration, one overload, grants (members
+  may run the commit and HR functions; anonymous callers may not; the private helpers are not
+  callable; `factory` is readable, not writable). Security advisor: only the expected
+  "signed-in users can execute" note for `operator_set_membership_factory`, like the other
+  administration functions.
+- 2026-10-06 07:11 UTC: the owner ran the "Factory scope" assignment script in the SQL
+  Editor. Faris (capsule) is scoped to `bottle` and Helmi to `sachet`, each with a `change`
+  row in `operator_membership_audit` (actor role `owner-bootstrap`, as at go-live).
+
+## Floor improvements rollout (2026-10-09, owner-approved)
+
+- The ten floor improvement PRs (#21–#28, #30, #31; plan and CI job in #29) merged into
+  `main` in the agreed order after each was green on both CI jobs (`check`, and `integration`:
+  migration rehearsal with rollback plus the real-stack browser scenarios).
+- Migrations applied to `operator-effen` on 2026-10-09 (UTC morning) under the owner's
+  instruction, each run unchanged in one transaction through the Supabase MCP connection and
+  recorded in the migration history under its repository version, before its PR merged:
+  `20261009090001_operator_warehouse_stages` (before #24), `20261009090002_operator_stock_returns`
+  (before #25), `20261009090003_operator_trip_dropoffs` (before #30).
+- Pre-checks: `assert_core_transition` still carried the all-stages transfer gate and no
+  `factory_stage`, `returns` or `dropoffs` text; `assert_trip_transition` was the 20261006
+  body; no `return` or `trip-dropoff` command rule existed.
+- Verified afterwards: `factory_stage` exists; `assert_core_transition` carries the factory
+  transfer gate, the box-count gate and `returns`; `assert_trip_transition` carries
+  `dropoffs`; the `return` and `trip-dropoff` rules exist with the expected capability and
+  scope; the three versions appear in `supabase_migrations.schema_migrations`.
+- Between each migration and its PR's deployment the live app was stricter than the database
+  (it still required all five stages before transfer), so no live record was affected.
 
 ## Verification
 
 - `pnpm test` — domain, capability-parity and command-scope tests.
 - `scripts/verify-migrations-local.sh` — applies all migrations to a disposable Postgres with
   stub `auth`/`storage` schemas, runs `supabase/tests/operator_access.test.sql` (bypass,
-  signatures, invariants, capabilities, memberships, storage policies, trips, factory scope),
+  signatures, invariants, capabilities, memberships, storage policies, trips, factory scope,
+  packer PINs),
   rehearses rollback and re-applies.
 - `tests/integration/run-real-stack.sh` — real GoTrue, PostgREST and Storage API on a local
   Postgres behind `router.mjs` (prefix routing and CORS, as Kong does), with the production
@@ -283,7 +408,12 @@ commit;
 
 ## Rollback
 
-Run `supabase/rollback/20261007090000_operator_factory_scope.down.sql`, then
+Run `supabase/rollback/20261009090003_operator_trip_dropoffs.down.sql`, then
+`supabase/rollback/20261009090002_operator_stock_returns.down.sql`, then
+`supabase/rollback/20261009090001_operator_warehouse_stages.down.sql` (restores the
+all-stages transfer gate), then
+`supabase/rollback/20261008090000_operator_packer_self_entry.down.sql` (deletes every packer
+PIN), then `supabase/rollback/20261007090000_operator_factory_scope.down.sql`, then
 `20261006090000_operator_driver_trips.down.sql`, then
 `20261005090000_operator_trusted_commands.down.sql`, then
 `20261004090000_operator_memberships.down.sql`, after exporting operational state,
@@ -292,7 +422,12 @@ operational write path (the unsafe replacement-state RPC is intentionally not re
 
 ## Known limits
 
-- One JSON document and revision per site: unrelated saves still conflict (#10).
+- One JSON document and revision per site (#10). Since 2026-10-09 unrelated saves no longer
+  conflict: on a revision mismatch the API server reloads the latest state, re-applies the
+  command (all domain checks run again) and commits, up to three attempts
+  (`apps/web/src/lib/rebase.ts`). The operation-ID replay check runs first in every attempt.
+  The client's revision is a hint; record-level conflicts (`expectedVersion`) still return
+  409 `record`, and the client reloads and keeps the form open.
 - Domain rules not re-expressed in SQL rely on the API server (see trust boundary).
 - No offline outbox beyond the single kept pending save (#12).
 - The membership-admin screen is a separate follow-up.

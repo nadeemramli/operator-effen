@@ -1,6 +1,7 @@
 import { sameOrigin } from "@/lib/request-origin";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
+import { PACKER_COOKIE } from "@/lib/packer-session";
 import { SESSION_ONLY_COOKIE } from "@/lib/supabase/remember";
 import { supabaseServer } from "@/lib/supabase/server";
 export async function POST(request: NextRequest) {
@@ -17,7 +18,9 @@ export async function POST(request: NextRequest) {
       { error: "Unable to sign out. Please retry." },
       { status: 503 },
     );
-  (await cookies()).delete(SESSION_ONLY_COOKIE);
+  const jar = await cookies();
+  jar.delete(SESSION_ONLY_COOKIE);
+  jar.delete({ name: PACKER_COOKIE, path: "/api" });
   return NextResponse.json(
     { ok: true },
     { headers: { "Cache-Control": "no-store" } },

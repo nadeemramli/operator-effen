@@ -1,8 +1,10 @@
 "use client";
 import { PersonPicker, PersonBadge } from "./person-profile";
 import { TripPhotoInput } from "./trip-photo";
-import type { ReactNode } from "react";
-import { ArrowUpRight, Inbox } from "lucide-react";
+import { FormError } from "./form-error";
+export { FormError } from "./form-error";
+import { useEffect, useState, type ReactNode } from "react";
+import { AlertTriangle, ArrowUpRight, Inbox, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -179,6 +181,64 @@ export function Empty({ children }: { children: ReactNode }) {
     </div>
   );
 }
+/**
+ * Page-level errors also float at the bottom of the screen, so they are seen whatever the
+ * scroll position. Hides after 8 seconds unless the pointer or focus is on it.
+ */
+export function ErrorToast({
+  message,
+  lang,
+  onDismiss,
+}: {
+  message: string;
+  lang: Lang;
+  onDismiss: () => void;
+}) {
+  const [hold, setHold] = useState(false);
+  useEffect(() => {
+    if (!message || hold) return;
+    const timer = setTimeout(onDismiss, 8000);
+    return () => clearTimeout(timer);
+  }, [message, hold, onDismiss]);
+  if (!message) return null;
+  return (
+    <div
+      className="toast-error"
+      role="alert"
+      onMouseEnter={() => setHold(true)}
+      onMouseLeave={() => setHold(false)}
+      onFocus={() => setHold(true)}
+      onBlur={() => setHold(false)}
+    >
+      <AlertTriangle size={18} aria-hidden="true" />
+      <p>{message}</p>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label={tr(lang, "Dismiss error", "Tutup ralat")}
+      >
+        <X size={16} />
+      </button>
+    </div>
+  );
+}
+/** Server messages name a field by key ("Please complete pic."); show its label instead. */
+export function fieldMessage(
+  message: string,
+  spec: FormSpec | null,
+  lang: Lang,
+): { message: string; field?: string } {
+  const match = /Please (complete|enter) ([a-zA-Z_]+)\./.exec(message);
+  const field = match && spec?.fields.find((f) => f.name === match[2]);
+  if (!match || !field) return { message };
+  return {
+    message: message.replace(
+      match[0],
+      tr(lang, `${field.label} is required.`, `${field.label} diperlukan.`),
+    ),
+    field: field.name,
+  };
+}
 export type Field = {
   name: string;
   label: string;
@@ -191,11 +251,15 @@ export type Field = {
     | "textarea"
     | "select"
     | "person"
-    | "photo";
+    | "photo"
+    /** Repeatable text inputs, sent as `<name>_0`, `<name>_1`, …; `max` caps the count. */
+    | "list";
   options?: { value: string; label: string }[];
   value?: string | number;
   required?: boolean;
   min?: number;
+  /** List fields: the most entries allowed. */
+  max?: number;
   hint?: string;
   profile?: { name: string; caption?: string };
   /** Photo fields: the operational workspace the photo is stored under. */
@@ -215,6 +279,8 @@ export function ActionForm({
   lang,
   busy,
   error,
+  invalidField,
+  errorAction,
   onClose,
   onSubmit,
 }: {
@@ -222,9 +288,36 @@ export function ActionForm({
   lang: Lang;
   busy: boolean;
   error: string;
+  /** Field named by the last server error; marked invalid until the next submit. */
+  invalidField?: string;
+  /** Extra control shown in the error, for example "Try again". */
+  errorAction?: ReactNode;
   onClose: () => void;
   onSubmit: (type: string, values: Record<string, unknown>) => Promise<unknown>;
 }) {
+  // Required fields the browser refused on the last submit attempt.
+  const formKey = spec ? spec.title + JSON.stringify(spec.hidden) : "";
+  const [refused, setRefused] = useState({ form: "", names: [] as string[] });
+  const missing = refused.form === formKey ? refused.names : [];
+  const setMissing = (update: (names: string[]) => string[]) =>
+    setRefused((r) => ({
+      form: formKey,
+      names: update(r.form === formKey ? r.names : []),
+    }));
+  // The submit button is outlined red for 3 seconds after an error, to tie the two together.
+  const [flash, setFlash] = useState(false);
+  useEffect(() => {
+    if (!error) return;
+    const on = setTimeout(() => setFlash(true), 0);
+    const off = setTimeout(() => setFlash(false), 3000);
+    return () => {
+      clearTimeout(on);
+      clearTimeout(off);
+    };
+  }, [error]);
+  const errorId = "action-form-error";
+  const invalid = (name: string) =>
+    invalidField === name || missing.includes(name) ? true : undefined;
   return (
     <Dialog
       open={!!spec}
@@ -239,10 +332,23 @@ export function ActionForm({
         </DialogHeader>
         {spec && (
           <form
-            key={spec.title + JSON.stringify(spec.hidden)}
+            key={formKey}
             className="space-y-4"
+            onInvalidCapture={(event) => {
+              const name = (event.target as HTMLInputElement).name;
+              if (name)
+                setMissing((m) => (m.includes(name) ? m : [...m, name]));
+            }}
+            onInputCapture={(event) => {
+              const name = (event.target as HTMLInputElement).name;
+              if (name && missing.includes(name))
+                setMissing((m) => m.filter((x) => x !== name));
+            }}
             onSubmit={(event) => {
               event.preventDefault();
+              // Scrolls to the first invalid field when native validation was bypassed.
+              if (!event.currentTarget.reportValidity()) return;
+              setMissing(() => []);
               void onSubmit(spec.type, {
                 ...spec.hidden,
                 ...Object.fromEntries(new FormData(event.currentTarget)),
@@ -288,7 +394,10 @@ export function ActionForm({
                     name={field.name}
                     lang={lang}
                     workspace={field.workspace}
+                    required={field.required !== false}
                   />
+                ) : field.type === "list" ? (
+                  <ListInput field={field} lang={lang} />
                 ) : field.type === "person" ? (
                   <PersonPicker
                     name={field.name}
@@ -301,6 +410,7 @@ export function ActionForm({
                 ) : field.type === "select" ? (
                   <select
                     id={"field-" + field.name}
+                    aria-invalid={invalid(field.name)}
                     name={field.name}
                     className="form-select"
                     defaultValue={field.value ?? ""}
@@ -320,6 +430,7 @@ export function ActionForm({
                 ) : field.type === "textarea" ? (
                   <Textarea
                     id={"field-" + field.name}
+                    aria-invalid={invalid(field.name)}
                     name={field.name}
                     defaultValue={field.value ?? ""}
                     required={field.required !== false}
@@ -332,6 +443,7 @@ export function ActionForm({
                     </span>
                     <Input
                       id={"field-" + field.name}
+                      aria-invalid={invalid(field.name)}
                       name={field.name}
                       type="number"
                       aria-label={field.label}
@@ -345,6 +457,7 @@ export function ActionForm({
                 ) : (
                   <Input
                     id={"field-" + field.name}
+                    aria-invalid={invalid(field.name)}
                     name={field.name}
                     type={field.type ?? "text"}
                     defaultValue={field.value ?? ""}
@@ -356,13 +469,19 @@ export function ActionForm({
                   />
                 )}{" "}
                 {field.hint && <p className="field-hint">{field.hint}</p>}
+                {(missing.includes(field.name) ||
+                  invalidField === field.name) && (
+                  <p className="field-missing">
+                    {tr(
+                      lang,
+                      `${field.label} is required.`,
+                      `${field.label} diperlukan.`,
+                    )}
+                  </p>
+                )}
               </div>
             ))}
-            {error && (
-              <div className="form-error" role="alert">
-                {error}
-              </div>
-            )}
+            <FormError id={errorId} message={error} action={errorAction} />
             <div className="flex justify-end gap-2 pt-3">
               <Button
                 type="button"
@@ -372,7 +491,12 @@ export function ActionForm({
               >
                 {tr(lang, "Cancel", "Batal")}
               </Button>
-              <Button type="submit" className="action-primary" disabled={busy}>
+              <Button
+                type="submit"
+                className={"action-primary " + (flash ? "submit-invalid" : "")}
+                disabled={busy}
+                aria-describedby={error ? errorId : undefined}
+              >
                 {busy
                   ? tr(lang, "Saving…", "Menyimpan…")
                   : (spec.submit ?? tr(lang, "Save record", "Simpan rekod"))}
@@ -384,3 +508,55 @@ export function ActionForm({
     </Dialog>
   );
 }
+
+/** Repeatable text inputs ("+ Add another"), sent as `<name>_0`, `<name>_1`, …. */
+function ListInput({ field, lang }: { field: Field; lang: Lang }) {
+  const max = field.max ?? 5;
+  const [rows, setRows] = useState<{ key: number; value: string }[]>([
+    { key: 0, value: String(field.value ?? "") },
+  ]);
+  return (
+    <div className="list-input">
+      {rows.map((row, i) => (
+        <div key={row.key} className="list-input-row">
+          <Input
+            id={i === 0 ? "field-" + field.name : undefined}
+            name={`${field.name}_${i}`}
+            aria-label={`${field.label} ${i + 1}`}
+            value={row.value}
+            maxLength={100}
+            required={field.required !== false && i === 0}
+            onChange={(e) =>
+              setRows(rows.map((r) => (r.key === row.key ? { ...r, value: e.target.value } : r)))
+            }
+          />
+          {rows.length > 1 && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={tr(lang, "Remove", "Buang") + ` ${field.label} ${i + 1}`}
+              onClick={() => setRows(rows.filter((r) => r.key !== row.key))}
+            >
+              <X size={14} />
+            </Button>
+          )}
+        </div>
+      ))}
+      {rows.length < max && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            setRows([...rows, { key: Math.max(...rows.map((r) => r.key)) + 1, value: "" }])
+          }
+        >
+          <Plus size={14} />
+          {tr(lang, "Add another", "Tambah lagi")}
+        </Button>
+      )}
+    </div>
+  );
+}
+

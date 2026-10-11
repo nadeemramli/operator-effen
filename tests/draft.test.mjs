@@ -122,11 +122,12 @@ test("Adypocide records machines and PICs, then creates stock only from warehous
       pic: "Operator " + String.fromCharCode(65 + index),
     });
     assert.equal(batchComplete(s.batches[0]), index === 4);
-    if (index < 4)
+    // Transfer needs the factory stages (mixing, filling) only.
+    if (index < 1)
       assert.throws(
         () =>
           run(s, "production", "transfer", { id: batchId, pic: "Factory PIC" }),
-        /all five/,
+        /mixing and filling/,
       );
   }
   assert.deepEqual(
@@ -157,6 +158,7 @@ test("Adypocide records machines and PICs, then creates stock only from warehous
     () =>
       run(s, "production", "machine", {
         id: batchId,
+        stage: "mixing",
         machine: "Machine 3",
         pic: "Operator C",
       }),

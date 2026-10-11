@@ -45,12 +45,18 @@ function assignedOrder() {
   return s;
 }
 
-test("packers only post feedback, drivers also log trips; supervisors act within their capabilities", () => {
+test("packers record their own packing, drivers log trips; supervisors act within their capabilities", () => {
   for (const role of ["packer", "driver"]) {
     const caps = effectiveCapabilities(role);
-    assert.deepEqual(caps, role === "driver" ? ["trips.log", "feedback.post"] : ["feedback.post"]);
+    assert.deepEqual(
+      caps,
+      role === "driver" ? ["trips.log", "feedback.post"] : ["feedback.post", "packing.record"],
+    );
     assert.equal(authorizeMember("feedback", caps), null);
     assert.equal(authorizeMember("trip", caps) === null, role === "driver");
+    assert.equal(authorizeMember("pack-own", caps) === null, role === "packer");
+    for (const type of ["staff-profile-create", "staff-profile-update", "correct"])
+      assert.match(authorizeMember(type, caps), /supervisor/);
     for (const type of ["pack", "machine", "dispatch", "adjust", "stage-correct", "reset"])
       assert.match(authorizeMember(type, caps), /supervisor|not available/);
   }
@@ -58,6 +64,8 @@ test("packers only post feedback, drivers also log trips; supervisors act within
   assert.equal(authorizeMember("machine", effectiveCapabilities("production")), null);
   assert.equal(authorizeMember("machine", effectiveCapabilities("intake")), null);
   assert.match(authorizeMember("pack", effectiveCapabilities("production")), /does not permit/);
+  assert.match(authorizeMember("pack-own", effectiveCapabilities("outbound")), /does not permit/);
+  assert.equal(authorizeMember("staff-profile-create", effectiveCapabilities("outbound")), null);
   assert.match(authorizeMember("reset", effectiveCapabilities("outbound")), /not available/);
 });
 

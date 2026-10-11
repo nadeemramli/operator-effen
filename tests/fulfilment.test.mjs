@@ -410,3 +410,51 @@ test("future staff assignments use stable profile IDs and require a packer role"
   );
   assert.equal(s.orders[0].packer, "staff-packer-1");
 });
+
+// WP5: the daily tally's inventory block, derived from stock movements by Malaysia day.
+test("daily inventory assigns movements to Malaysia days and closes on the rack balance", async () => {
+  const { dailyInventory, available, applyCommand, createDraft, today } = await import(
+    "../apps/web/src/lib/draft.ts"
+  );
+  let s = createDraft();
+  const cav = s.cartons.find((c) => c.id === "c-cav");
+  // Put every existing cav movement on a known earlier day.
+  cav.at = "2026-10-01T02:00:00.000Z";
+  for (const i of s.issues) if (i.cartonId === cav.id) i.at = "2026-10-01T03:00:00.000Z";
+  const issuedBefore = s.issues.filter((i) => i.cartonId === cav.id).reduce((n, i) => n + i.qty, 0);
+  // 23:59 MYT on 2 Oct is still 2 Oct; 00:00 MYT on 3 Oct is the next day.
+  s.issues.push(
+    { id: "late", cartonId: cav.id, orderId: "x", qty: 5, pic: "P", at: "2026-10-02T15:59:00.000Z" },
+    { id: "midnight", cartonId: cav.id, orderId: "x", qty: 7, pic: "P", at: "2026-10-02T16:00:00.000Z" },
+  );
+  s.returns = [{ id: "r1", cartonId: cav.id, qty: 3, reason: "Courier", pic: "R", at: "2026-10-02T04:00:00.000Z" }];
+  s.adjustments.push({ id: "a1", cartonId: cav.id, delta: -1, reason: "Broken", at: "2026-10-03T01:00:00.000Z" });
+  const day = (date) => dailyInventory(s, date).find((r) => r.product === "cav");
+  const d1 = day("2026-10-01");
+  assert.deepEqual(
+    [d1.opening, d1.received, d1.issued, d1.returned, d1.adjusted, d1.closing],
+    [0, 120, issuedBefore, 0, 0, 120 - issuedBefore],
+  );
+  const d2 = day("2026-10-02");
+  assert.equal(d2.opening, d1.closing);
+  assert.equal(d2.issued, 5);
+  assert.equal(d2.returned, 3);
+  assert.equal(d2.closing, d1.closing - 5 + 3);
+  const d3 = day("2026-10-03");
+  assert.equal(d3.opening, d2.closing);
+  assert.equal(d3.issued, 7);
+  assert.equal(d3.adjusted, -1);
+  // Today's closing is what is on the racks now.
+  s = applyCommand(s, {
+    type: "return",
+    role: "intake",
+    input: { cartonId: cav.id, qty: 2, reason: "Courier", pic: "R" },
+  });
+  for (const r of dailyInventory(s, today())) {
+    const rack = s.cartons
+      .filter((c) => c.product === r.product && c.unit === "bottle")
+      .reduce((n, c) => n + available(s, c), 0);
+    assert.equal(r.closing, rack, r.product);
+  }
+  assert.equal(dailyInventory(s, today()).find((r) => r.product === "cav").returned, 2);
+});

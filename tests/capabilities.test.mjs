@@ -17,11 +17,22 @@ const migration = (name) =>
 const sql = migration("20261005090000_operator_trusted_commands");
 // 20261006: one driver role (assistant reference rows deleted) and driver trip rules.
 const trips = migration("20261006090000_operator_driver_trips");
+// 20261008: packers record their own packing; packer profiles.
+const packers = migration("20261008090000_operator_packer_self_entry");
 const section = (table, source = sql) => {
   const start = source.indexOf(`insert into public.${table}`);
   return start < 0 ? "" : source.slice(start, source.indexOf(";", start));
 };
-const merged = (table) => section(table) + section(table, trips);
+// Floor improvements (October 2026): later migrations seed further rows.
+const later = [
+  "20261009090002_operator_stock_returns",
+  "20261009090003_operator_trip_dropoffs",
+].map(migration);
+const merged = (table) =>
+  section(table) +
+  section(table, trips) +
+  section(table, packers) +
+  later.map((m) => section(table, m)).join("");
 
 test("one driver role: the migration removes the separate assistant role", () => {
   assert.match(trips, /update public\.operator_memberships\s+set role = 'driver', updated_at = now\(\)\s+where role = 'assistant';/);
@@ -104,11 +115,12 @@ test("every operational command stays inside its database scope", () => {
   run("intake", "stock-in-ady", { receiptId: s.adypocideReceipts[0].id, boxes: 3, rack: "R", pic: "R" });
   run("production", "batch", { product: "cav", code: "COV-B", date: "2026-10-01", target: 2 });
   const bottle = s.batches[0].id;
-  for (let i = 0; i < 4; i++) run("production", "step", { id: bottle, step: i, pic: "P", qty: 2, qc: "not-recorded" });
+  for (let i = 0; i < 4; i++) run("production", "step", { id: bottle, step: i, pic: "P", ...(i === 3 ? { qty: 2, qc: "not-recorded" } : {}) });
   run("production", "transfer", { id: bottle, qty: 2, pic: "F" });
   run("intake", "receive", { batchId: bottle, qty: 2, rack: "R", pic: "R" });
   run("intake", "count", { cartonId: s.cartons[0].id, actual: 1, pic: "R" });
   run("intake", "adjust", { id: s.counts[0].id, reason: "Broken bottle" });
+  run("intake", "return", { cartonId: s.cartons[0].id, qty: 1, reason: "Courier return", awb: "RT 123", pic: "R" });
   run("admin", "order", { awb: "COV-AWB", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });
   const o = s.orders[0].id;
   run("outbound", "edit-order", { id: o, awb: "COV-AWB", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });
@@ -118,13 +130,35 @@ test("every operational command stays inside its database scope", () => {
   run("outbound", "issue-orders", { ids: [o], cartonId: "c-cav", qty: 1, pic: "S" });
   run("outbound", "assign-orders", { ids: [o], packer: "Sample Packer A", pic: "S" });
   run("outbound", "pack", { id: o, actual: 1, pic: "Sample Packer A", labelPic: "X" });
+  const profileId = "20000000-0000-4000-8000-000000000001";
+  run("outbound", "staff-profile-create", { profileId, name: "Synthetic Packer" });
+  run("outbound", "staff-profile-update", { id: profileId, name: "Synthetic Packer Z" });
+  run("outbound", "order", { awb: "COV-AWB-2", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });
+  const own = s.orders[0].id;
+  run("outbound", "review-order", { id: own, pic: "S" });
+  run("outbound", "sort-count", { date: "2026-10-01", product: "cav", counted: 2, pic: "S", note: "Recount" });
+  run("outbound", "assign-orders", { ids: [own], packer: profileId, pic: "S" });
+  {
+    const next = applyCommand(s, {
+      type: "pack-own",
+      role: "packer",
+      input: { id: own, actual: 1 },
+      actor: actor("packer"),
+      capabilities: effectiveCapabilities("packer"),
+      performer: profileId,
+    });
+    assert.deepEqual(outOfScopeKeys("pack-own", s, next), [], "pack-own");
+    seen.add("pack-own");
+    s = next;
+  }
   run("outbound", "correct", { id: o, field: "actual", qty: 1, reason: "Recount" });
   run("outbound", "dispatch", { id: o, reference: "M-1", pic: "D" });
   run("management", "review", { text: "Check" });
   run("packer", "feedback", { text: "Note" });
   run("production", "close", { date: "2026-10-01", note: "Done" });
-  run("driver", "trip", { assistant: "Sample Assistant", pickupAt: "2026-10-01T09:00" });
+  run("driver", "trip", { driver: "Sample Driver", assistant: "Sample Assistant", pickupAt: "2026-10-01T09:00" });
   run("driver", "trip-update", { id: s.trips[0].id, arriveAt: "2026-10-01T10:30" });
+  run("driver", "trip-dropoff", { id: s.trips[0].id, at: "2026-10-01T10:00", photo: "10000000-0000-4000-8000-00000000000a/00000000-0000-4000-8000-000000000001/" + "a".repeat(64) + ".jpg" });
   run("production", "route-review", (() => {
     const legacy = s.batches.find((b) => b.id === "b-ady");
     delete legacy.route;

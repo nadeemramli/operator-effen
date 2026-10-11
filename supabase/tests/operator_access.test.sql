@@ -128,9 +128,8 @@ select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch',
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch',
   jsonb_set(pg_temp.state(), '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(
     pg_temp.ev('e2', '00000000-0000-4000-8000-000000000006')))), '23514', 'forged recorder');
-select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'transfer',
-  jsonb_set(pg_temp.state(), '{batches,0,transferredAt}', '"2026-10-04T00:00:00Z"')), '23514',
-  'five-stage transfer without Hologram');
+-- (The former "five-stage transfer without Hologram" refusal is allowed since 20261009090001:
+-- transfer needs the factory stages only. Its replacement cases are in section 9.)
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'machine',
   jsonb_set(pg_temp.state(), '{batches,0,steps,0,done}', 'false')), '23514', 'un-complete a stage');
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'change-step-pic',
@@ -644,5 +643,231 @@ do $$ begin
 end $$;
 select pg_temp.expect(pg_temp.commit_as(:SACHET, :A, 'step',
   jsonb_set(pg_temp.state(), '{batches,0,target}', '7')), 'ok', 'cleared scope covers the bottle factory');
+
+-- 20261008: packer profiles and PINs for the shared packer sign-in. PINs live only in
+-- operator_private.staff_pins (bcrypt); the stock-out SV or HR sets them, packing.record
+-- verifies them, five wrong PINs lock the profile, and nobody reads the hashes.
+update public.operator_workspaces
+set state = state || '{"staffProfiles":[
+  {"id":"p-ali","name":"Synthetic Ali","role":"packer","active":true},
+  {"id":"p-old","name":"Synthetic Old","role":"packer","active":false},
+  {"id":"p-pic","name":"Synthetic PIC","role":"production"}]}'::jsonb
+where site_id = 'site-a';
+create function pg_temp.expect_text(p_actual text, p_expected text, p_label text) returns void
+language plpgsql as $$
+begin
+  if p_actual is distinct from p_expected then
+    raise exception 'FAIL: % expected %, got %', p_label, p_expected, p_actual; end if;
+end $$;
+create function pg_temp.expect_invalid(p_sql text, p_label text) returns void language plpgsql as $$
+begin
+  begin
+    execute p_sql;
+  exception when invalid_parameter_value then return;
+  end;
+  raise exception 'FAIL: % was not rejected', p_label;
+end $$;
+\set SO '''00000000-0000-4000-8000-000000000009'''
+\set PK '''00000000-0000-4000-8000-000000000002'''
+begin;
+select pg_temp.as_user(:SV);
+select pg_temp.expect_denied(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-ali', '2468'), 'production SV sets a packer PIN');
+rollback;
+begin;
+select pg_temp.as_user(:PK);
+select pg_temp.expect_denied(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-ali', '2468'), 'packer sets a packer PIN');
+select pg_temp.expect_denied(format('select * from public.operator_staff_pin_status(%s)', :'A'), 'packer reads PIN status');
+select pg_temp.expect_denied('select * from operator_private.staff_pins', 'packer reads PIN hashes');
+rollback;
+begin;
+select pg_temp.as_user(:SO);
+select pg_temp.expect_invalid(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-ali', '12a4'), 'non-numeric PIN');
+select pg_temp.expect_invalid(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-ali', '123'), 'three-digit PIN');
+select pg_temp.expect_invalid(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-old', '2468'), 'PIN for an inactive profile');
+select pg_temp.expect_invalid(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-pic', '2468'), 'PIN for a non-packer profile');
+select pg_temp.expect_invalid(format('select public.operator_set_staff_pin(%s, %L, %L)', :'A', 'p-nobody', '2468'), 'PIN for an unknown profile');
+select pg_temp.expect_denied(format('select public.operator_set_staff_pin(%s, %L, %L)', :'B', 'p-ali', '2468'), 'stock-out SV sets a PIN at another site');
+select public.operator_set_staff_pin(:A, 'p-ali', '2468');
+select pg_temp.expect_text((select count(*)::text from public.operator_staff_pin_status(:A) where profile_id = 'p-ali' and locked_until is null), '1', 'PIN status after set');
+commit;
+do $$ begin
+  if (select pin_hash from operator_private.staff_pins where profile_id = 'p-ali') !~ '^\$2[abxy]\$'
+    or exists (select 1 from operator_private.staff_pins where pin_hash like '%2468%') then
+    raise exception 'FAIL: PIN not stored as a bcrypt hash'; end if;
+  if (select state::text from public.operator_workspaces where site_id = 'site-a') like '%2468%' then
+    raise exception 'FAIL: PIN leaked into workspace state'; end if;
+end $$;
+begin;
+select pg_temp.as_user(:SV);
+select pg_temp.expect_denied(format('select public.operator_verify_staff_pin(%s, %L, %L)', :'A', 'p-ali', '2468'), 'production SV checks a packer PIN');
+rollback;
+begin;
+select pg_temp.as_user(:PK);
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '2468'), 'ok', 'right PIN');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-old', '2468'), 'unset', 'inactive profile');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-nobody', '2468'), 'unset', 'unknown profile');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '1111'), 'wrong', 'wrong PIN 1');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '1111'), 'wrong', 'wrong PIN 2');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', 'abcd'), 'wrong', 'wrong PIN 3');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', null), 'wrong', 'wrong PIN 4');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '1111'), 'locked', 'fifth wrong PIN locks');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '2468'), 'locked', 'right PIN while locked');
+select pg_temp.expect_denied(format('select public.operator_verify_staff_pin(%s, %L, %L)', :'B', 'p-ali', '2468'), 'packer checks a PIN at another site');
+commit;
+begin;
+select pg_temp.as_user(:SO);
+select pg_temp.expect_text((select count(*)::text from public.operator_staff_pin_status(:A) where locked_until is not null), '1', 'lock visible to the supervisor');
+select public.operator_set_staff_pin(:A, 'p-ali', '135790');
+commit;
+begin;
+select pg_temp.as_user(:PK);
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '2468'), 'wrong', 'old PIN after reset');
+select pg_temp.expect_text(public.operator_verify_staff_pin(:A, 'p-ali', '135790'), 'ok', 'new PIN clears the lock');
+commit;
+do $$ begin
+  if (select failed_attempts from operator_private.staff_pins where profile_id = 'p-ali') <> 0 then
+    raise exception 'FAIL: a right PIN did not reset the wrong-PIN count'; end if;
+end $$;
+-- All-sites HR can set a PIN; the packer's own count is a signed commit like any other.
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000008');
+select public.operator_set_staff_pin(:A, 'p-ali', '9753');
+commit;
+select pg_temp.expect(pg_temp.commit_as(:PK, :A, 'pack-own',
+  jsonb_set(pg_temp.state(), '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(pg_temp.ev('e-pack', '00000000-0000-4000-8000-000000000002')))),
+  'ok', 'packer commits a signed pack-own');
+select pg_temp.expect(pg_temp.commit_as(:PK, :A, 'staff-profile-create',
+  jsonb_set(pg_temp.state(), '{staffProfiles}', '[]')), '42501', 'packer changes packer profiles');
+select pg_temp.expect(pg_temp.commit_as(:PK, :A, 'pack-own',
+  jsonb_set(pg_temp.state(), '{staffProfiles}', '[]')), '42501', 'pack-own outside its scope');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'staff-profile-update',
+  jsonb_set(pg_temp.state(), '{staffProfiles,0,name}', '"Synthetic Ali B"')), 'ok', 'stock-out SV renames a packer profile');
+
+-- 9. Factory and warehouse stages (20261009090001). Transfer needs mixing and filling; a new
+--    box carton of a batch with a route snapshot needs every route stage.
+\set W '''10000000-0000-4000-8000-0000000000c1'''
+insert into public.operator_workspaces (id, site_id, name, state) values
+  (:W, 'site-w', 'Synthetic site W', $${
+    "version":1,
+    "batches":[{"id":"w1","code":"SYN-W-1","product":"ady","date":"2026-10-01","target":0,"actual":0,"sent":0,
+      "route":{"id":"sachet-v2","stages":["mixing","filling","batching","hologram","wrapping"],"at":"t"},
+      "steps":[
+        {"sachetStage":"mixing","pic":"P1","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"filling","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"batching","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"hologram","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"wrapping","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"}]}],
+    "cartons":[],"adypocideReceipts":[],"orders":[],"issues":[],"boxing":[],"counts":[],"adjustments":[],
+    "events":[],"notes":[],"closedDays":[]}$$::jsonb);
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values
+  (:W, '00000000-0000-4000-8000-000000000001', 'production', 'SV W', 'site'),
+  (:W, '00000000-0000-4000-8000-000000000006', 'intake', 'SI W', 'site');
+create function pg_temp.done(p_state jsonb, p_pos int, p_pic text) returns jsonb language sql as $$
+  select jsonb_set(jsonb_set(p_state, array['batches','0','steps',p_pos::text,'pic'], to_jsonb(p_pic)),
+    array['batches','0','steps',p_pos::text,'done'], 'true') $$;
+create function pg_temp.boxed(p_state jsonb) returns jsonb language sql as $$
+  select jsonb_set(p_state, '{cartons}', '[{"id":"cw1","ref":"SYN-W-1","batchId":"w1","product":"ady","unit":"box","qty":40,"rack":"B","pic":"SI","at":"t"}]') $$;
+select pg_temp.expect(pg_temp.commit_as(:SV, :W, 'transfer',
+  jsonb_set(pg_temp.state(:W), '{batches,0,transferredAt}', '"2026-10-04T00:00:00Z"')), '23514',
+  'transfer without filling');
+select pg_temp.expect(pg_temp.commit_as(:SV, :W, 'machine', pg_temp.done(pg_temp.state(:W), 1, 'P2')),
+  'ok', 'production records filling');
+select pg_temp.expect(pg_temp.commit_as(:SV, :W, 'transfer',
+  jsonb_set(pg_temp.state(:W), '{batches,0,transferredAt}', '"2026-10-04T00:00:00Z"')), 'ok',
+  'transfer once mixing and filling are recorded (warehouse stages open)');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :W, 'stock-in-ady',
+  pg_temp.boxed(pg_temp.state(:W))), '23514', 'box carton before warehouse stages');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :W, 'machine',
+  pg_temp.done(pg_temp.done(pg_temp.state(:W), 2, 'P3'), 4, 'P5')), 'ok',
+  'stock-in records batching and wrapping after transfer');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :W, 'stock-in-ady',
+  pg_temp.boxed(pg_temp.state(:W))), '23514', 'box carton with Hologram still open');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :W, 'machine',
+  pg_temp.done(pg_temp.state(:W), 3, 'P4')), 'ok', 'stock-in records Hologram');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :W, 'stock-in-ady',
+  pg_temp.boxed(pg_temp.state(:W))), 'ok', 'box carton after all stages');
+do $$ begin
+  if not operator_private.factory_stage('mixing') or not operator_private.factory_stage('filling')
+    or operator_private.factory_stage('batching') or operator_private.factory_stage('hologram')
+    or operator_private.factory_stage('wrapping') then
+    raise exception 'FAIL: factory_stage split'; end if;
+end $$;
+
+-- 10. Stock returns (20261009090002): append-only, attributed, into an existing carton.
+\set SI '''00000000-0000-4000-8000-000000000006'''
+create function pg_temp.ret(p_id text, p_carton text, p_qty jsonb, p_uid text) returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'cartonId', p_carton, 'qty', p_qty, 'reason', 'Courier return',
+    'pic', 'SI', 'at', 't', 'recordedBy', jsonb_build_object('userId', p_uid)) $$;
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', jsonb_build_array(pg_temp.ret('r1', 'cw1', '3', :SI)))),
+  'ok', 'return to a carton');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', (pg_temp.state(:W) -> 'returns')
+    || jsonb_build_array(pg_temp.ret('r2', 'cw1', '0', :SI)))), '23514', 'return with qty 0');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', (pg_temp.state(:W) -> 'returns')
+    || jsonb_build_array(pg_temp.ret('r3', 'cw1', '1.5', :SI)))), '23514', 'return with a fractional qty');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns,0,qty}', '30')), '23514', 'rewrite an existing return');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', '[]')), '23514', 'remove an existing return');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', (pg_temp.state(:W) -> 'returns')
+    || jsonb_build_array(pg_temp.ret('r4', 'no-such-carton', '1', :SI)))), '23514', 'return to an unknown carton');
+select pg_temp.expect(pg_temp.commit_as(:SI, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', (pg_temp.state(:W) -> 'returns')
+    || jsonb_build_array(pg_temp.ret('r5', 'cw1', '1', '00000000-0000-4000-8000-000000000001')))),
+  '23514', 'return attributed to another user');
+select pg_temp.expect(pg_temp.commit_as(:SV, :W, 'return',
+  jsonb_set(pg_temp.state(:W), '{returns}', (pg_temp.state(:W) -> 'returns')
+    || jsonb_build_array(pg_temp.ret('r6', 'cw1', '1', :SV)))), '42501', 'production SV records a return');
+-- Returned units count in the balance: 40 boxed + 3 returned can be issued as 43, not 44.
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values
+  (:W, '00000000-0000-4000-8000-000000000009', 'outbound', 'SO W', 'site');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000009', :W, 'issue',
+  jsonb_set(pg_temp.state(:W), '{issues}', '[{"id":"iw1","cartonId":"cw1","orderId":"o","qty":44,"pic":"x","at":"t"}]')),
+  '23514', 'issue more than received plus returned');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000009', :W, 'issue',
+  jsonb_set(pg_temp.state(:W), '{issues}', '[{"id":"iw1","cartonId":"cw1","orderId":"o","qty":43,"pic":"x","at":"t"}]')),
+  'ok', 'issue received plus returned');
+
+-- 11. Trip drop-offs and assistants (20261009090003): drop-offs are appended only, by the
+--     sign-in that logged the trip, each with a time not before pickup and its own photo.
+create function pg_temp.drop(p_id text, p_uid text, p_at text default '2026-10-06T01:30:00.000Z',
+  p_photo boolean default true) returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'at', p_at, 'recordedAt', '2026-10-06T01:31:00.000Z')
+    || case when p_photo then jsonb_build_object('photo',
+      '10000000-0000-4000-8000-00000000000a/' || p_uid || '/' || repeat('c', 64) || '.jpg') else '{}' end $$;
+create function pg_temp.drops(p jsonb) returns jsonb language sql as $$
+  select jsonb_set(pg_temp.state(), '{trips,0,dropoffs}', p) $$;
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  pg_temp.drops(jsonb_build_array(pg_temp.drop('d1', :DRV)))), 'ok', 'driver adds a drop-off to own trip');
+select pg_temp.expect(pg_temp.commit_as(:DRV2, :A, 'trip-dropoff',
+  pg_temp.drops((pg_temp.state() -> 'trips' -> 0 -> 'dropoffs') || jsonb_build_array(pg_temp.drop('d2', :DRV2)))),
+  '23514', 'another sign-in adds a drop-off');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  jsonb_set(pg_temp.state(), '{trips,0,dropoffs,0,at}', '"2026-10-06T01:45:00.000Z"')),
+  '23514', 'rewrite a recorded drop-off');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff', pg_temp.drops('[]')),
+  '23514', 'remove a recorded drop-off');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  pg_temp.drops((pg_temp.state() -> 'trips' -> 0 -> 'dropoffs') || jsonb_build_array(pg_temp.drop('d3', :DRV, p_photo => false)))),
+  '23514', 'drop-off without a photo');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  pg_temp.drops((pg_temp.state() -> 'trips' -> 0 -> 'dropoffs') || jsonb_build_array(pg_temp.drop('d4', :DRV2)))),
+  '23514', 'drop-off photo in another account''s folder');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  pg_temp.drops((pg_temp.state() -> 'trips' -> 0 -> 'dropoffs') || jsonb_build_array(pg_temp.drop('d5', :DRV, '2026-10-06T00:30:00.000Z')))),
+  '23514', 'drop-off before pickup');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip-dropoff',
+  pg_temp.drops((pg_temp.state() -> 'trips' -> 0 -> 'dropoffs') || jsonb_build_array(pg_temp.drop('d6', :DRV, '2026-10-06T03:30:00.000Z')))),
+  'ok', 'second drop-off after arrival');
+select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip',
+  pg_temp.with_trips((pg_temp.state() -> 'trips') || jsonb_build_array(pg_temp.trip('t-crew', :DRV,
+    '{"assistants":["Assistant A","Assistant B"]}')))), 'ok', 'new trip with two assistants');
+do $$ begin
+  if jsonb_array_length((select state -> 'trips' -> 0 -> 'dropoffs' from public.operator_workspaces where site_id = 'site-a')) <> 2 then
+    raise exception 'FAIL: expected two drop-offs on the trip'; end if;
+end $$;
 
 select 'operator access tests passed' as result;
