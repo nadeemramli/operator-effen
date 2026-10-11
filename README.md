@@ -66,6 +66,10 @@ Vercel's **Development** and **Preview** environments receive the public Supabas
 
 The committed `supabase/config.toml` is generated local CLI configuration, with seeding disabled until reviewed seed data exists. It has not been pushed to the hosted project's service settings. Do not run a database reset or configuration push against a hosted project as a setup shortcut.
 
+### Clearing keyed-in records
+
+`supabase/maintenance/purge-operational-data.sql` empties every site workspace (batches, cartons, AWBs and imports, trips, counts, receipts, events, closed days) and its commit log while keeping user accounts, memberships, roles, staff PINs, and the staff profile and machine configuration. Run it in the hosted project's SQL editor after confirming the selected project; it cannot be undone without a backup. Uploaded PDFs and trip photos stay in their storage buckets until those are emptied from the dashboard. The preview sandbox rows are a separate, commented-out step.
+
 ## Hosting
 
 Vercel is linked to this repository with root directory `apps/web`, framework Next.js, Node.js 24.x and a frozen pnpm install. Git pushes can trigger deployments. Custom domain setup is deferred.
