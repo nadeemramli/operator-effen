@@ -144,6 +144,12 @@ are never converted into box inventory. Previously counted boxes remain stock.
   manually enter an AWB, including keyboard-style barcode input, without a PDF.
   Manual entries must be reviewed before joining demand; pending records can be edited.
   Scanning a barcode supplies only the reference, not the parcel contents.
+  Since 11 October 2026 a mistaken AWB can be removed (admin or stock-out, with a reason)
+  while nothing has been issued, packed or handed over for it; its PDF label is marked
+  excluded so a later upload of the same label is not a duplicate. Admin can delete a whole
+  PDF upload the same way, which removes every AWB it released, as long as none of them
+  has stock, packing or handover records. The audit log lists what was removed and why;
+  source PDFs stay in storage.
   Since 9 October 2026 PDF intake reads text first and runs OCR automatically on any page
   whose text has no AWB and no order reference ("Force OCR on every page" remains as a slow,
   unticked fallback). Pages with no tracking number, order reference or known SKU (cover,

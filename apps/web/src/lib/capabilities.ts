@@ -110,6 +110,10 @@ export const commandRules: Record<
   "edit-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
   "review-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
   "split-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
+  "remove-order": {
+    capability: "orders.enter",
+    stateKeys: ["orders", "awbImports", "events"],
+  },
   "import-save": { capability: "orders.import", stateKeys: ["awbImports", "events"] },
   "import-release": {
     capability: "orders.import",
@@ -117,6 +121,10 @@ export const commandRules: Record<
   },
   "import-receive": {
     capability: "outbound.fulfil",
+    stateKeys: ["awbImports", "orders", "events"],
+  },
+  "import-delete": {
+    capability: "orders.import",
     stateKeys: ["awbImports", "orders", "events"],
   },
   "sort-count": { capability: "outbound.fulfil", stateKeys: ["sortCounts", "events"] },

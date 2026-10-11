@@ -6,6 +6,7 @@ import {
   FileText,
   LoaderCircle,
   Plus,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
@@ -13,6 +14,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { FormError, Panel, units } from "./draft-primitives";
 import {
+  orderHasActivity,
   products,
   today,
   tr,
@@ -70,7 +72,9 @@ export function AwbIntake({
     [error, setError] = useState(""),
     [dirty, setDirty] = useState(false),
     [forceOcr, setForceOcr] = useState(false),
-    [receiveError, setReceiveError] = useState("");
+    [receiveError, setReceiveError] = useState(""),
+    [deleting, setDeleting] = useState(false),
+    [deleteError, setDeleteError] = useState("");
   const [filter, setFilter] = useState("all"),
     [preview, setPreview] = useState<{ file: ImportFile; page: number } | null>(
       null,
@@ -98,7 +102,16 @@ export function AwbIntake({
     setDirty(false);
     setError("");
     setPreview(null);
+    setDeleting(false);
+    setDeleteError("");
   }
+  // AWBs this upload released, and those that can no longer be removed.
+  const releasedOrders = batch
+    ? state.orders.filter((o) => o.importId === batch.id)
+    : [];
+  const lockedOrders = releasedOrders.filter((o) =>
+    orderHasActivity(state, o),
+  );
   async function upload() {
     setError("");
     if (!files.length || files.length > 10 || !store.trim() || !date) {
@@ -519,9 +532,81 @@ export function AwbIntake({
                   </Button>
                 </>
               )}
+              {role === "admin" && (
+                <Button
+                  variant="ghost"
+                  disabled={busy}
+                  aria-expanded={deleting}
+                  onClick={() => {
+                    setDeleteError("");
+                    setDeleting((d) => !d);
+                  }}
+                >
+                  <Trash2 size={16} />
+                  {t("Delete upload", "Padam muat naik")}
+                </Button>
+              )}
             </div>
           </div>
           <FormError message={error} />
+          {deleting && role === "admin" && (
+            <form
+              className="awb-receive"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setDeleteError("");
+                const reason = String(
+                  new FormData(e.currentTarget).get("reason") ?? "",
+                );
+                const saved = await onCommand(
+                  "import-delete",
+                  { id: batch.id, reason },
+                  { onError: setDeleteError },
+                );
+                if (saved) {
+                  setDeleting(false);
+                  setWorking(null);
+                  setSelected("");
+                  setScreen("batches");
+                }
+              }}
+            >
+              <p className="field-hint">
+                {lockedOrders.length
+                  ? t(
+                      `${lockedOrders.length} of the ${releasedOrders.length} AWBs from this upload already have stock, packing or handover records, so the upload cannot be deleted. Remove the other AWBs one by one from the order list instead.`,
+                      `${lockedOrders.length} daripada ${releasedOrders.length} AWB dari muat naik ini sudah ada rekod stok, pembungkusan atau serahan, jadi muat naik ini tidak boleh dipadam. Buang AWB lain satu persatu dari senarai pesanan.`,
+                    )
+                  : t(
+                      `Deletes this upload (${batch.files.length} PDF, ${batch.rows.length} labels) and removes its ${releasedOrders.length} AWBs from the order list. The audit log keeps the list and your reason. The PDFs stay in storage.`,
+                      `Memadam muat naik ini (${batch.files.length} PDF, ${batch.rows.length} label) dan membuang ${releasedOrders.length} AWB daripadanya dari senarai pesanan. Log audit menyimpan senarai dan sebab anda. PDF kekal dalam storan.`,
+                    )}
+              </p>
+              <label>
+                {t("Reason", "Sebab")}
+                <Input name="reason" required maxLength={500} />
+              </label>
+              <FormError message={deleteError} />
+              <Button
+                type="submit"
+                variant="outline"
+                disabled={busy || lockedOrders.length > 0}
+              >
+                <Trash2 size={16} />
+                {t(
+                  "Delete upload and its AWBs",
+                  "Padam muat naik dan AWB-nya",
+                )}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setDeleting(false)}
+              >
+                {t("Cancel", "Batal")}
+              </Button>
+            </form>
+          )}
           {batch.confirmedAt ? (
             <div className="inline-note">
               <Check size={17} />
