@@ -4,9 +4,9 @@ import {
   type Capability,
 } from "./capabilities.ts";
 import {
-  applyImportCommand,
   channels,
   normalizeAwb,
+  releaseImport,
   type AwbImport,
 } from "./awb-import.ts";
 export type Lang = "en" | "ms";
@@ -501,7 +501,7 @@ export interface Draft {
   trips?: Trip[];
   sortCounts?: SortCount[];
   adypocideReceipts?: AdypocideReceipt[];
-  awbImports?: AwbImport[];
+  // PDF uploads (formerly `awbImports`) live in operator_imports since 20261012090000.
   machines?: Machine[];
   operations?: OperationRecord[];
   version: 1;
@@ -1065,6 +1065,13 @@ export type Command = {
    * Set by the API server from its signed packer session; never taken from the input.
    */
   performer?: string;
+  /**
+   * Server-loaded records the command needs that are not in the document. Set by the API
+   * server from the upload tables (with the member's own access); never taken from the
+   * request body. import-release / import-delete: the upload with its rows; remove-order:
+   * the upload the AWB came from (its rows may be omitted).
+   */
+  context?: { import?: AwbImport };
 };
 /** A stale edit. Carries the current record so the supervisor can review it. */
 export class ConflictError extends Error {
@@ -1310,11 +1317,14 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     });
   };
   switch (cmd.type) {
-    case "import-save":
-    case "import-release":
-    case "import-receive": {
-      const detail = applyImportCommand(s, cmd.type, v, cmd.role, at);
-      log(String(v.id ?? (v.batch as AwbImport)?.id), cmd.type, detail);
+    case "import-release": {
+      // The upload comes from operator_imports (cmd.context); the commit marks it confirmed
+      // and its labels released.
+      const loaded = cmd.context?.import;
+      if (!loaded || loaded.id !== str("id"))
+        throw new Error("Upload batch not found.");
+      const detail = releaseImport(s, structuredClone(loaded), cmd.role, at);
+      log(loaded.id, cmd.type, detail);
       break;
     }
     case "batch": {
@@ -2060,19 +2070,13 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           "This AWB has stock, packing or handover records. It stays for traceability; ask the stock-out supervisor for a correction instead.",
         );
       s.orders.splice(s.orders.indexOf(o), 1);
-      // The PDF label it came from is marked excluded, so the same upload no longer counts
-      // it and a later upload of the same label is not treated as a duplicate.
-      const batch = o.importId
-        ? s.awbImports?.find((b) => b.id === o.importId)
-        : undefined;
-      const row = batch?.rows.find((r) => r.id === o.importRowId);
-      if (batch && row) {
-        delete row.releasedOrderId;
-        row.excluded = true;
-        row.reviewed = true;
-        row.reviewNote = (row.reviewNote ? row.reviewNote + " · " : "") + "Removed: " + reason;
-        batch.updatedAt = at;
-      }
+      // The PDF label it came from is marked excluded in operator_import_rows by the same
+      // commit (importEffects), so the upload no longer counts it and a later upload of the
+      // same label is not treated as a duplicate.
+      const batch =
+        o.importId && cmd.context?.import?.id === o.importId
+          ? cmd.context.import
+          : undefined;
       log(
         o.id,
         "AWB removed",
@@ -2089,8 +2093,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       // Removes a whole PDF upload and every AWB it released, as long as none of them
       // has stock, packing or handover records. The source PDFs stay in storage.
       allow("admin");
-      const batch = find(s.awbImports ?? []),
-        reason = str("reason");
+      // The upload comes from operator_imports (cmd.context); the commit soft-deletes it.
+      const batch = cmd.context?.import;
+      if (!batch || batch.id !== str("id"))
+        throw new Error("This record could not be found. Refresh and try again.");
+      const reason = str("reason");
       const released = s.orders.filter((o) => o.importId === batch.id);
       const blocked = released.filter((o) => orderHasActivity(s, o));
       if (blocked.length)
@@ -2101,7 +2108,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
             .join(", ")}${blocked.length > 5 ? ", …" : ""}). They stay for traceability; remove the other AWBs one by one if needed.`,
         );
       s.orders = s.orders.filter((o) => o.importId !== batch.id);
-      s.awbImports = s.awbImports!.filter((b) => b.id !== batch.id);
       log(
         batch.id,
         "Upload batch deleted",
@@ -2910,11 +2916,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       e.recorder = recorder;
       e.actor = recorderLabel(recorder);
     }
-  // Ceilings sized to the 2 MB workspace document (about 2 KB per imported AWB with its
-  // label record and audit entries). Raised 2026-10-12 with the 300-label upload limit.
+  // Ceilings sized to the 2 MB workspace document. Since 20261012090000 the label records
+  // live in operator_import_rows, so an imported AWB costs about 1 KB here (order and audit
+  // entry): room for one 2,000-AWB day until orders move to tables (order volume plan, WP C).
   if (
-    s.events.length > 3000 ||
-    s.orders.length > 1000 ||
+    s.events.length > 4000 ||
+    s.orders.length > 2000 ||
     s.batches.length > 200 ||
     s.cartons.length > 500 ||
     (s.adypocideReceipts?.length ?? 0) > 500 ||

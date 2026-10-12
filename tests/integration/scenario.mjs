@@ -134,6 +134,19 @@ const files = (s, method, query, body) =>
     },
     [method, query, body],
   );
+// PDF uploads (operator_imports, since 20261012090000): GET/POST /api/imports[/<id>[/receive]].
+const imports = (s, method, path, body) =>
+  s.page.evaluate(
+    async ([method, path, body]) => {
+      const res = await fetch("/api/imports" + path, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : {},
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: res.status, body: await res.json().catch(() => null) };
+    },
+    [method, path, body],
+  );
 
 const prod = await session("prodA");
 const intake = await session("intakeA");
@@ -462,8 +475,8 @@ await check("B: management sees both sites, comments at site B, cannot adjust st
   await m.context.close();
 });
 
-let sourcePath, sourceBytes;
-await check("B: office admin uploads a site source, imports and releases it", async () => {
+let sourcePath, sourceBytes, importId;
+await check("B: office admin uploads a site source, saves its review in the tables and releases it", async () => {
   const a = await session("admin");
   sourceBytes = Buffer.from("%PDF-1.4\n% synthetic Operator integration fixture " + randomUUID() + "\n%%EOF\n");
   const hash = createHash("sha256").update(sourceBytes).digest("hex");
@@ -484,26 +497,60 @@ await check("B: office admin uploads a site source, imports and releases it", as
     rows: parsePages([{ file: hash, page: 1, method: "text", text: "Ninja Van\nNVMYINT000001\nOrder: #INT-ORDER-1\nProducts:\n1x Cavernosil [cave04]" }], "Luxana", "INT STORE"),
     createdAt: "", updatedAt: "",
   };
-  const saved = await post(a, "import-save", { batch }, { ws: W.a, role: "admin" });
+  importId = batch.id;
+  const rev = revision(W.a);
+  const saved = await imports(a, "POST", "", { workspace: W.a, batch, expectedUpdatedAt: null });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.body.import.rows.length, 1);
+  assert.equal(revision(W.a), rev, "saving a review does not touch the workspace document");
+  assert.equal(sql(`select count(*) || ':' || min(created_by::text) from public.operator_imports where id='${batch.id}'`), `1:${people.admin.id}`);
+  // A review opened before a teammate's save is refused with a reviewable conflict.
+  const resaved = await imports(a, "POST", "", { workspace: W.a, batch: saved.body.import, expectedUpdatedAt: saved.body.import.updatedAt });
+  assert.equal(resaved.status, 200, JSON.stringify(resaved.body));
+  const stale = await imports(a, "POST", "", { workspace: W.a, batch: saved.body.import, expectedUpdatedAt: saved.body.import.updatedAt });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.code, "record");
+  const listed = await imports(a, "GET", "?workspace=" + W.a);
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.deepEqual(listed.body.imports.find((x) => x.id === batch.id).counts, { rows: 1, released: 0 });
   const released = await post(a, "import-release", { id: batch.id }, { ws: W.a, role: "admin" });
   assert.equal(released.status, 200, JSON.stringify(released.body));
   const imported = stored(W.a).orders.find((o) => o.awb === "NVMYINT000001");
   assert.ok(imported);
+  assert.equal(imported.importId, batch.id);
   assert.equal(stored(W.a).events.find((e) => e.entity === imported.id).recorder.userId, people.admin.id);
-  const forged = await post(a, "import-save", { batch: { ...batch, id: randomUUID(), files: [{ ...fileRef, path: `${W.b}/${hash}.pdf` }] } }, { ws: W.a, role: "admin" });
+  assert.equal(stored(W.a).awbImports, undefined, "uploads no longer live in the document");
+  assert.equal(sql(`select released_order_id from public.operator_import_rows where import_id='${batch.id}'`), imported.id);
+  assert.equal(sql(`select confirmed_at is not null from public.operator_imports where id='${batch.id}'`), "t");
+  const opened = await imports(a, "GET", `/${batch.id}?workspace=${W.a}`);
+  assert.equal(opened.status, 200, JSON.stringify(opened.body));
+  assert.ok(opened.body.import.confirmedAt);
+  assert.equal(opened.body.import.rows[0].releasedOrderId, imported.id);
+  const second = await post(a, "import-release", { id: batch.id }, { ws: W.a, role: "admin" });
+  assert.equal(second.status, 400, JSON.stringify(second.body));
+  assert.match(second.body.error, /already confirmed/);
+  const forged = await imports(a, "POST", "", { workspace: W.a, batch: { ...batch, id: randomUUID(), files: [{ ...fileRef, path: `${W.b}/${hash}.pdf` }] } });
   assert.equal(forged.status, 400);
   const notUploaded = "e".repeat(64);
-  const missing = await post(a, "import-save", {
+  const missing = await imports(a, "POST", "", {
+    workspace: W.a,
     batch: {
       ...batch,
       id: randomUUID(),
       files: [{ ...fileRef, id: notUploaded, path: `${W.a}/${notUploaded}.pdf` }],
       rows: parsePages([{ file: notUploaded, page: 1, method: "text", text: "Ninja Van\nNVMYINT000002\nOrder: #INT-ORDER-2\nProducts:\n1x Cavernosil [cave04]" }], "Luxana", "INT STORE"),
     },
-  }, { ws: W.a, role: "admin" });
+  });
   assert.equal(missing.status, 400);
   assert.match(missing.body.error, /was not saved/);
+  // Saving and receiving are no longer document commands.
+  const legacy = await post(a, "import-save", { batch }, { ws: W.a, role: "admin" });
+  assert.equal(legacy.status, 403);
+  // The screen lists the upload from the tables and opens its review.
+  await a.page.goto("/?view=input");
+  await a.page.getByRole("button", { name: "Import history" }).click();
+  await a.page.getByRole("button", { name: /Synthetic integration/ }).click();
+  await a.page.getByText(/Admin handoff confirmed/).waitFor();
   const adminProd = await post(a, "batch", { product: "cav", code: "ADMIN-1", date: "2026-10-03", target: 1 }, { ws: W.a, role: "admin" });
   assert.equal(adminProd.status, 403);
   await a.context.close();
@@ -511,6 +558,15 @@ await check("B: office admin uploads a site source, imports and releases it", as
 
 await check("B: authorized colleagues open the site source; others and guessed paths get nothing", async () => {
   const out = await session("outA");
+  // Stock-out opens the released upload and acknowledges it once.
+  const handoff = await imports(out, "GET", `/${importId}?workspace=${W.a}`);
+  assert.equal(handoff.status, 200, JSON.stringify(handoff.body));
+  const received = await imports(out, "POST", `/${importId}/receive`, { workspace: W.a, pic: "Sample PIC S" });
+  assert.equal(received.status, 200, JSON.stringify(received.body));
+  assert.equal(received.body.import.receivedBy, "Sample PIC S");
+  const twice = await imports(out, "POST", `/${importId}/receive`, { workspace: W.a, pic: "Sample PIC S" });
+  assert.equal(twice.status, 409);
+  assert.equal(sql(`select received_user from public.operator_imports where id='${importId}'`), people.outA.id);
   const opened = await files(out, "GET", "?path=" + encodeURIComponent(sourcePath));
   assert.equal(opened.status, 200, JSON.stringify(opened.body));
   assert.equal(opened.body.expiresIn, 60);
@@ -527,6 +583,9 @@ await check("B: authorized colleagues open the site source; others and guessed p
     const s = await session(key);
     const denied = await files(s, "GET", "?path=" + encodeURIComponent(sourcePath));
     assert.equal(denied.status, 404, key);
+    // Uploads follow the same rule; the preview sandbox does not cover them at all.
+    for (const path of ["?workspace=" + W.a, `/${importId}?workspace=${W.a}`])
+      assert.equal((await imports(s, "GET", path)).status, 403, key + " " + path);
     await s.context.close();
   }
   // Direct Storage API access with a real user JWT is governed by the same RLS.
@@ -653,6 +712,14 @@ await check("B: shared preview account stays in the fictional sandbox", async ()
   assert.equal(revision(W.a), before);
   const sandboxWrite = await api(p, "POST", { command: { type: "feedback", role: "packer", input: { text: "Sandbox note" } }, revision: data.revision });
   assert.equal(sandboxWrite.status, 200);
+  // PDF uploads are not part of the sandbox: no upload tab or history, manual entry stays.
+  const upload = await api(p, "POST", { command: { type: "import-release", role: "admin", input: { id: randomUUID() } }, revision: sandboxWrite.body.revision });
+  assert.equal(upload.status, 403);
+  await p.page.locator("#role-switch").selectOption("admin");
+  await p.page.goto("/?view=input");
+  await p.page.getByText(/PDF uploads are tested on the synthetic operational site/).waitFor();
+  assert.equal(await p.page.getByRole("button", { name: "Upload AWB batch" }).count(), 0);
+  assert.equal(await p.page.getByRole("button", { name: "Import history" }).count(), 0);
   assert.equal(sql(`select count(*) from public.ui_draft_workspaces where user_id='${people.preview.id}'`), "1");
   await p.context.close();
 });

@@ -138,9 +138,13 @@ export function commitSecret(): Buffer | null {
     ? Buffer.from(hex, "hex")
     : null;
 }
+const sha256 = (text: string) =>
+  createHash("sha256").update(text, "utf8").digest("hex");
 /**
- * Signs a validated transition for one user, workspace revision, command and operation.
- * Must match the message built in public.operator_commit_workspace.
+ * Signs a validated transition for one user, workspace revision, command and operation,
+ * with the exact upload effects text sent alongside (p_import_effects; null when none).
+ * Must match the 'operator-commit-v2' message built in public.operator_commit_workspace
+ * (20261012090000_operator_imports.sql).
  */
 export function attest(
   secret: Buffer,
@@ -152,18 +156,19 @@ export function attest(
     command: string;
     fingerprint: string;
     stateText: string;
+    effectsText?: string | null;
   },
 ) {
-  const stateHash = createHash("sha256").update(t.stateText, "utf8").digest("hex");
   const message = [
-    "operator-commit-v1",
+    "operator-commit-v2",
     t.workspaceId,
     String(t.revision),
     t.userId,
     t.operationId,
     t.command,
     t.fingerprint,
-    stateHash,
+    sha256(t.stateText),
+    sha256(t.effectsText ?? ""),
   ].join("\n");
   return createHmac("sha256", secret).update(message, "utf8").digest("hex");
 }

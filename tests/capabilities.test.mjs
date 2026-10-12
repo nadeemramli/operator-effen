@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { applyCommand, createDraft } from "../apps/web/src/lib/draft.ts";
+import { parsePages } from "../apps/web/src/lib/awb-import.ts";
 import { effectiveCapabilities, outOfScopeKeys } from "../apps/web/src/lib/access.ts";
 import {
   commandRules,
@@ -29,11 +30,37 @@ const later = [
   "20261009090003_operator_trip_dropoffs",
   "20261011090000_operator_remove_awbs",
 ].map(migration);
+// 20261012: uploads move to tables; two command rules deleted, three rescoped.
+const imports = migration("20261012090000_operator_imports");
 const merged = (table) =>
   section(table) +
   section(table, trips) +
   section(table, packers) +
-  later.map((m) => section(table, m)).join("");
+  later.map((m) => section(table, m)).join("") +
+  section(table, imports);
+const ruleRow = /\('([a-z-]+)', '([a-z.]+)', '\{([a-zA-Z,]+)\}'\)/g;
+const commandList = (list) => [...list.matchAll(/'([a-z-]+)'/g)].map(([, c]) => c);
+/** Command rules after every migration, in order: inserts, then deletes, then rescopes. */
+function databaseRules() {
+  const rows = {};
+  for (const source of [sql, trips, packers, ...later, imports]) {
+    for (const [, cmd, cap, keys] of section("operator_command_rules", source).matchAll(ruleRow))
+      rows[cmd] = { capability: cap, stateKeys: keys.split(",") };
+    for (const [, list] of source.matchAll(/delete from public\.operator_command_rules where command in \(([^)]*)\);/g))
+      for (const cmd of commandList(list)) {
+        assert.ok(rows[cmd], "deleting an unknown rule " + cmd);
+        delete rows[cmd];
+      }
+    for (const [, keys, list] of source.matchAll(
+      /update public\.operator_command_rules set state_keys = '\{([a-zA-Z,]+)\}'\s+where command in \(([^)]*)\);/g,
+    ))
+      for (const cmd of commandList(list)) {
+        assert.ok(rows[cmd], "rescoping an unknown rule " + cmd);
+        rows[cmd].stateKeys = keys.split(",");
+      }
+  }
+  return rows;
+}
 
 test("one driver role: the migration removes the separate assistant role", () => {
   assert.match(trips, /update public\.operator_memberships\s+set role = 'driver', updated_at = now\(\)\s+where role = 'assistant';/);
@@ -55,12 +82,17 @@ test("role capabilities match the database seed", () => {
 });
 
 test("command rules match the database seed", () => {
-  const rows = Object.fromEntries(
-    [...merged("operator_command_rules").matchAll(/\('([a-z-]+)', '([a-z.]+)', '\{([a-zA-Z,]+)\}'\)/g)].map(
-      ([, cmd, cap, keys]) => [cmd, { capability: cap, stateKeys: keys.split(",") }],
-    ),
-  );
-  assert.deepEqual(rows, commandRules);
+  assert.deepEqual(databaseRules(), commandRules);
+});
+
+test("uploads left the document: no command rule touches awbImports", () => {
+  // The 20261012 statements are present as written (the parser above depends on them).
+  assert.match(imports, /delete from public\.operator_command_rules where command in \('import-save', 'import-receive'\);/);
+  assert.match(imports, /update public\.operator_command_rules set state_keys = '\{orders,events\}'\s+where command in \('import-release', 'import-delete', 'remove-order'\);/);
+  for (const [cmd, rule] of Object.entries(databaseRules()))
+    assert.ok(!rule.stateKeys.includes("awbImports"), cmd);
+  assert.equal(commandRules["import-save"], undefined);
+  assert.equal(commandRules["import-receive"], undefined);
 });
 
 test("grantable roles match the database seed", () => {
@@ -79,13 +111,14 @@ test("every operational command stays inside its database scope", () => {
   const seen = new Set();
   const actor = (role) => ({ kind: "member", role, name: role, userId: "u-" + role, siteId: "site-a" });
   let s = createDraft();
-  const run = (role, type, input) => {
+  const run = (role, type, input, context) => {
     const next = applyCommand(s, {
       type,
       role,
       input,
       actor: actor(role),
       capabilities: effectiveCapabilities(role),
+      context,
     });
     assert.deepEqual(outOfScopeKeys(type, s, next), [], type);
     seen.add(type);
@@ -156,6 +189,15 @@ test("every operational command stays inside its database scope", () => {
   run("outbound", "dispatch", { id: o, reference: "M-1", pic: "D" });
   run("admin", "order", { awb: "COV-AWB-3", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });
   run("outbound", "remove-order", { id: s.orders[0].id, reason: "Cancelled by the customer" });
+  // Uploads come from operator_imports as server-loaded context, never from the document.
+  const file = { id: "c".repeat(64), name: "coverage.pdf", path: "site-a/" + "c".repeat(64) + ".pdf", pages: 1, size: 1000 };
+  const upload = {
+    id: crypto.randomUUID(), name: "Coverage upload", date: "2026-10-01", files: [file],
+    rows: parsePages([{ file: file.id, page: 1, method: "text", text: "Ninja Van\nNVMYCOV0000001\nOrder: #COV-1\nProducts:\n1x Cavernosil [cave04]" }], "Luxana", "COV STORE"),
+    createdAt: "", updatedAt: "",
+  };
+  run("admin", "import-release", { id: upload.id }, { import: upload });
+  run("admin", "import-delete", { id: upload.id, reason: "Coverage" }, { import: upload });
   run("management", "review", { text: "Check" });
   run("packer", "feedback", { text: "Note" });
   run("production", "close", { date: "2026-10-01", note: "Done" });
@@ -175,10 +217,6 @@ test("every operational command stays inside its database scope", () => {
   const untested = Object.keys(commandRules).filter((c) => !seen.has(c));
   assert.deepEqual(untested.sort(), [
     "assign-package",
-    "import-delete",
-    "import-receive",
-    "import-release",
-    "import-save",
     "issue",
     "move-orders",
     "print",

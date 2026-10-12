@@ -1,8 +1,10 @@
 // Removing a mistaken AWB or a whole PDF upload: allowed only while nothing has moved for
 // the AWBs, always with a reason, and never taking stock movements or audit entries along.
+// Uploads live in operator_imports since 20261012090000: the API server loads the upload
+// (Command.context) and the commit applies the upload effects (importEffects) in the tables.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parsePages } from "../apps/web/src/lib/awb-import.ts";
+import { importEffects, parsePages } from "../apps/web/src/lib/awb-import.ts";
 import {
   applyCommand,
   createDraft,
@@ -17,8 +19,8 @@ const member = (role) => ({
   userId: "u-" + role,
   siteId: "site-a",
 });
-const as = (s, role, type, input) =>
-  applyCommand(s, { type, role, input, actor: member(role) });
+const as = (s, role, type, input, context) =>
+  applyCommand(s, { type, role, input, actor: member(role), context });
 const file = {
   id: "b".repeat(64),
   name: "synthetic.pdf",
@@ -48,8 +50,7 @@ const upload = (awbs) => ({
 /** A fresh workspace with one released upload of the given AWBs. */
 function released(awbs = ["NVMYRM0000001", "NVMYRM0000002", "NVMYRM0000003"]) {
   const b = upload(awbs);
-  let s = as(createDraft(), "admin", "import-save", { batch: b });
-  s = as(s, "admin", "import-release", { id: b.id });
+  const s = as(createDraft(), "admin", "import-release", { id: b.id }, { import: b });
   return { s, b };
 }
 const fromUpload = (s, b) => s.orders.filter((o) => o.importId === b.id);
@@ -58,10 +59,15 @@ test("deleting an upload removes it and every AWB it released, in one audit entr
   const { s, b } = released();
   const before = s.orders.length;
   assert.equal(fromUpload(s, b).length, 3);
-  const next = as(s, "admin", "import-delete", { id: b.id, reason: "Uploaded the wrong day's labels" });
+  const next = as(s, "admin", "import-delete", { id: b.id, reason: "Uploaded the wrong day's labels" }, { import: b });
   assert.equal(next.orders.length, before - 3);
   assert.equal(fromUpload(next, b).length, 0);
-  assert.ok(!next.awbImports.some((x) => x.id === b.id));
+  // The upload itself is soft-deleted in the tables by the same commit.
+  assert.equal(next.awbImports, undefined);
+  assert.deepEqual(importEffects("import-delete", { id: b.id, reason: "Uploaded the wrong day's labels" }, s), {
+    delete: b.id,
+    reason: "Uploaded the wrong day's labels",
+  });
   assert.equal(next.events[0].action, "Upload batch deleted");
   assert.equal(next.events[0].entity, b.id);
   assert.match(next.events[0].detail, /3 AWBs removed: /);
@@ -78,10 +84,10 @@ test("deleting an upload removes it and every AWB it released, in one audit entr
 
 test("a draft upload that released nothing can be deleted too", () => {
   const b = upload(["NVMYRM0000009"]);
-  const s = as(createDraft(), "admin", "import-save", { batch: b });
-  const next = as(s, "admin", "import-delete", { id: b.id, reason: "Duplicate upload" });
-  assert.ok(!next.awbImports.some((x) => x.id === b.id));
+  const s = createDraft();
+  const next = as(s, "admin", "import-delete", { id: b.id, reason: "Duplicate upload" }, { import: b });
   assert.equal(next.orders.length, s.orders.length);
+  assert.match(next.events[0].detail, /Synthetic upload · 1 PDF · 1 labels/);
   assert.match(next.events[0].detail, /0 AWBs removed · Duplicate upload/);
 });
 
@@ -91,47 +97,51 @@ test("an upload with any issued, packed or handed-over AWB cannot be deleted", (
   let moved = as(s, "outbound", "issue", { cartonId: "c-cav", orderId: first.id, qty: 1, pic: "S" });
   assert.ok(orderHasActivity(moved, moved.orders.find((o) => o.id === first.id)));
   assert.throws(
-    () => as(moved, "admin", "import-delete", { id: b.id, reason: "Mistake" }),
+    () => as(moved, "admin", "import-delete", { id: b.id, reason: "Mistake" }, { import: b }),
     new RegExp(`1 of the 3 AWBs .*${first.awb}.*stay for traceability`),
   );
   // The other two can still go one by one.
   const [, second] = fromUpload(moved, b);
-  moved = as(moved, "admin", "remove-order", { id: second.id, reason: "Cancelled" });
+  moved = as(moved, "admin", "remove-order", { id: second.id, reason: "Cancelled" }, { import: b });
   assert.equal(fromUpload(moved, b).length, 2);
 });
 
 test("deleting needs the office admin role, a reason and an existing upload", () => {
   const { s, b } = released();
-  assert.throws(() => as(s, "outbound", "import-delete", { id: b.id, reason: "x" }), /does not permit/);
-  assert.throws(() => as(s, "admin", "import-delete", { id: b.id }), /reason/);
-  assert.throws(() => as(s, "admin", "import-delete", { id: crypto.randomUUID(), reason: "x" }), /could not be found/);
+  assert.throws(() => as(s, "outbound", "import-delete", { id: b.id, reason: "x" }, { import: b }), /does not permit/);
+  assert.throws(() => as(s, "admin", "import-delete", { id: b.id }, { import: b }), /reason/);
+  // A missing or deleted upload is not loaded by the server; another upload never stands in.
+  assert.throws(() => as(s, "admin", "import-delete", { id: b.id, reason: "x" }), /could not be found/);
+  assert.throws(() => as(s, "admin", "import-delete", { id: crypto.randomUUID(), reason: "x" }, { import: b }), /could not be found/);
 });
 
 test("removing one AWB takes it off the list and marks its PDF label excluded", () => {
   const { s, b } = released();
   const [, target] = fromUpload(s, b);
-  const next = as(s, "outbound", "remove-order", { id: target.id, reason: "Customer cancelled" });
+  const input = { id: target.id, reason: "Customer cancelled" };
+  const next = as(s, "outbound", "remove-order", input, { import: { ...b, rows: [] } });
   assert.ok(!next.orders.some((o) => o.id === target.id));
   assert.equal(fromUpload(next, b).length, 2);
-  const batch = next.awbImports.find((x) => x.id === b.id);
-  const row = batch.rows.find((r) => r.id === target.importRowId);
-  assert.equal(row.excluded, true);
-  assert.equal(row.releasedOrderId, undefined);
-  assert.match(row.reviewNote, /Removed: Customer cancelled/);
-  assert.equal(batch.confirmedAt, s.awbImports.find((x) => x.id === b.id).confirmedAt);
+  // The same commit marks the label excluded in operator_import_rows.
+  assert.deepEqual(importEffects("remove-order", input, s), {
+    rows: [{ id: target.importRowId, excluded: true, reviewNote: "Removed: Customer cancelled" }],
+  });
   assert.equal(next.events[0].action, "AWB removed");
   assert.equal(next.events[0].entity, target.id);
   assert.match(next.events[0].detail, new RegExp(target.awb + ".*from Synthetic upload.*Customer cancelled"));
   assert.deepEqual(outOfScopeKeys("remove-order", s, next), []);
+  // Without the upload (its label is no longer the AWB's released label), the AWB is still
+  // removed; the entry just does not name the upload.
+  const plain = as(s, "outbound", "remove-order", input);
+  assert.doesNotMatch(plain.events[0].detail, /from Synthetic upload/);
 });
 
 test("a removed label can be uploaded again without counting as a duplicate", () => {
   const { s, b } = released(["NVMYRM0000011"]);
   const [target] = fromUpload(s, b);
-  const cleared = as(s, "admin", "remove-order", { id: target.id, reason: "Wrong store" });
+  const cleared = as(s, "admin", "remove-order", { id: target.id, reason: "Wrong store" }, { import: b });
   const again = upload(["NVMYRM0000011"]);
-  let next = as(cleared, "admin", "import-save", { batch: again });
-  next = as(next, "admin", "import-release", { id: again.id });
+  const next = as(cleared, "admin", "import-release", { id: again.id }, { import: again });
   assert.equal(next.orders.filter((o) => o.awb === "NVMYRM0000011").length, 1);
   assert.equal(next.orders.find((o) => o.awb === "NVMYRM0000011").importId, again.id);
 });
@@ -143,7 +153,7 @@ test("a manually entered AWB is removed with its reason and no upload change", (
   const o = s.orders[0];
   const next = as(s, "admin", "remove-order", { id: o.id, reason: "Typed twice" });
   assert.ok(!next.orders.some((x) => x.id === o.id));
-  assert.deepEqual(next.awbImports, s.awbImports);
+  assert.equal(importEffects("remove-order", { id: o.id, reason: "Typed twice" }, s), null);
   assert.match(next.events[0].detail, /MAN-REMOVE-1 .* Typed twice/);
   assert.deepEqual(outOfScopeKeys("remove-order", s, next), []);
 });

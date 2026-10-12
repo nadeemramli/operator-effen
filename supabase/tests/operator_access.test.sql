@@ -53,25 +53,31 @@ insert into public.operator_memberships (workspace_id, user_id, role, display_na
 create function pg_temp.commit_as(
   p_uid uuid, p_ws uuid, p_command text, p_state jsonb, p_op uuid default gen_random_uuid(),
   p_rev integer default null, p_sign boolean default true, p_signer uuid default null,
-  p_fingerprint text default null
+  p_fingerprint text default null, p_effects jsonb default null, p_v1 boolean default false
 ) returns jsonb language plpgsql as $$
 declare
   v_rev integer := coalesce(p_rev, (select revision from public.operator_workspaces where id = p_ws));
   v_text text := p_state::text;
+  -- Upload effects (20261012090000) travel as exact text, signed on the message's last line.
+  v_eff text := p_effects::text;
   v_fp text := coalesce(p_fingerprint, encode(extensions.digest(p_command || v_text, 'sha256'), 'hex'));
   v_sig text;
   v_row record;
   v_result jsonb;
 begin
+  -- p_v1 signs the pre-20261012090000 message (no effects line): accepted only without effects.
   v_sig := case when p_sign then encode(extensions.hmac(convert_to(concat_ws(E'\n',
-    'operator-commit-v1', p_ws::text, v_rev::text, coalesce(p_signer, p_uid)::text, p_op::text,
-    p_command, v_fp, encode(extensions.digest(convert_to(v_text, 'UTF8'), 'sha256'), 'hex')), 'UTF8'),
+    case when p_v1 then 'operator-commit-v1' else 'operator-commit-v2' end,
+    p_ws::text, v_rev::text, coalesce(p_signer, p_uid)::text, p_op::text,
+    p_command, v_fp, encode(extensions.digest(convert_to(v_text, 'UTF8'), 'sha256'), 'hex'),
+    case when p_v1 then null
+      else encode(extensions.digest(convert_to(coalesce(v_eff, ''), 'UTF8'), 'sha256'), 'hex') end), 'UTF8'),
     (select secret from operator_private.server_keys where id = 'commit'), 'sha256'), 'hex')
     else repeat('0', 64) end;
   perform set_config('request.jwt.claim.sub', coalesce(p_uid::text, ''), true);
   execute 'set local role ' || case when p_uid is null then 'anon' else 'authenticated' end;
   begin
-    select * into v_row from public.operator_commit_workspace(p_ws, v_rev, p_command, p_op, v_fp, v_text, v_sig);
+    select * into v_row from public.operator_commit_workspace(p_ws, v_rev, p_command, p_op, v_fp, v_text, v_sig, v_eff);
     v_result := case when v_row is null then jsonb_build_object('ok', false, 'code', 'conflict')
       else jsonb_build_object('ok', true, 'revision', v_row.new_revision, 'replayed', v_row.replayed) end;
   exception when others then
@@ -870,63 +876,318 @@ do $$ begin
     raise exception 'FAIL: expected two drop-offs on the trip'; end if;
 end $$;
 
--- 12. Removing AWBs and uploads (20261011090000). Admin or the stock-out SV removes an
---     order under the remove-order rule; only admin deletes an upload (import-delete).
---     Whatever the signature says, a removal can never take recorded stock issues or audit
---     entries along, and stays inside its state scope.
+
+-- 12. Removing AWBs and uploads (20261011090000; uploads in tables since 20261012090000).
+--     Admin or the stock-out SV removes an order under the remove-order rule; only admin
+--     deletes an upload (import-delete). Whatever the signature says, a removal can never take
+--     recorded stock issues or audit entries along, and stays inside its state scope.
 \set ADM '''00000000-0000-4000-8000-000000000007'''
-create function pg_temp.ord(p_id text, p_import text default null) returns jsonb language sql as $$
+\set MGMT '''00000000-0000-4000-8000-000000000004'''
+\set SVB '''00000000-0000-4000-8000-000000000003'''
+\set U1 '''30000000-0000-4000-8000-000000000001'''
+\set R11 '''31000000-0000-4000-8000-000000000011'''
+\set R12 '''31000000-0000-4000-8000-000000000012'''
+create function pg_temp.ord(p_id text, p_import text default null, p_row text default null)
+returns jsonb language sql as $$
   select jsonb_build_object('id', p_id, 'awb', 'NVMY' || p_id, 'channel', 'Luxana', 'product', 'cav',
     'package', 'P', 'expected', 4, 'originalExpected', 4, 'actual', null, 'packer', '', 'labelPic', '',
     'printed', false, 'dispatched', false, 'handoverRef', '', 'date', '2026-10-06', 'note', '',
     'reviewState', 'confirmed')
-    || case when p_import is null then '{}'::jsonb else jsonb_build_object('importId', p_import) end $$;
+    || case when p_import is null then '{}'::jsonb else jsonb_build_object('importId', p_import) end
+    || case when p_row is null then '{}'::jsonb else jsonb_build_object('importRowId', p_row) end $$;
 create function pg_temp.orders(p jsonb) returns jsonb language sql as $$ select jsonb_set(pg_temp.state(), '{orders}', p) $$;
-select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-save',
-  jsonb_set(pg_temp.state(), '{awbImports}', '[{"id":"imp1","name":"Synthetic upload","date":"2026-10-06","files":[],"rows":[],"createdAt":"t","updatedAt":"t"}]')),
+-- Runs one statement as p_uid; returns {ok, result} or {ok: false, code, message}.
+create function pg_temp.call_as(p_uid uuid, p_sql text) returns jsonb language plpgsql as $$
+declare v jsonb;
+begin
+  perform set_config('request.jwt.claim.sub', coalesce(p_uid::text, ''), true);
+  execute 'set local role ' || case when p_uid is null then 'anon' else 'authenticated' end;
+  begin
+    execute p_sql into v;
+    v := jsonb_build_object('ok', true, 'result', v);
+  exception when others then
+    v := jsonb_build_object('ok', false, 'code', sqlstate, 'message', sqlerrm);
+  end;
+  execute 'reset role';
+  return v;
+end $$;
+-- A synthetic upload: p_files PDFs of p_pages pages each, stored under p_ws.
+create function pg_temp.imp(p_id text, p_ws text default '10000000-0000-4000-8000-00000000000a',
+  p_files integer default 1, p_pages integer default 2) returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'name', 'Synthetic upload', 'date', '2026-10-12',
+    'files', (select jsonb_agg(jsonb_build_object('id', h, 'name', 'synthetic.pdf',
+      'path', p_ws || '/' || h || '.pdf', 'pages', p_pages, 'size', 1000))
+      from (select lpad(to_hex(g), 64, 'a') as h from generate_series(1, p_files) g) x),
+    'createdAt', '', 'updatedAt', '') $$;
+create function pg_temp.lbl(p_id text, p_awb text, p_excluded boolean default false,
+  p_original text default 'raw label text') returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'awb', p_awb, 'orderRef', 'REF-' || p_awb, 'channel', 'Luxana',
+    'store', 'Synthetic store', 'courier', 'Ninja Van',
+    'lines', '[{"sku":"cave04","product":"cav","packages":1,"units":4,"originalUnits":4,"canonical":"CAV-MY-PK31"}]'::jsonb,
+    'sources', jsonb_build_array(jsonb_build_object('file', lpad('1', 64, 'a'), 'page', 1, 'method', 'text')),
+    'warnings', '[]'::jsonb, 'reviewed', false,
+    'reviewNote', case when p_excluded then 'Not our parcel' else '' end,
+    'excluded', p_excluded, 'original', p_original) $$;
+create function pg_temp.save_as(p_uid uuid, p_import jsonb, p_rows jsonb, p_expected text default null,
+  p_ws uuid default '10000000-0000-4000-8000-00000000000a') returns jsonb language sql as $$
+  select pg_temp.call_as(p_uid, format(
+    'select public.operator_import_save(%L::uuid, %L::jsonb, %L::jsonb, %L::timestamptz)',
+    p_ws, p_import, p_rows, p_expected)) $$;
+create function pg_temp.receive_as(p_uid uuid, p_import text, p_pic text default 'SO A') returns jsonb
+language sql as $$
+  select pg_temp.call_as(p_uid, format(
+    'select public.operator_import_receive(%L::uuid, %L::uuid, %L)',
+    '10000000-0000-4000-8000-00000000000a', p_import, p_pic)) $$;
+create function pg_temp.updated(p_import text) returns text language sql as $$
+  select updated_at::text from public.operator_imports where id = p_import::uuid $$;
+
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U1),
+  jsonb_build_array(pg_temp.lbl(:R11, 'NVMYo1'), pg_temp.lbl(:R12, 'NVMYo2'))),
   'ok', 'admin saves an upload');
 select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-release',
-  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1')))),
+  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', :U1, :R11), pg_temp.ord('o2', :U1, :R12))),
+  p_effects => jsonb_build_object('release', :U1)),
   'ok', 'admin releases two AWBs from the upload');
 select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'order',
   pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o3')))),
   'ok', 'admin enters a manual AWB');
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'remove-order',
-  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1')))),
+  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', :U1, :R11), pg_temp.ord('o2', :U1, :R12)))),
   '42501', 'production SV removes an AWB');
-select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000004', :A, 'remove-order',
-  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1')))),
+select pg_temp.expect(pg_temp.commit_as(:MGMT, :A, 'remove-order',
+  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', :U1, :R11), pg_temp.ord('o2', :U1, :R12)))),
   '42501', 'management removes an AWB');
 select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'remove-order',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1'))),
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', :U1, :R11), pg_temp.ord('o2', :U1, :R12))),
     '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(pg_temp.ev('e-rm3', '00000000-0000-4000-8000-000000000007')))),
-  'ok', 'admin removes the manual AWB with an audit entry');
+  'ok', 'admin removes the manual AWB with an audit entry (no upload change)');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{batches,0,code}', '"X"')),
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', :U1, :R12))), '{batches,0,code}', '"X"')),
   '42501', 'remove-order used to edit batches');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{events}', '[]')),
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', :U1, :R12))), '{events}', '[]')),
   '23514', 'remove-order dropping audit entries');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
   jsonb_set(pg_temp.state(), '{issues}', (pg_temp.state() -> 'issues')
     || '[{"id":"i-o2","cartonId":"c1","orderId":"o2","qty":1,"pic":"SO","at":"t"}]')),
   'ok', 'stock issued to the second AWB');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'))), '{issues}',
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', :U1, :R11))), '{issues}',
     (select coalesce(jsonb_agg(i), '[]') from jsonb_array_elements(pg_temp.state() -> 'issues') i where i ->> 'orderId' <> 'o2'))),
   '42501', 'remove-order taking the stock issue with it (issues are outside its scope)');
-select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'import-delete',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{awbImports}', '[]')),
-  '42501', 'stock-out SV deletes an upload');
-select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-delete',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{awbImports}', '[]')),
-  'ok', 'admin deletes the upload and its untouched AWB');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
+  pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', :U1, :R12)))),
+  '23514', 'remove an uploaded AWB without marking its PDF label');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
+  pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', :U1, :R12))),
+  p_effects => jsonb_build_object('rows', jsonb_build_array(jsonb_build_object(
+    'id', :R12, 'excluded', true, 'reviewNote', 'Removed: Cancelled')))),
+  '23514', 'mark the label of an AWB that stays in the list');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
+  pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', :U1, :R12))),
+  p_effects => jsonb_build_object('rows', jsonb_build_array(jsonb_build_object(
+    'id', :R11, 'excluded', true, 'reviewNote', 'Removed: Cancelled')))),
+  'ok', 'stock-out SV removes an uploaded AWB and marks its label excluded');
 do $$ begin
-  if (select jsonb_array_length(state -> 'awbImports') from public.operator_workspaces where site_id = 'site-a') <> 0
-    or (select state -> 'orders' from public.operator_workspaces where site_id = 'site-a') <> jsonb_build_array(pg_temp.ord('o2', 'imp1'))
+  if (select row(excluded, reviewed, released_order_id, review_note)::text from public.operator_import_rows
+      where id = '31000000-0000-4000-8000-000000000011') <> '(t,t,,"Removed: Cancelled")'
+    or (select released_order_id from public.operator_import_rows
+      where id = '31000000-0000-4000-8000-000000000012') <> 'o2' then
+    raise exception 'FAIL: expected the removed AWB''s label excluded and the other still released'; end if;
+end $$;
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'import-delete', pg_temp.orders('[]'),
+  p_effects => jsonb_build_object('delete', :U1, 'reason', 'Wrong day')),
+  '42501', 'stock-out SV deletes an upload');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-delete', pg_temp.state(),
+  p_effects => jsonb_build_object('delete', :U1, 'reason', 'Wrong day')),
+  '23514', 'admin deletes an upload while its issued AWB is still listed');
+do $$ begin
+  if (select state -> 'orders' from public.operator_workspaces where site_id = 'site-a')
+      <> jsonb_build_array(pg_temp.ord('o2', '30000000-0000-4000-8000-000000000001', '31000000-0000-4000-8000-000000000012'))
     or not exists (select 1 from public.operator_workspaces w, jsonb_array_elements(w.state -> 'issues') i
-      where w.site_id = 'site-a' and i ->> 'id' = 'i-o2') then
-    raise exception 'FAIL: expected the upload gone, only the issued AWB left and its stock issue kept'; end if;
+      where w.site_id = 'site-a' and i ->> 'id' = 'i-o2')
+    or (select deleted_at from public.operator_imports where id = '30000000-0000-4000-8000-000000000001') is not null
+    or (select state ? 'awbImports' from public.operator_workspaces where site_id = 'site-a') then
+    raise exception 'FAIL: expected only the issued AWB left, its stock issue kept and its upload kept'; end if;
+end $$;
+
+-- 13. Uploads in tables (20261012090000): saved and received through their own functions,
+--     released and deleted only with a signed document command that carries the effect.
+\set U2 '''30000000-0000-4000-8000-000000000002'''
+\set U3 '''30000000-0000-4000-8000-000000000003'''
+\set R21 '''31000000-0000-4000-8000-000000000021'''
+\set R22 '''31000000-0000-4000-8000-000000000022'''
+\set R23 '''31000000-0000-4000-8000-000000000023'''
+\set R31 '''31000000-0000-4000-8000-000000000031'''
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U2), jsonb_build_array(
+  pg_temp.lbl(:R21, 'NVMYU21', p_original => 'first read'), pg_temp.lbl(:R22, 'NVMYU22'),
+  pg_temp.lbl(:R23, 'NVMYU23', true))), 'ok', 'admin saves an upload with three labels');
+do $$ begin
+  if (select string_agg(awb, ',' order by position) from public.operator_import_rows
+      where import_id = '30000000-0000-4000-8000-000000000002') <> 'NVMYU21,NVMYU22,NVMYU23'
+    or (select created_by from public.operator_imports where id = '30000000-0000-4000-8000-000000000002')
+      <> '00000000-0000-4000-8000-000000000007' then
+    raise exception 'FAIL: expected the rows in review order and the upload attributed to admin'; end if;
+end $$;
+select pg_temp.expect(pg_temp.save_as(:SO, pg_temp.imp(:U3), jsonb_build_array(pg_temp.lbl(:R31, 'NVMYU31'))),
+  '42501', 'stock-out SV saves an upload');
+select pg_temp.expect(pg_temp.save_as(:SV, pg_temp.imp(:U3), jsonb_build_array(pg_temp.lbl(:R31, 'NVMYU31'))),
+  '42501', 'production SV saves an upload');
+select pg_temp.expect(pg_temp.save_as(:MGMT, pg_temp.imp(:U3), jsonb_build_array(pg_temp.lbl(:R31, 'NVMYU31'))),
+  '42501', 'management saves an upload');
+begin;
+select pg_temp.as_user(:SV);
+select pg_temp.expect_denied($q$insert into public.operator_imports (id, workspace_id, date) values (gen_random_uuid(), '10000000-0000-4000-8000-00000000000a', '2026-10-12')$q$, 'direct upload insert');
+select pg_temp.expect_denied($q$update public.operator_import_rows set excluded = true$q$, 'direct label update');
+rollback;
+begin;
+select pg_temp.as_user(:ADM);
+select pg_temp.expect_denied($q$delete from public.operator_import_rows$q$, 'admin deletes labels directly');
+rollback;
+-- Reading: management (all sites, sources.read) reads site A; site B's supervisor does not.
+select pg_temp.expect(pg_temp.call_as(:MGMT, format('select public.operator_import_list(%L)', :A)), 'ok', 'management lists site A uploads');
+do $$
+declare r jsonb := pg_temp.call_as('00000000-0000-4000-8000-000000000004',
+  'select public.operator_import_list(''10000000-0000-4000-8000-00000000000a'')');
+begin
+  if jsonb_array_length(r -> 'result') <> 2
+    or (select x -> 'counts' from jsonb_array_elements(r -> 'result') x where x ->> 'id' = '30000000-0000-4000-8000-000000000001')
+      <> '{"rows": 2, "released": 1}' then
+    raise exception 'FAIL: management list %', r; end if;
+  r := pg_temp.call_as('00000000-0000-4000-8000-000000000004',
+    'select to_jsonb(count(*)) from public.operator_import_rows where import_id = ''30000000-0000-4000-8000-000000000002''');
+  if r -> 'result' <> '3' then raise exception 'FAIL: management reads labels directly %', r; end if;
+  r := pg_temp.call_as('00000000-0000-4000-8000-000000000009',
+    'select public.operator_import_get(''10000000-0000-4000-8000-00000000000a'', ''30000000-0000-4000-8000-000000000002'')');
+  if jsonb_array_length(r -> 'result' -> 'rows') <> 3 or r -> 'result' -> 'rows' -> 0 ->> 'original' <> 'first read' then
+    raise exception 'FAIL: stock-out opens the upload %', r; end if;
+  r := pg_temp.call_as('00000000-0000-4000-8000-000000000003',
+    'select to_jsonb((select count(*) from public.operator_imports) + (select count(*) from public.operator_import_rows))');
+  if r -> 'result' <> '0' then raise exception 'FAIL: site B supervisor reads site A uploads %', r; end if;
+end $$;
+select pg_temp.expect(pg_temp.call_as(:SVB, format('select public.operator_import_list(%L)', :A)), '42501', 'site B supervisor lists site A uploads');
+select pg_temp.expect(pg_temp.call_as(:SVB, format('select public.operator_import_get(%L, %L)', :A, :U2)), '42501', 'site B supervisor opens a site A upload');
+-- Limits and file paths.
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U3, :B), jsonb_build_array(pg_temp.lbl(:R31, 'NVMYU31'))),
+  '23514', 'upload with a PDF stored under another site');
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U3, p_files => 11, p_pages => 1), '[]'),
+  '23514', 'eleven PDFs in one upload');
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U3, p_files => 2, p_pages => 1251), '[]'),
+  '23514', '2,502 pages in one upload');
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U3, p_files => 10, p_pages => 250),
+  (select jsonb_agg(pg_temp.lbl(gen_random_uuid()::text, 'NVMYBIG' || g)) from generate_series(1, 1201) g)),
+  '23514', '1,201 labels in one upload');
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U3, p_files => 10, p_pages => 250),
+  (select jsonb_agg(pg_temp.lbl(gen_random_uuid()::text, 'NVMYBIG' || g)) from generate_series(1, 1200) g)),
+  'ok', '1,200 labels on 2,500 pages in ten PDFs');
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U3), jsonb_build_array(pg_temp.lbl(:R31, 'NVMYU31')),
+  pg_temp.updated(:U3)), 'ok', 'admin replaces the large draft with one label');
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp('30000000-0000-4000-8000-000000000004'),
+  jsonb_build_array(pg_temp.lbl(:R31, 'NVMYU31'))), '23514', 'label identifier reused from another upload');
+-- Optimistic check: a stale review is refused; the current one replaces the rows but keeps
+-- each existing label's first-read text.
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U2), jsonb_build_array(pg_temp.lbl(:R21, 'NVMYU21')),
+  '2026-01-01T00:00:00Z'), '40001', 'stale review');
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp('30000000-0000-4000-8000-000000000005'),
+  jsonb_build_array(pg_temp.lbl(gen_random_uuid()::text, 'NVMYU51')), '2026-01-01T00:00:00Z'),
+  '40001', 'review of an upload that was never saved');
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U2), jsonb_build_array(
+  pg_temp.lbl(:R21, 'NVMYU21', p_original => 'tampered'), pg_temp.lbl(:R22, 'NVMYU22'),
+  pg_temp.lbl(:R23, 'NVMYU23', true)), pg_temp.updated(:U2)), 'ok', 'current review saved');
+do $$ begin
+  if (select original from public.operator_import_rows where id = '31000000-0000-4000-8000-000000000021') <> 'first read' then
+    raise exception 'FAIL: the first-read label text was replaced'; end if;
+end $$;
+-- Release: only with import-release, signed with the effects line, onto its own labels.
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'order',
+  pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o21', :U2, :R21)))),
+  'ok', 'a manual entry with an upload reference and no effect changes no upload');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'order',
+  pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o22', :U2, :R22))),
+  p_effects => jsonb_build_object('release', :U2)), '42501', 'release effects under another command');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-release',
+  pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o22', :U2, :R22))),
+  p_effects => jsonb_build_object('release', :U2), p_v1 => true), '42501', 'signature without the effects line');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'order',
+  pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o21b'))), p_v1 => true),
+  'ok', 'v1 signature still accepted without effects (rollout window)');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-release',
+  pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o22', :U2, :R22)))),
+  '23514', 'release without its upload effect');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-release',
+  pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o22', :U2, :R22), pg_temp.ord('o23', :U2, :R23))),
+  p_effects => jsonb_build_object('release', :U2)), '23514', 'release of an excluded label');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-release',
+  pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o22', :U2, :R22), pg_temp.ord('o24', :U2, :R22))),
+  p_effects => jsonb_build_object('release', :U2)), '23514', 'two AWBs released from one label');
+select pg_temp.expect(pg_temp.receive_as(:SO, :U2), '23514', 'stock-out receives an unconfirmed upload');
+-- o21 was entered by hand with this upload's reference above; release the second label only.
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-release',
+  pg_temp.orders((select coalesce(jsonb_agg(o), '[]') from jsonb_array_elements(pg_temp.state() -> 'orders') o where o ->> 'id' <> 'o21')
+    || jsonb_build_array(pg_temp.ord('o22', :U2, :R22))),
+  p_effects => jsonb_build_object('release', :U2)), 'ok', 'admin releases the upload');
+do $$ begin
+  if (select string_agg(coalesce(released_order_id, '-'), ',' order by position) from public.operator_import_rows
+      where import_id = '30000000-0000-4000-8000-000000000002') <> '-,o22,-'
+    or (select confirmed_at from public.operator_imports where id = '30000000-0000-4000-8000-000000000002') is null then
+    raise exception 'FAIL: expected o22 released from the second label and the upload confirmed'; end if;
+end $$;
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U2), jsonb_build_array(pg_temp.lbl(:R21, 'NVMYU21')),
+  pg_temp.updated(:U2)), '23514', 'a confirmed upload cannot be saved again');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-release', pg_temp.state(),
+  p_effects => jsonb_build_object('release', :U2)), '23514', 'second release of the same upload');
+-- Receive: stock-out, once, only after confirmation.
+select pg_temp.expect(pg_temp.receive_as(:ADM, :U2), '42501', 'admin acknowledges receipt');
+select pg_temp.expect(pg_temp.receive_as(:SO, :U2, ' '), '22023', 'receipt without a PIC');
+select pg_temp.expect(pg_temp.receive_as(:SO, :U2), 'ok', 'stock-out acknowledges receipt');
+select pg_temp.expect(pg_temp.receive_as(:SO, :U2), '23514', 'second acknowledgement');
+do $$ begin
+  if (select received_by || ':' || received_user from public.operator_imports where id = '30000000-0000-4000-8000-000000000002')
+    <> 'SO A:00000000-0000-4000-8000-000000000009' then
+    raise exception 'FAIL: receipt not recorded for stock-out'; end if;
+end $$;
+-- Row effects need a confirmed upload; delete effects soft-delete and hide the upload.
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'order',
+  pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o4')))),
+  'ok', 'stock-out enters a manual AWB');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
+  pg_temp.orders((select coalesce(jsonb_agg(o), '[]') from jsonb_array_elements(pg_temp.state() -> 'orders') o where o ->> 'id' <> 'o4')),
+  p_effects => jsonb_build_object('rows', jsonb_build_array(jsonb_build_object(
+    'id', :R31, 'excluded', true, 'reviewNote', 'Removed: x')))),
+  '23514', 'row effects on a draft upload');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'remove-order',
+  pg_temp.orders((select coalesce(jsonb_agg(o), '[]') from jsonb_array_elements(pg_temp.state() -> 'orders') o where o ->> 'id' <> 'o4')),
+  p_effects => jsonb_build_object('delete', :U3, 'reason', 'Duplicate')),
+  '42501', 'delete effects under another command');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-delete', pg_temp.state(),
+  p_effects => jsonb_build_object('delete', :U3, 'reason', ' ')), '22023', 'delete without a reason');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-delete', pg_temp.state(),
+  p_effects => jsonb_build_object('delete', :U3, 'reason', 'Duplicate upload')), 'ok', 'admin deletes a draft upload');
+do $$
+declare r jsonb;
+begin
+  if (select deleted_reason from public.operator_imports where id = '30000000-0000-4000-8000-000000000003') <> 'Duplicate upload' then
+    raise exception 'FAIL: upload not soft-deleted'; end if;
+  r := pg_temp.call_as('00000000-0000-4000-8000-000000000007',
+    'select public.operator_import_get(''10000000-0000-4000-8000-00000000000a'', ''30000000-0000-4000-8000-000000000003'')');
+  if r -> 'result' <> 'null' then raise exception 'FAIL: deleted upload still opens %', r; end if;
+  r := pg_temp.call_as('00000000-0000-4000-8000-000000000007',
+    'select to_jsonb(count(*)) from public.operator_import_rows where import_id = ''30000000-0000-4000-8000-000000000003''');
+  if r -> 'result' <> '0' then raise exception 'FAIL: deleted upload labels still readable %', r; end if;
+  r := pg_temp.call_as('00000000-0000-4000-8000-000000000007',
+    'select public.operator_import_list(''10000000-0000-4000-8000-00000000000a'')');
+  if exists (select 1 from jsonb_array_elements(r -> 'result') x where x ->> 'id' = '30000000-0000-4000-8000-000000000003') then
+    raise exception 'FAIL: deleted upload still listed'; end if;
+end $$;
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:U3), jsonb_build_array(pg_temp.lbl(:R31, 'NVMYU31')),
+  pg_temp.updated(:U3)), '23514', 'a deleted upload cannot be saved again');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-delete', pg_temp.state(),
+  p_effects => jsonb_build_object('delete', :U3, 'reason', 'Again')), '23514', 'second delete');
+do $$ begin
+  if exists (select 1 from public.operator_command_rules where command in ('import-save', 'import-receive'))
+    or exists (select 1 from public.operator_command_rules
+      where command in ('import-release', 'import-delete', 'remove-order') and state_keys <> '{orders,events}') then
+    raise exception 'FAIL: upload command rules'; end if;
 end $$;
 
 select 'operator access tests passed' as result;

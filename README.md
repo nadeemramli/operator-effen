@@ -152,10 +152,19 @@ are never converted into box inventory. Previously counted boxes remain stock.
   PDF upload the same way, which removes every AWB it released, as long as none of them
   has stock, packing or handover records. The audit log lists what was removed and why;
   source PDFs stay in storage.
-  One upload takes up to 10 PDFs, 600 pages and 300 labels (raised from 200 pages and 200
-  labels on 12 October 2026); oversized uploads are refused before any page is read, and a
-  day's labels can go in as several uploads. A site workspace holds up to 1,000 AWBs and
-  3,000 audit entries within its 2 MB document.
+  Since migration `20261012090000_operator_imports` PDF uploads and their label rows live in
+  the `operator_imports` and `operator_import_rows` tables, outside the site's workspace
+  document: the review is saved through `/api/imports` (a teammate's newer save is reported,
+  not overwritten), confirming releases the AWBs into the order list in one signed commit
+  that also marks the upload confirmed, and stock-out acknowledges receipt once. Members with
+  `orders.import` or `sources.read` at the site can open uploads; deleted uploads are hidden.
+  One upload takes up to 10 PDFs, 2,500 pages and 1,200 labels (raised from 600 pages and
+  300 labels on 12 October 2026); oversized uploads are refused before any page is read, and
+  a day's labels can still go in as several uploads. Released AWBs and their audit entries
+  stay in the document until orders move to tables: a site workspace holds up to 2,000 AWBs
+  and 4,000 audit entries within its 2 MB document. The fictional preview sandbox no longer
+  covers PDF uploads (manual AWB entry stays); uploads are tested on the synthetic
+  operational site.
   Since 9 October 2026 PDF intake reads text first and runs OCR automatically on any page
   whose text has no AWB and no order reference ("Force OCR on every page" remains as a slow,
   unticked fallback). Pages with no tracking number, order reference or known SKU (cover,

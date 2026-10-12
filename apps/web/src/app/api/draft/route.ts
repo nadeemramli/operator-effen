@@ -12,6 +12,7 @@ import {
   roleLabel,
   roles,
   withBatchReferences,
+  type Command,
   type Draft,
   type Recorder,
   type Role,
@@ -27,7 +28,14 @@ import {
   outOfFactory,
   outOfScopeKeys,
 } from "@/lib/access";
-import { validateImport } from "@/lib/awb-import";
+import { importEffects, type ImportEffects } from "@/lib/awb-import";
+import {
+  ImportLoadError,
+  loadImport,
+  rpcFailure,
+  SANDBOX_UPLOADS,
+  UUID,
+} from "@/lib/imports-server";
 import { rebaseLoop, STALE_MESSAGE, type RebaseStep } from "@/lib/rebase";
 import { commandRules } from "@/lib/capabilities";
 import {
@@ -63,9 +71,8 @@ const actorView = (userId: string, m?: Membership) =>
         factory: m.factory,
       }
     : { kind: "preview" as const, userId };
-const sandboxPdf = (userId: string, file: { id: string; path: string }) =>
-  new RegExp(`^${userId}/[a-f0-9]{64}\\.pdf$`).test(file.path) &&
-  file.path === `${userId}/${file.id}.pdf`;
+// Commands whose upload lives in operator_imports (20261012090000_operator_imports.sql).
+const uploadCommands = ["import-release", "import-delete"];
 
 export async function GET(request: NextRequest) {
   const access = await resolveAccess();
@@ -166,13 +173,10 @@ export async function POST(request: NextRequest) {
       return json({ error: "Choose a valid test role." }, 400);
     const role: Role = body.command.role;
     const operationId: string | undefined = body.operationId;
+    // The sandbox keeps the document shape and has no upload tables.
+    if (uploadCommands.includes(type))
+      return json({ error: SANDBOX_UPLOADS }, 403);
     try {
-      if (type === "import-save")
-        for (const file of validateImport(input.batch).files) {
-          if (!sandboxPdf(user.id, file))
-            throw new Error("Invalid source file ownership.");
-          await requireStored(db, "awb-draft-sources", user.id, file.id);
-        }
       if (type.startsWith("trip") && typeof input.photo === "string" && input.photo)
         await requireTripPhoto(db, "trip-draft-photos", user.id, input.photo);
     } catch (e) {
@@ -188,6 +192,20 @@ export async function POST(request: NextRequest) {
       if (!loaded.data)
         return { done: json({ error: "Unable to load the test workspace." }, 503) };
       const current = loaded.data.state as Draft;
+      if (
+        type === "remove-order" &&
+        current.orders.some((o) => o.id === input.id && o.importId)
+      )
+        return {
+          done: json(
+            {
+              error:
+                "AWBs from a PDF upload are removed on the synthetic operational site. " +
+                SANDBOX_UPLOADS,
+            },
+            403,
+          ),
+        };
       if (operationId) {
         const prior = findOperation(current, operationId);
         if (prior)
@@ -305,12 +323,6 @@ export async function POST(request: NextRequest) {
   };
   // Stored files do not depend on the records; check them once, before any attempt.
   try {
-    if (type === "import-save")
-      for (const file of validateImport(input.batch).files) {
-        if (file.path !== `${membership.workspaceId}/${file.id}.pdf`)
-          throw new Error("This PDF was not uploaded to this site.");
-        await requireStored(db, "operator-sources", membership.workspaceId, file.id);
-      }
     if (type.startsWith("trip") && typeof input.photo === "string" && input.photo)
       await requireTripPhoto(
         db,
@@ -361,6 +373,20 @@ export async function POST(request: NextRequest) {
     // batches; the database re-checks the signed state (operator_private.assert_factory_scope).
     const outside = factoryDenial(membership.factory, type, input, current.batches ?? []);
     if (outside) return { done: json({ error: outside }, 403) };
+    // Uploads live in operator_imports: load what the command needs with the member's own
+    // client (the database checks their access), never from the request body.
+    let context: Command["context"];
+    let effects: ImportEffects | null = null;
+    try {
+      const upload = await uploadFor(db, membership.workspaceId, type, input, current);
+      context = upload.context;
+      effects = upload.keepEffects
+        ? importEffects(type, input, current)
+        : null;
+    } catch (e) {
+      if (e instanceof ImportLoadError) return { done: rpcFailure(e.failure) };
+      throw e;
+    }
     let stateText: string;
     try {
       const state = applyCommand(current, {
@@ -370,6 +396,7 @@ export async function POST(request: NextRequest) {
         actor: recorder,
         capabilities: membership.capabilities,
         performer: packer?.profileId,
+        context,
       });
       if (
         outOfScopeKeys(
@@ -391,6 +418,8 @@ export async function POST(request: NextRequest) {
     } catch (e) {
       return { done: domainError(e) };
     }
+    // The exact effects text is signed and sent; the database applies it with the state.
+    const effectsText = effects ? JSON.stringify(effects) : null;
     const result = await db.rpc("operator_commit_workspace", {
       p_workspace: membership.workspaceId,
       p_expected_revision: loaded.data.revision,
@@ -406,7 +435,9 @@ export async function POST(request: NextRequest) {
         command: type,
         fingerprint: print,
         stateText,
+        effectsText,
       }),
+      p_import_effects: effectsText,
     });
     if (result.error) {
       const code = result.error.code;
@@ -418,14 +449,16 @@ export async function POST(request: NextRequest) {
               ? json({ error: "Please sign in again." }, 401)
               : code === "PT409"
                 ? json({ error: result.error.message, code: "operation-mismatch" }, 409)
-                : code === "23514"
-                  ? json({ error: result.error.message, code: "invariant" }, 409)
-                  : code === "55000"
-                    ? json({ error: result.error.message }, 503)
-                    : json(
-                        { error: "Unable to save. Your change has not been recorded." },
-                        503,
-                      ),
+                : code === "22023"
+                  ? json({ error: result.error.message }, 400)
+                  : code === "23514"
+                    ? json({ error: result.error.message, code: "invariant" }, 409)
+                    : code === "55000"
+                      ? json({ error: result.error.message }, 503)
+                      : json(
+                          { error: "Unable to save. Your change has not been recorded." },
+                          503,
+                        ),
       };
     }
     const saved = (
@@ -458,17 +491,65 @@ function domainError(e: unknown) {
     return json({ error: e.message, code: "record", conflict: e.conflict }, 409);
   return json({ error: e instanceof Error ? e.message : "Unable to save." }, 400);
 }
-async function requireStored(
+/**
+ * The upload a document command needs (Command.context) and whether its upload effects
+ * apply. import-release / import-delete: the site's upload with its rows (a missing or
+ * deleted upload leaves the context empty, which the domain rules report). remove-order:
+ * the upload and label the AWB came from, when that label is still the AWB's released label
+ * in the tables; otherwise the AWB is removed without an upload change.
+ */
+async function uploadFor(
   db: Awaited<ReturnType<typeof resolveAccess>>["db"],
-  bucket: string,
-  folder: string,
-  id: string,
-) {
-  const listed = await db.storage
-    .from(bucket)
-    .list(folder, { search: id + ".pdf", limit: 1 });
-  if (listed.error || !listed.data.some((f) => f.name === id + ".pdf"))
-    throw new Error("Source PDF was not saved. Upload it again before confirming.");
+  workspaceId: string,
+  type: string,
+  input: Record<string, unknown>,
+  current: Draft,
+): Promise<{ context?: Command["context"]; keepEffects: boolean }> {
+  if (uploadCommands.includes(type)) {
+    const id = typeof input.id === "string" ? input.id.trim() : "";
+    const upload = await loadImport(db, workspaceId, id);
+    return { context: upload ? { import: upload } : undefined, keepEffects: true };
+  }
+  if (type !== "remove-order") return { keepEffects: false };
+  const order = current.orders.find(
+    (o) => typeof input.id === "string" && o.id === input.id.trim(),
+  );
+  if (!order?.importId || !order.importRowId) return { keepEffects: false };
+  // Upload and label identifiers are UUIDs since 20261012090000 (the backfill mapped older ones).
+  if (!UUID.test(order.importId) || !UUID.test(order.importRowId))
+    return { keepEffects: false };
+  const [header, row] = await Promise.all([
+    db
+      .from("operator_imports")
+      .select("id,name,date,files,created_at,updated_at")
+      .eq("id", order.importId)
+      .eq("workspace_id", workspaceId)
+      .maybeSingle(),
+    db
+      .from("operator_import_rows")
+      .select("id,released_order_id")
+      .eq("id", order.importRowId)
+      .eq("import_id", order.importId)
+      .maybeSingle(),
+  ]);
+  if (header.error || row.error)
+    throw new ImportLoadError({ message: "Unable to load the PDF upload." });
+  if (!header.data || row.data?.released_order_id !== order.id)
+    return { keepEffects: false };
+  return {
+    context: {
+      import: {
+        id: header.data.id,
+        name: header.data.name,
+        date: header.data.date,
+        files: header.data.files,
+        rows: [],
+        createdAt: header.data.created_at,
+        updatedAt: header.data.updated_at,
+      },
+    },
+    keepEffects: true,
+  };
 }
 // A trip photo must be the signed-in driver's own upload in this site's folder.
 async function requireTripPhoto(

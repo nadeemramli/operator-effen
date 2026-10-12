@@ -13,6 +13,8 @@ import {
   rowStatus,
   validateImport,
   defaultFor,
+  fileLimit,
+  importEffects,
 } from "../apps/web/src/lib/awb-import.ts";
 import {
   createDraft,
@@ -45,6 +47,9 @@ const batch = (pages) => ({
 });
 const run = (s, type, input, role = "admin") =>
   applyCommand(s, { type, input, role });
+// Uploads live in operator_imports; the API server hands the loaded upload to the command.
+const release = (s, b, role = "admin") =>
+  applyCommand(s, { type: "import-release", input: { id: b.id }, role, context: { import: b } });
 test("native label package count expands defaults including free bottles, retaining IDs as strings", () => {
   const b = batch([page(ninja())]);
   assert.equal(b.rows[0].lines[0].packages, 1);
@@ -130,24 +135,35 @@ test("reprint duplicates are skipped; conflicting labels block handoff", () => {
   assert.equal(rowStatus(b.rows[1], b, s), "duplicate");
   b.rows[1].lines[0].packages = 2;
   assert.equal(rowStatus(b.rows[0], b, s), "conflict");
-  const saved = run(s, "import-save", { batch: b });
-  assert.throws(() => run(saved, "import-release", { id: b.id }), /Resolve/);
+  assert.throws(() => release(s, b), /Resolve/);
 });
-test("save, release and retry create one parcel and no stock, print or packing side effects", () => {
+test("release and retry create one parcel and no stock, print or packing side effects", () => {
   const initial = createDraft(),
     b = batch([page(ninja()), page(ninja(), 2)]);
-  let s = run(initial, "import-save", { batch: b });
-  assert.equal(s.orders.length, initial.orders.length);
-  s = run(s, "import-release", { id: b.id });
+  const loaded = structuredClone(b);
+  const s = release(initial, b);
   assert.equal(s.orders.length, initial.orders.length + 1);
   const o = s.orders[0];
   assert.equal(o.expected, 4);
   assert.equal(o.actual, null);
   assert.equal(o.printed, false);
   assert.equal(o.dispatched, false);
+  assert.equal(o.importId, b.id);
+  assert.equal(o.importRowId, b.rows[0].id);
   assert.deepEqual(s.issues, initial.issues);
   assert.deepEqual(s.cartons, initial.cartons);
-  assert.throws(() => run(s, "import-release", { id: b.id }), /already/);
+  // The document no longer carries uploads, and the loaded upload is not mutated.
+  assert.equal(s.awbImports, undefined);
+  assert.deepEqual(b, loaded);
+  assert.match(s.events[0].detail, /Handoff confirmed · 1 new AWBs/);
+  assert.equal(s.events[1].action, "AWB imported");
+  // The database marks the upload confirmed; a retry on it is refused, and a retry before it
+  // finds every label already in the list.
+  assert.throws(() => release(s, { ...b, confirmedAt: "2026-09-21T10:00:00.000Z" }), /already/);
+  assert.throws(() => release(s, b), /No new complete labels/);
+  // The upload must be the one named in the command, and must come from the server.
+  assert.throws(() => applyCommand(initial, { type: "import-release", input: { id: crypto.randomUUID() }, role: "admin", context: { import: b } }), /not found/);
+  assert.throws(() => run(initial, "import-release", { id: b.id }), /not found/);
   const again = batch([page(ninja())]);
   assert.equal(rowStatus(again.rows[0], again, s), "duplicate");
   const conflict = batch([page(ninja())]);
@@ -159,9 +175,7 @@ test("mixed brands stay in review until each actual parcel has a separate AWB", 
   b.rows[0].reviewed = true;
   b.rows[0].reviewNote = "Checked source";
   assert.match(rowProblems(b.rows[0]).join(), /own parcel/);
-  let s = run(createDraft(), "import-save", { batch: b });
-  assert.throws(() => run(s, "import-release", { id: b.id }), /Resolve/);
-  b.updatedAt = s.awbImports[0].updatedAt;
+  assert.throws(() => release(createDraft(), b), /Resolve/);
   const original = b.rows[0];
   b.rows = original.lines.map((line, i) => ({
     ...original,
@@ -169,8 +183,7 @@ test("mixed brands stay in review until each actual parcel has a separate AWB", 
     awb: `NVMYBRAND00000${i}`,
     lines: [line],
   }));
-  s = run(s, "import-save", { batch: b });
-  s = run(s, "import-release", { id: b.id });
+  const s = release(createDraft(), b);
   const parcels = s.orders.filter((o) => o.importId === b.id);
   assert.equal(parcels.length, 2);
   assert.ok(parcels.every((o) => o.lines.length === 1));
@@ -196,32 +209,41 @@ test("review and exclusion require notes, roles are enforced and split orders ne
   assert.throws(() => validateImport(b), /Explain why the label is excluded/);
   b.rows[1].excluded = false;
   b.rows[0].reviewNote = "First parcel allocation checked";
-  assert.throws(
-    () => run(createDraft(), "import-save", { batch: b }, "management"),
-    /admin/,
-  );
+  assert.throws(() => release(createDraft(), b, "management"), /admin/);
+  assert.throws(() => release(createDraft(), b, "outbound"), /admin/);
   b.rows[1].excluded = true;
   b.rows[1].reviewNote = "Duplicate label supplied";
-  let s = run(createDraft(), "import-save", { batch: b });
-  s = run(s, "import-release", { id: b.id });
-  assert.throws(
-    () => run(s, "import-receive", { id: b.id, pic: "TEST" }),
-    /stock-out/i,
-  );
-  s = run(s, "import-receive", { id: b.id, pic: "TEST" }, "outbound");
-  assert.ok(s.awbImports[0].receivedAt);
+  const s = release(createDraft(), b);
+  assert.equal(s.orders.filter((o) => o.importId === b.id).length, 1);
   assert.equal(s.orders[0].printed, false);
 });
 
-test("a stale review cannot overwrite a teammate's saved batch", () => {
+// Saving, receiving and the stale-review check moved to operator_import_save /
+// operator_import_receive (supabase/tests/operator_access.test.sql, section 13).
+test("saving and receiving uploads are no longer document commands", () => {
   const b = batch([page(ninja())]);
-  const s = run(createDraft(), "import-save", { batch: b });
-  const stale = structuredClone(s.awbImports[0]);
-  s.awbImports[0].updatedAt = "2026-09-21T23:59:59.000Z";
-  assert.throws(
-    () => run(s, "import-save", { batch: stale }),
-    /teammate updated/,
+  assert.throws(() => run(createDraft(), "import-save", { batch: b }), /Unknown action/);
+  assert.throws(() => run(createDraft(), "import-receive", { id: b.id, pic: "X" }, "outbound"), /Unknown action/);
+});
+
+test("upload effects: release, delete, and the label of a removed AWB", () => {
+  const b = batch([page(ninja())]);
+  const s = release(createDraft(), b);
+  assert.deepEqual(importEffects("import-release", { id: b.id }, s), { release: b.id });
+  assert.deepEqual(
+    importEffects("import-delete", { id: b.id, reason: "  Wrong day  " }, s),
+    { delete: b.id, reason: "Wrong day" },
   );
+  const o = s.orders.find((x) => x.importId === b.id);
+  assert.deepEqual(importEffects("remove-order", { id: o.id, reason: " Cancelled " }, s), {
+    rows: [{ id: b.rows[0].id, excluded: true, reviewNote: "Removed: Cancelled" }],
+  });
+  // A manual AWB, an unknown AWB and other commands change no upload.
+  const manual = s.orders.find((x) => !x.importId);
+  assert.equal(importEffects("remove-order", { id: manual.id, reason: "x" }, s), null);
+  assert.equal(importEffects("remove-order", { id: "missing", reason: "x" }, s), null);
+  assert.equal(importEffects("pack", { id: o.id }, s), null);
+  assert.equal(importEffects("order", {}, s), null);
 });
 
 // WP7: cover pages are skipped, OCR is automatic and informational.
@@ -260,13 +282,13 @@ test("OCR runs when the text has no AWB and no order reference, even if it has s
 
 test("an OCR-read label with no other issue is ready without a check or a note", () => {
   const b = batch([page(ninja(), 1, "ocr")]);
-  let s = run(createDraft(), "import-save", { batch: b });
-  s = run(s, "import-release", { id: b.id });
+  const s = release(createDraft(), b);
   assert.ok(s.orders.some((o) => o.awb === "NVMYTEST000001"));
 });
-test("upload limits: 300 labels and 600 pages per upload, enforced by the validator", () => {
-  assert.equal(importLimit, 300);
-  assert.equal(pageLimit, 600);
+test("upload limits: 10 PDFs, 2,500 pages and 1,200 labels per upload, enforced by the validator", () => {
+  assert.equal(importLimit, 1200);
+  assert.equal(pageLimit, 2500);
+  assert.equal(fileLimit, 10);
   const big = batch(
     Array.from({ length: importLimit + 1 }, (_, i) =>
       page(ninja(`NVMYBIG${String(i).padStart(7, "0")}`, `BIG-${i}`), i + 1),
@@ -274,7 +296,7 @@ test("upload limits: 300 labels and 600 pages per upload, enforced by the valida
   );
   big.files = [{ ...file, pages: importLimit + 1 }];
   assert.equal(big.rows.length, importLimit + 1);
-  assert.throws(() => validateImport(big), /Use up to 10 PDFs and 300 labels/);
+  assert.throws(() => validateImport(big), /Use up to 10 PDFs and 1200 labels/);
   big.rows.pop();
   validateImport(big);
   const wide = batch([page(ninja())]);
@@ -282,4 +304,20 @@ test("upload limits: 300 labels and 600 pages per upload, enforced by the valida
   assert.throws(() => validateImport(wide), /Invalid source file/);
   wide.files = [{ ...file, pages: pageLimit }];
   validateImport(wide);
+  // Pages count across the files of one upload.
+  const second = { ...file, id: "b".repeat(64), path: "tester/" + "b".repeat(64) + ".pdf" };
+  wide.files = [{ ...file, pages: 1300 }, { ...second, pages: 1201 }];
+  assert.throws(() => validateImport(wide), /Use up to 2500 PDF pages/);
+  wide.files = [{ ...file, pages: 1300 }, { ...second, pages: 1200 }];
+  validateImport(wide);
+  const many = batch([page(ninja())]);
+  many.files = Array.from({ length: fileLimit + 1 }, (_, i) => ({
+    ...file, id: String(i).padStart(64, "c"), pages: 1,
+  }));
+  assert.throws(() => validateImport(many), /Use up to 10 PDFs/);
+  // Upload and label identifiers are UUIDs (the tables' primary keys).
+  assert.throws(() => validateImport({ ...batch([page(ninja())]), id: "imp1" }), /Invalid import/);
+  const odd = batch([page(ninja())]);
+  odd.rows[0].id = "row-1";
+  assert.throws(() => validateImport(odd), /Invalid label record/);
 });

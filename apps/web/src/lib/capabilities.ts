@@ -1,6 +1,6 @@
 // Role capabilities and command rules. Mirrors the reference tables seeded by
-// supabase/migrations/20261005090000_operator_trusted_commands.sql; tests/capabilities
-// checks that both stay identical. The database copy is authoritative for writes.
+// supabase/migrations/20261005090000_operator_trusted_commands.sql and changed by later
+// migrations; tests/capabilities checks that both stay identical. The database copy is authoritative for writes.
 export type Capability =
   | "production.plan"
   | "stage.record"
@@ -110,23 +110,12 @@ export const commandRules: Record<
   "edit-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
   "review-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
   "split-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
-  "remove-order": {
-    capability: "orders.enter",
-    stateKeys: ["orders", "awbImports", "events"],
-  },
-  "import-save": { capability: "orders.import", stateKeys: ["awbImports", "events"] },
-  "import-release": {
-    capability: "orders.import",
-    stateKeys: ["awbImports", "orders", "events"],
-  },
-  "import-receive": {
-    capability: "outbound.fulfil",
-    stateKeys: ["awbImports", "orders", "events"],
-  },
-  "import-delete": {
-    capability: "orders.import",
-    stateKeys: ["awbImports", "orders", "events"],
-  },
+  // PDF uploads live in operator_imports since 20261012090000: saving and receiving use
+  // their own functions (/api/imports); these three carry their upload effects in the
+  // signed commit and change only orders and audit entries in the document.
+  "remove-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
+  "import-release": { capability: "orders.import", stateKeys: ["orders", "events"] },
+  "import-delete": { capability: "orders.import", stateKeys: ["orders", "events"] },
   "sort-count": { capability: "outbound.fulfil", stateKeys: ["sortCounts", "events"] },
   "assign-package": { capability: "outbound.fulfil", stateKeys: ["orders", "events"] },
   "assign-orders": { capability: "outbound.fulfil", stateKeys: ["orders", "events"] },

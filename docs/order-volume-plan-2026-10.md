@@ -1,6 +1,7 @@
 # Order volume: per-AWB records out of the workspace document
 
-Status: proposal, 2026-10-12. Implements the "normalized shared records" part of readiness
+Status: proposal, 2026-10-12; WP A implemented on branch (2026-10-12, awaiting review and
+the owner's migration). Implements the "normalized shared records" part of readiness
 workstream [#10](https://github.com/nadeemramli/operator-effen/issues/10) for orders,
 uploads, stock issues and audit entries. Nothing here is live until each work package below
 has merged behind green CI and the owner has applied its migration.
@@ -54,6 +55,10 @@ through the API; the document no longer carries `orders`, `awbImports`, `issues`
 
 ## Work packages
 
+WP C has a detailed design in [order-volume-wp-c-design.md](order-volume-wp-c-design.md)
+(2026-10-12), which builds on WP A's contract and deviates from the row below on one point:
+one signed write RPC with per-family rules instead of one RPC per family.
+
 Each is one PR with a migration, its rollback file, cases in
 `supabase/tests/operator_access.test.sql`, an entry in `scripts/verify-migrations-local.sh`,
 unit tests, and the integration scenario where the flow changes. Migrations are applied to
@@ -61,7 +66,7 @@ the hosted project by the owner, in order, before the PR merges (as on 2026-10-0
 
 | WP | Scope | Why this order | Size |
 |---|---|---|---|
-| A | Uploads to `operator_imports` and `operator_import_rows`. Upload, review, save, release, receive and delete read and write the tables; release still creates orders (in the document until WP C). Upload limits rise to 10 PDFs, 2,500 pages and 1,200 labels per upload. | Biggest bytes per AWB, admin-only, simplest invariants. Makes 1,000-label PDFs reviewable immediately. | 2 to 3 days |
+| A | Uploads to `operator_imports` and `operator_import_rows`. Upload, review, save, release, receive and delete read and write the tables; release still creates orders (in the document until WP C). Upload limits rise to 10 PDFs, 2,500 pages and 1,200 labels per upload. **Implemented** (`20261012090000_operator_imports.sql`): `operator_import_save` / `operator_import_receive` (security definer, capability-checked), `operator_import_list` / `operator_import_get` (security invoker, one JSON value); release, delete and remove-order carry signed upload effects in `operator_commit_workspace` (`operator-commit-v2`); `import-save` and `import-receive` left the command rules; document ceilings raised to 2,000 AWBs and 4,000 audit entries; the preview sandbox no longer covers uploads. | Biggest bytes per AWB, admin-only, simplest invariants. Makes 1,000-label PDFs reviewable immediately. | 2 to 3 days |
 | B | Audit entries to `operator_events`, appended by the commit RPC from the command's event list; trace lookup and audit log read by entity or date through the API. `assert_transition` keeps its attribution rule on the new table. | Removes the unbounded growth; needed before orders so WP C's RPCs log into one place. | 1 to 2 days |
 | C | Orders and issues to tables. One RPC per order command family (enter, review, edit, remove, split, assign, print, move, issue, pack, pack-own, correct, dispatch) with row versions, the carton lock and `operator_commits` idempotency. Order list, package groups, tally, packer station and handover read per day through the API with paging. | The change that makes 2,000 AWBs a day hold indefinitely. | 5 to 8 days |
 | D | Cutover: backfill any document orders, uploads and events into the tables (the live site is empty since the 2026-10-11 purge, so this is mostly the sandbox), retire the document keys and their command rules, retention (hot 90 days, then archive tables), and dated payload and latency evidence for #8 and #11. | Closes the loop and gives the readiness epic its evidence. | 2 to 3 days |

@@ -2,6 +2,7 @@
 // and performer identity.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash, createHmac } from "node:crypto";
 import {
   applyCommand,
   createDraft,
@@ -73,8 +74,11 @@ test("office admin, HR and management: explicit capabilities, never production/s
   const admin = effectiveCapabilities("admin"),
     hr = effectiveCapabilities("hr"),
     mgmt = effectiveCapabilities("management");
-  assert.equal(authorizeMember("import-save", admin), null);
   assert.equal(authorizeMember("import-release", admin), null);
+  assert.equal(authorizeMember("import-delete", admin), null);
+  // Saving and receiving uploads left the document commands (20261012090000).
+  assert.match(authorizeMember("import-save", admin), /not available/);
+  assert.match(authorizeMember("import-receive", effectiveCapabilities("outbound")), /not available/);
   assert.equal(authorizeMember("review", mgmt), null);
   for (const caps of [admin, hr, mgmt])
     for (const type of ["adjust", "stage-correct", "change-step-pic", "transfer", "batch", "correct"])
@@ -162,9 +166,20 @@ test("commit signatures bind user, revision, operation, command and exact state"
     { operationId: "op2" },
     { command: "transfer" },
     { stateText: '{"a":2}' },
+    { effectsText: '{"release":"x"}' },
   ])
     assert.notEqual(attest(secret, { ...base, ...change }), sig);
   assert.notEqual(attest(Buffer.alloc(32, 8), base), sig);
+  // No upload effects signs the hash of the empty text, like coalesce(p_import_effects, '').
+  assert.equal(attest(secret, { ...base, effectsText: null }), sig);
+  // The v2 message: eight lines as before, plus the sha256 of the exact effects text.
+  const hash = (t) => createHash("sha256").update(t, "utf8").digest("hex");
+  const effectsText = '{"delete":"x","reason":"Duplicate"}';
+  const message = ["operator-commit-v2", "w", "3", "u", "op", "machine", "f".repeat(64), hash('{"a":1}'), hash(effectsText)].join("\n");
+  assert.equal(
+    attest(secret, { ...base, effectsText }),
+    createHmac("sha256", secret).update(message, "utf8").digest("hex"),
+  );
 });
 
 test("a client-chosen role cannot override the server-derived member role", () => {
