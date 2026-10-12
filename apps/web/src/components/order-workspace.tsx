@@ -88,6 +88,9 @@ export function OrderWorkspace({
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
+  // The parcel list opens by itself when something needs review; once the supervisor
+  // toggles it, their choice wins over later refreshes of the day summary.
+  const [parcelsOpen, setParcelsOpen] = useState<boolean | null>(null);
   // Tables mode: the search goes to the server once typing pauses.
   const [search, setSearch] = useState("");
   useEffect(() => {
@@ -813,11 +816,13 @@ export function OrderWorkspace({
       <details
         className="parcel-details"
         open={
-          (tables
+          parcelsOpen ??
+          ((tables
             ? !!summary && (summary.review > 0 || summary.multi > 0)
             : visible.some((o) => !orderReady(o) || !singleProductOrder(o))) ||
-          mode === "tally"
+            mode === "tally")
         }
+        onToggle={(e) => setParcelsOpen(e.currentTarget.open)}
       >
         <summary>
           {t("Parcel records & review", "Rekod bungkusan & semakan")} ·{" "}
