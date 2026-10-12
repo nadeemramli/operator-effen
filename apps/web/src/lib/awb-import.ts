@@ -159,6 +159,57 @@ export type ParsedPage = {
 };
 export const normalizeAwb = (value: string) =>
   value.trim().toUpperCase().replace(/\s+/g, "");
+/**
+ * Couriers reuse tracking numbers (owner decision 2026-10-12), so the same AWB may be
+ * recorded again once the earlier parcel was handed over more than this many days before
+ * the later one's fulfilment day.
+ */
+export const AWB_REUSE_DAYS = 30;
+/** Malaysia calendar day (UTC+8) of a timestamp, or null when it cannot be read. */
+const mytDate = (iso?: string) => {
+  const time = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(time)
+    ? new Date(time + 8 * 3600000).toISOString().slice(0, 10)
+    : null;
+};
+const dayNumber = (day: string) => Date.parse(day + "T00:00:00Z") / 86400000;
+type AwbOccurrence = Pick<Order, "date" | "dispatched" | "dispatchedAt">;
+/**
+ * Whether two orders may carry the same AWB: the earlier one was handed over more than
+ * AWB_REUSE_DAYS before the later one's day (the handover's Malaysia day, or the earlier
+ * order's own day when no handover time is known). Mirrors
+ * operator_private.awb_reuse_allowed (20261014090000_operator_order_records.sql).
+ */
+export function awbReuseAllowed(a: AwbOccurrence, b: AwbOccurrence) {
+  const handedOver = (earlier: AwbOccurrence, laterDay: string) =>
+    !!earlier.dispatched &&
+    dayNumber(laterDay) - dayNumber(mytDate(earlier.dispatchedAt) ?? earlier.date) >
+      AWB_REUSE_DAYS;
+  return a.date < b.date
+    ? handedOver(a, b.date)
+    : b.date < a.date
+      ? handedOver(b, a.date)
+      : false;
+}
+/**
+ * The recorded order that makes `awb` a duplicate for a new or edited order on `date`, if
+ * any. Without `reuse` (sites that keep orders in the workspace document) every recorded
+ * order with the AWB counts; with it (sites whose orders are table rows) an order handed
+ * over long enough before does not.
+ */
+export function recordedAwb(
+  orders: readonly Order[],
+  awb: string,
+  date: string,
+  opts: { except?: string; reuse?: boolean } = {},
+) {
+  return orders.find(
+    (o) =>
+      o.id !== opts.except &&
+      normalizeAwb(o.awb) === awb &&
+      !(opts.reuse && awbReuseAllowed(o, { date, dispatched: false })),
+  );
+}
 export function defaultFor(sku: string) {
   return packageDefaults.find((p) => p.sku === sku.trim().toLowerCase());
 }
@@ -480,13 +531,14 @@ function contents(lines: ImportLine[]) {
 export function rowStatus(
   row: ImportRow,
   batch: AwbImport,
-  state: Draft,
+  state: Pick<Draft, "orders">,
+  opts: { reuse?: boolean } = {},
 ): "released" | "excluded" | "review" | "duplicate" | "conflict" | "ready" {
   if (row.releasedOrderId) return "released";
   if (row.excluded) return "excluded";
   if (rowProblems(row).length) return "review";
   const key = normalizeAwb(row.awb);
-  const existing = state.orders.find((o) => normalizeAwb(o.awb) === key);
+  const existing = recordedAwb(state.orders, key, batch.date, opts);
   if (existing) {
     const lines = existing.lines ?? [
       { product: existing.product, expected: existing.expected },
@@ -645,14 +697,15 @@ export function releaseImport(
   batch: AwbImport,
   role: string,
   at: string,
+  opts: { reuse?: boolean } = {},
 ) {
   if (role !== "admin") throw new Error("Use the office admin role.");
   if (batch.confirmedAt) throw new Error("This handoff is already confirmed.");
   const ready = batch.rows.filter(
-    (r) => rowStatus(r, batch, state) === "ready",
+    (r) => rowStatus(r, batch, state, opts) === "ready",
   );
   const unresolved = batch.rows.filter((r) =>
-    ["review", "conflict"].includes(rowStatus(r, batch, state)),
+    ["review", "conflict"].includes(rowStatus(r, batch, state, opts)),
   );
   if (unresolved.length)
     throw new Error(

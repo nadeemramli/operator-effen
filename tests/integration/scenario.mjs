@@ -3,7 +3,7 @@
 // Synthetic users, sites and PDFs only. Usage (see run-real-stack.sh):
 //   node scenario.mjs <appUrl> <supabaseUrl> <anonKey> <serviceKey> <pgPort> <playwrightModule>
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { parsePages } from "../../apps/web/src/lib/awb-import.ts";
@@ -14,6 +14,15 @@ const sql = (q) =>
   execFileSync("psql", ["-h", "127.0.0.1", "-p", pgPort, "-U", "postgres", "-At", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c", q])
     .toString()
     .trim();
+// Another database session running `q` (one transaction) while the test goes on.
+const sqlSession = (q) =>
+  new Promise((resolve, reject) => {
+    const p = spawn("psql", ["-h", "127.0.0.1", "-p", pgPort, "-U", "postgres", "-At", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c", q]);
+    let err = "";
+    p.stderr.on("data", (d) => (err += d));
+    p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(err))));
+  });
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 async function check(name, fn) {
   try {
@@ -93,7 +102,11 @@ const api = (s, method, body, query = "") =>
         headers: body ? { "Content-Type": "application/json" } : {},
         body: body ? JSON.stringify(body) : undefined,
       });
-      return { status: res.status, body: await res.json().catch(() => null) };
+      return {
+        status: res.status,
+        body: await res.json().catch(() => null),
+        attempts: res.headers.get("x-operator-attempts"),
+      };
     },
     [method, body, query],
   );
@@ -990,6 +1003,229 @@ await check("C: a driver lists two assistants and logs a drop-off with its own t
 });
 await outC.context.close();
 await packers.context.close();
+
+// ====== Objective D: order records on a tables-mode site (20261014090000; WP C, PR C2) ======
+// Every scenario above ran with site A's orders in its workspace document. The owner now
+// moves them to the order tables (administrator SQL, as the owner runs it) and the same
+// POST /api/draft serves order commands through operator_commit_records: a slice of rows,
+// row versions instead of the document revision, signed change sets. The screens read the
+// tables in C3, so these checks drive the API from a page of the app's origin.
+const outD = await session("outA");
+const packD = await session("packerA");
+for (const s of [outD, packD]) await s.page.goto("/api/events?workspace=" + W.a + "&recent=1&limit=1");
+const asOut = { role: "outbound", ws: W.a };
+const row = (id, columns) => sql(`select ${columns} from public.operator_orders where id='${id}'`);
+const laterDay = (n) => new Date(Date.parse(mytToday + "T00:00:00Z") + n * 86400e3).toISOString().slice(0, 10);
+const newOrder = (awb, extra = {}) => ({ awb, product: "cav", channel: "TikTok", package: "INT D", expected: 3, date: mytToday, ...extra });
+let awbX, awbY, issuedTo;
+
+await check("D: the owner moves site A's orders to the tables; the document keeps no order lists", async () => {
+  const before = stored(W.a);
+  const moved = JSON.parse(sql(`select operator_private.move_orders_to_tables('${W.a}')::text`));
+  assert.equal(moved.moved, true, JSON.stringify(moved));
+  assert.equal(moved.orders, before.orders.length);
+  assert.equal(sql(`select order_store from public.operator_workspaces where id='${W.a}'`), "tables");
+  const after = stored(W.a);
+  assert.deepEqual([after.orders, after.issues, after.sortCounts], [undefined, undefined, undefined]);
+  assert.equal(sql(`select count(*) from public.operator_orders where workspace_id='${W.a}'`), String(before.orders.length));
+  // Synthetic stock for the issue checks: one 5-unit cav carton (administrator SQL).
+  sql(`update public.operator_workspaces set state = jsonb_set(jsonb_set(state, '{batches}', state -> 'batches' || '[{"id":"b-int-d","code":"INT-CAV-D","product":"cav","date":"2026-10-03","target":5,"actual":5,"sent":5,"transferredAt":"2026-10-03T05:00:00Z","transferPic":"Synthetic F","steps":[]}]'), '{cartons}', state -> 'cartons' || '[{"id":"c-int-d","ref":"INT-CAV-D","batchId":"b-int-d","product":"cav","unit":"bottle","qty":5,"rack":"D-01","pic":"Synthetic R","at":"2026-10-03T06:00:00.000Z"}]') where id='${W.a}'`);
+});
+
+await check("D: AWBs are recorded, reviewed, counted and assigned as rows; the revision does not move", async () => {
+  const rev = revision(W.a);
+  const ids = [];
+  for (const awb of ["nvmy intd 0001", "NVMYINTD0002"]) {
+    const r = await post(outD, "order", newOrder(awb), asOut);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.orderStore, "tables");
+    assert.equal(r.body.state.orders, undefined, "a tables-mode response carries the document without orders");
+    assert.equal(r.body.records.replayed, false);
+    const [created] = r.body.records.result.orders;
+    assert.deepEqual([created.op, created.version], ["insert", 1]);
+    assert.deepEqual(r.body.records.result.days, [mytToday]);
+    ids.push(created.id);
+    const reviewed = await post(outD, "review-order", { id: created.id, pic: "S" }, asOut);
+    assert.equal(reviewed.status, 200, JSON.stringify(reviewed.body));
+  }
+  [awbX, awbY] = ids;
+  assert.equal(row(awbX, "awb || ':' || version || ':' || review_state || ':' || created_by"), `NVMYINTD0001:2:confirmed:${people.outA.id}`);
+  const counted = Number(sql(`select expected from operator_private.day_demand('${W.a}', '${mytToday}', 'cav')`));
+  const count = await post(outD, "sort-count", { date: mytToday, product: "cav", counted, pic: "S", note: "INT D count" }, asOut);
+  assert.equal(count.status, 200, JSON.stringify(count.body));
+  assert.equal(sql(`select operator_private.sort_count_current('${W.a}', '${mytToday}', 'cav')`), "t");
+  for (const [id, packer] of [[awbX, ali], [awbY, abu]]) {
+    const r = await post(outD, "assign-orders", { ids: [id], packer, pic: "S" }, asOut);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.records.result.orders, [{ id, op: "update", version: 3 }]);
+  }
+  assert.equal(row(awbY, "assigned_packer || ':' || (assigned_at is not null)"), `${abu}:true`);
+  assert.equal(revision(W.a), rev, "order records never move the document revision");
+  assert.equal(sql(`select count(*) from public.operator_events where workspace_id='${W.a}' and entity in ('${awbX}','${awbY}')`), "6");
+});
+
+await check("D: two concurrent issues of 3 against one 5-unit carton apply once", async () => {
+  const send = (orderId) => post(outD, "issue", { cartonId: "c-int-d", orderId, qty: 3, pic: "S" }, asOut);
+  const results = await Promise.all([send(awbX), send(awbY)]);
+  const ok = results.filter((r) => r.status === 200);
+  assert.equal(ok.length, 1, JSON.stringify(results.map((r) => [r.status, r.body?.error])));
+  const refused = results.find((r) => r.status !== 200);
+  // Refused by the domain rules on a fresh slice (400) or, when both read the carton before
+  // either committed, by the database under the carton lock (409 invariant).
+  assert.ok([400, 409].includes(refused.status), JSON.stringify(refused));
+  assert.match(refused.body.error, /Not enough stock/);
+  if (refused.status === 409) assert.equal(refused.body.code, "invariant");
+  console.log(`    (refused ${refused.status === 409 ? "by the database under the carton lock" : "by the domain rules on a fresh slice"})`);
+  assert.equal(sql(`select issued from public.operator_carton_issued where workspace_id='${W.a}' and carton_id='c-int-d'`), "3");
+  issuedTo = sql(`select order_id from public.operator_issues where workspace_id='${W.a}' and carton_id='c-int-d'`);
+  assert.ok([awbX, awbY].includes(issuedTo), "exactly one issue row");
+  // Deterministically: another session holds the carton lock while it issues 1 of the 2
+  // units left. The API's slice still reads 2 and signs an issue of 2; the database waits
+  // for the lock, reads the new balance and refuses (409 invariant).
+  const other = sqlSession(`begin;
+    select pg_advisory_xact_lock(hashtextextended('operator-carton:${W.a}:c-int-d', 0));
+    insert into public.operator_issues (id, workspace_id, order_id, carton_id, product, unit, qty, pic, legacy)
+      values ('${randomUUID()}', '${W.a}', '${issuedTo}', 'c-int-d', 'cav', 'bottle', 1, 'Synthetic other session', true);
+    update public.operator_carton_issued set issued = issued + 1 where workspace_id = '${W.a}' and carton_id = 'c-int-d';
+    select pg_sleep(2.5); commit;`);
+  await pause(800);
+  const waited = await post(outD, "issue", { cartonId: "c-int-d", orderId: issuedTo, qty: 2, pic: "S" }, asOut);
+  await other;
+  assert.equal(waited.status, 409, JSON.stringify(waited.body));
+  assert.equal(waited.body.code, "invariant");
+  assert.match(waited.body.error, /Not enough stock/);
+  assert.equal(sql(`select issued || ':' || (select count(*) from public.operator_issues where workspace_id='${W.a}' and carton_id='c-int-d') from public.operator_carton_issued where workspace_id='${W.a}' and carton_id='c-int-d'`), "4:2");
+});
+
+await check("D: a response-loss retry of an issue replays its result without a second issue", async () => {
+  const operationId = randomUUID();
+  const input = { cartonId: "c-int-d", orderId: issuedTo, qty: 1, pic: "S" };
+  const first = await post(outD, "issue", input, { ...asOut, operationId });
+  const again = await post(outD, "issue", input, { ...asOut, operationId });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.deepEqual([first.body.replayed, again.body.replayed], [false, true]);
+  assert.deepEqual(again.body.records.result, first.body.records.result);
+  assert.equal(sql(`select issued from public.operator_carton_issued where workspace_id='${W.a}' and carton_id='c-int-d'`), "5");
+  assert.equal(sql(`select count(*) from public.operator_issues where workspace_id='${W.a}' and carton_id='c-int-d'`), "3");
+  assert.equal(sql(`select count(*) || ':' || bool_and(result is not null and result_revision is null) from public.operator_commits where operation_id='${operationId}'`), "1:true");
+  const other = await post(outD, "issue", { ...input, qty: 2 }, { ...asOut, operationId });
+  assert.equal(other.status, 409);
+  assert.equal(other.body.code, "operation-mismatch");
+});
+
+await check("D: a packer's count, a print and a note saved at once all apply; only the note moves the revision", async () => {
+  const unlock = await pins(packD, "POST", { workspaceId: W.a, profileId: ali, pin: "2468" }, "/api/packer-session");
+  assert.equal(unlock.status, 200, JSON.stringify(unlock.body));
+  const rev = revision(W.a);
+  const versionY = Number(row(awbY, "version"));
+  // Every request carries an out-of-date revision hint; none of them conflicts.
+  const [own, printed, note] = await Promise.all([
+    post(packD, "pack-own", { id: awbX, actual: 3 }, { role: "packer", ws: W.a, revision: rev - 1 }),
+    post(outD, "print", { id: awbY, pic: "S" }, { ...asOut, revision: rev - 1 }),
+    post(outD, "feedback", { text: "INT D: saved alongside order records" }, { ...asOut, revision: rev - 1 }),
+  ]);
+  for (const r of [own, printed, note]) assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual([own.attempts, printed.attempts, note.attempts], ["1", "1", "1"], "no save was rebased");
+  assert.ok(own.body.packerExpiresAt, "the packer's session slides with the save");
+  assert.equal(revision(W.a), rev + 1);
+  assert.equal(row(awbX, "actual || ':' || packer || ':' || label_pic || ':' || (pack_recorded_by ->> 'userId')"), `3:${ali}:${ali}:${people.packerA.id}`);
+  assert.equal(row(awbY, "printed || ':' || version"), `true:${versionY + 1}`);
+  assert.equal(sql(`select command from public.operator_commits where user_id='${people.packerA.id}' order by committed_at desc limit 1`), "pack-own");
+});
+
+await check("D: a packer's own count is saved only for an AWB assigned to the profile they unlocked", async () => {
+  // Abu's AWB is not even readable through Ali's sealed session.
+  const spoof = await post(packD, "pack-own", { id: awbY, actual: 3 }, { role: "packer", ws: W.a });
+  assert.equal(spoof.status, 400, JSON.stringify(spoof.body));
+  assert.equal(row(awbY, "actual is null"), "t");
+  await pins(packD, "DELETE", null, "/api/packer-session");
+  const locked = await post(packD, "pack-own", { id: awbY, actual: 3 }, { role: "packer", ws: W.a });
+  assert.equal(locked.status, 403);
+  assert.equal(locked.body.code, "packer-locked");
+  // The packer's own token without the sealed session reads no AWB rows.
+  const jwt = await token("packerA");
+  assert.deepEqual(await (await rest(`operator_orders?select=id&workspace_id=eq.${W.a}`, jwt)).json(), []);
+});
+
+await check("D: an AWB changed after a form opened it is reported; unversioned saves retry on fresh rows", async () => {
+  const created = await post(outD, "order", newOrder("NVMYINTD0003", { expected: 1 }), asOut);
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  const id = created.body.records.result.orders[0].id;
+  const edit = (expected, extra = {}) =>
+    post(outD, "edit-order", { id, awb: "NVMYINTD0003", product: "cav", channel: "TikTok", package: "INT D", expected, date: mytToday, ...extra }, asOut);
+  assert.equal((await edit(2, { expectedVersion: 1 })).status, 200);
+  const stale = await edit(4, { expectedVersion: 1 });
+  assert.equal(stale.status, 409, JSON.stringify(stale.body));
+  assert.equal(stale.body.code, "record");
+  assert.equal(stale.body.conflict.currentVersion, 2);
+  assert.equal(stale.body.conflict.current.expected, 2);
+  assert.equal(row(id, "expected || ':' || version"), "2:2");
+  // Edits without a version at once: a row changed after it was read (PT412) is read again
+  // and the edit applied to it; a rebased save reports more than one attempt.
+  // Deterministically: another session changes the row (its version) after the API read it.
+  // The commit finds a stale version (PT412); the API reads the row again and applies the
+  // edit on the second attempt. With the form's version, the second attempt reports it.
+  const hold = () => sqlSession(`begin; update public.operator_orders set version = version + 1, note = 'INT D: changed elsewhere'
+    where id = '${id}'; select pg_sleep(2.5); commit;`);
+  let other = hold();
+  await pause(800);
+  const rebased = await edit(3);
+  await other;
+  assert.equal(rebased.status, 200, JSON.stringify(rebased.body));
+  assert.equal(rebased.attempts, "2", "applied again on the fresh row");
+  assert.equal(row(id, "expected || ':' || version || ':' || note"), "3:4:INT D: changed elsewhere");
+  other = hold();
+  await pause(800);
+  const conflict = await edit(9, { expectedVersion: 4 });
+  await other;
+  assert.equal(conflict.status, 409, JSON.stringify(conflict.body));
+  assert.equal(conflict.body.code, "record");
+  assert.equal(conflict.body.conflict.currentVersion, 5);
+  assert.equal(row(id, "expected || ':' || version"), "3:5");
+  // Three at most: the rebase loop makes three attempts, enough for three colliding saves.
+  const all = await Promise.all([5, 6, 7].map((n) => edit(n)));
+  assert.deepEqual(all.map((r) => r.status), [200, 200, 200], JSON.stringify(all.map((r) => r.body)));
+  assert.equal(row(id, "version"), "8");
+  console.log(`    (attempts: ${all.map((r) => r.attempts).join(", ")})`);
+});
+
+await check("D: a duplicate AWB is refused; a courier's number may return 30+ days after handover", async () => {
+  const dup = await post(outD, "order", newOrder("NVMYINTD0001", { date: laterDay(5) }), asOut);
+  assert.equal(dup.status, 400, JSON.stringify(dup.body));
+  assert.match(dup.body.error, /already recorded/);
+  // The same new number saved twice at once: one row; the other is refused by the domain
+  // rules (400) or by the database's unique key (409 duplicate).
+  const both = await Promise.all([1, 2].map(() => post(outD, "order", newOrder("NVMYINTD0009"), asOut)));
+  assert.equal(both.filter((r) => r.status === 200).length, 1, JSON.stringify(both.map((r) => r.body)));
+  const refused = both.find((r) => r.status !== 200);
+  assert.match(refused.body.error, /already recorded/);
+  if (refused.status === 409) assert.equal(refused.body.code, "duplicate");
+  else assert.equal(refused.status, 400);
+  console.log(`    (refused ${refused.status === 409 ? "by the database's unique key" : "by the domain rules"})`);
+  assert.equal(sql(`select count(*) from public.operator_orders where workspace_id='${W.a}' and awb='NVMYINTD0009'`), "1");
+  // Deterministically: another session inserts the same AWB for the day and commits while
+  // the API's commit waits on the unique key: 409 duplicate.
+  const other = sqlSession(`begin; insert into public.operator_orders (id, workspace_id, awb, channel, product, package,
+    expected, original_expected, fulfil_date, review_state, legacy) values ('${randomUUID()}', '${W.a}', 'NVMYINTD0010',
+    'TikTok', 'cav', 'INT D', 1, 1, '${mytToday}', 'pending', true); select pg_sleep(2.5); commit;`);
+  await pause(800);
+  const raced = await post(outD, "order", newOrder("NVMYINTD0010"), asOut);
+  await other;
+  assert.equal(raced.status, 409, JSON.stringify(raced.body));
+  assert.equal(raced.body.code, "duplicate");
+  assert.equal(raced.body.error, "This AWB is already recorded.");
+  const handed = await post(outD, "dispatch", { id: awbX, reference: "INT-M-D1", pic: "S" }, asOut);
+  assert.equal(handed.status, 200, JSON.stringify(handed.body));
+  assert.equal(row(awbX, "dispatched_at is not null"), "t");
+  const soon = await post(outD, "order", newOrder("NVMYINTD0001", { date: laterDay(10) }), asOut);
+  assert.equal(soon.status, 400, JSON.stringify(soon.body));
+  const reused = await post(outD, "order", newOrder("NVMYINTD0001", { date: laterDay(40) }), asOut);
+  assert.equal(reused.status, 200, JSON.stringify(reused.body));
+  assert.equal(sql(`select string_agg(to_char(fulfil_date, 'YYYY-MM-DD'), ',' order by fulfil_date) from public.operator_orders where workspace_id='${W.a}' and awb='NVMYINTD0001'`), `${mytToday},${laterDay(40)}`);
+});
+await outD.context.close();
+await packD.context.close();
 
 await browser.close();
 const failed = results.filter((r) => r[0] === "FAIL");

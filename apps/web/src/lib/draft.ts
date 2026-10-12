@@ -1,11 +1,13 @@
 import {
   commandRules,
   effectiveCapabilities,
+  recordRules,
   type Capability,
 } from "./capabilities.ts";
 import {
   channels,
   normalizeAwb,
+  recordedAwb,
   releaseImport,
   type AwbImport,
 } from "./awb-import.ts";
@@ -322,6 +324,13 @@ export interface Order {
   courier?: string;
   importId?: string;
   importRowId?: string;
+  /**
+   * Row version on a site whose orders are table rows (operator_orders.version). The
+   * database bumps it on every change; the domain code never does.
+   */
+  version?: number;
+  /** When the parcel was handed over (stamped by the database on table rows). */
+  dispatchedAt?: string;
   id: string;
   awb: string;
   channel: string;
@@ -516,7 +525,21 @@ export interface Draft {
   events: Event[];
   notes: Note[];
   closedDays: string[];
+  /**
+   * Transient, never stored (order records, 20261014090000): on a site whose orders are
+   * table rows, units issued from each carton by stock issues that are not in `issues`
+   * (the server loads only the issues a command needs and the per-carton totals).
+   */
+  cartonIssued?: Record<string, number>;
+  /**
+   * Transient, never stored: demand computed by the database per "YYYY-MM-DD|product"
+   * (operator_orders_day), for the supervisor count gate on a slice of the day's orders.
+   */
+  demand?: Record<string, DayDemand>;
 }
+/** Reviewed AWBs of a day containing a product, their expected units and demand hash. */
+export type DayDemand = { awbs: number; expected: number; hash: string };
+export const demandKey = (date: string, productId: string) => `${date}|${productId}`;
 // Preserve record IDs and original references while displaying one batch number throughout stock flows.
 export function withBatchReferences(current: Draft): Draft {
   const state = structuredClone(current);
@@ -619,6 +642,7 @@ export const adypocideReceipts = (s: Draft): AdypocideReceipt[] => [
 export const available = (s: Draft, c: Carton) =>
   c.qty -
   s.issues.filter((i) => i.cartonId === c.id).reduce((n, i) => n + i.qty, 0) -
+  (s.cartonIssued?.[c.id] ?? 0) -
   s.boxing
     .filter((i) => i.sourceId === c.id)
     .reduce((n, i) => n + i.boxes * i.ratio + i.loss, 0) +
@@ -701,6 +725,7 @@ export function packageGroups(orders: Order[]) {
   );
 }
 export const demandFingerprint = (s: Draft, date: string, productId: string) =>
+  s.demand?.[demandKey(date, productId)]?.hash ??
   JSON.stringify(
     dailyOrders(s, date)
       .filter((o) => orderLines(o).some((l) => l.product === productId))
@@ -737,6 +762,33 @@ export const dailyTally = (s: Draft, date: string) =>
       stale: !!count && count.fingerprint !== demandFingerprint(s, date, p.id),
     };
   });
+/**
+ * What the supervisor count gate needs for one day and product: reviewed AWBs, their
+ * expected units, the latest count and whether orders changed since it. On a slice of a
+ * tables-mode site the demand comes from the database (`s.demand`); otherwise from the
+ * document's orders (dailyTally).
+ */
+export function tallyGate(s: Draft, date: string, productId: string) {
+  const demand = s.demand?.[demandKey(date, productId)];
+  if (!demand) {
+    const t = dailyTally(s, date).find((x) => x.product === productId);
+    return {
+      awbs: t?.awbs ?? 0,
+      expected: t?.expected ?? 0,
+      count: t?.count,
+      stale: !!t?.stale,
+    };
+  }
+  const count = s.sortCounts?.find(
+    (c) => c.date === date && c.product === productId,
+  );
+  return {
+    awbs: demand.awbs,
+    expected: demand.expected,
+    count,
+    stale: !!count && count.fingerprint !== demand.hash,
+  };
+}
 /** Malaysia calendar day of a timestamp; "" when the timestamp cannot be read. */
 const mytDay = (iso: string) => {
   const time = Date.parse(iso);
@@ -782,6 +834,9 @@ export function dailyInventory(s: Draft, date: string): DailyInventory[] {
         row.opening += kind === "issued" ? -qty : qty;
     };
     for (const c of s.cartons) if (ids.has(c.id)) move(c.at, c.qty, "received");
+    // Table issues not loaded into `issues` are all older than any loaded one.
+    for (const [cartonId, qty] of Object.entries(s.cartonIssued ?? {}))
+      if (ids.has(cartonId)) row.opening -= qty;
     for (const i of s.issues) if (ids.has(i.cartonId)) move(i.at, i.qty, "issued");
     for (const r of s.returns ?? [])
       if (ids.has(r.cartonId)) move(r.at, r.qty, "returned");
@@ -1072,6 +1127,13 @@ export type Command = {
    * the upload the AWB came from (its rows may be omitted).
    */
   context?: { import?: AwbImport };
+  /**
+   * "slice" (order records, 20261014090000): the state holds the site document plus only
+   * the order rows, issues and counts this command needs, loaded from the tables. The
+   * document size ceilings do not apply, a recorded AWB may be reused after its handover
+   * (recordedAwb) and a handover keeps its time. Default "document".
+   */
+  scope?: "document" | "slice";
 };
 /** A stale edit. Carries the current record so the supervisor can review it. */
 export class ConflictError extends Error {
@@ -1136,6 +1198,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     );
   if (!rule && cmd.actor?.kind === "member")
     throw new Error("This action is not available in operational workspaces.");
+  const slice = cmd.scope === "slice";
+  if (slice && !recordRules[cmd.type])
+    throw new Error("This action is not available in operational workspaces.");
   const site = recorder.siteId;
   const s = withBatchReferences(current),
     v = cmd.input,
@@ -1146,6 +1211,16 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     if (required && !val) throw new Error("Please complete " + k + ".");
     if (val.length > 2000) throw new Error("Text is too long.");
     return val;
+  };
+  /** A fulfilment day: a real calendar date as YYYY-MM-DD. */
+  const fulfilDate = (k = "date") => {
+    const day = str(k);
+    const time = /^\d{4}-\d{2}-\d{2}$/.test(day)
+      ? Date.parse(day + "T00:00:00Z")
+      : NaN;
+    if (!Number.isFinite(time) || new Date(time).toISOString().slice(0, 10) !== day)
+      throw new Error("Choose a valid fulfilment date.");
+    return day;
   };
   const num = (k: string, min = 0) => {
     const raw = v[k];
@@ -1323,7 +1398,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const loaded = cmd.context?.import;
       if (!loaded || loaded.id !== str("id"))
         throw new Error("Upload batch not found.");
-      const detail = releaseImport(s, structuredClone(loaded), cmd.role, at);
+      const detail = releaseImport(s, structuredClone(loaded), cmd.role, at, {
+        reuse: slice,
+      });
       log(loaded.id, cmd.type, detail);
       break;
     }
@@ -1989,7 +2066,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         awb = normalizeAwb(str("awb")),
         expected = num("expected", 1);
       if (!product(p)) throw new Error("Choose a product.");
-      if (s.orders.some((o) => normalizeAwb(o.awb) === awb))
+      if (recordedAwb(s.orders, awb, str("date", false), { reuse: slice }))
         throw new Error("This AWB is already recorded.");
       if (!channels.includes(str("channel")))
         throw new Error("Choose an order source.");
@@ -2008,7 +2085,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         printed: false,
         dispatched: false,
         handoverRef: "",
-        date: str("date"),
+        date: fulfilDate(),
         note: str("note", false),
       };
       s.orders.unshift(o);
@@ -2022,6 +2099,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "edit-order": {
       allow("admin", "outbound");
       const o = find(s.orders);
+      expectVersion(o, "This AWB", false, () => ({ current: o }));
       if (orderReady(o))
         throw new Error("Reviewed orders require a supervisor correction.");
       const p = str("product"),
@@ -2030,9 +2108,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (!product(p) || !channels.includes(channel))
         throw new Error("Choose a product and source.");
       if (
-        s.orders.some(
-          (other) => other.id !== o.id && normalizeAwb(other.awb) === awb,
-        )
+        recordedAwb(s.orders, awb, str("date", false), {
+          except: o.id,
+          reuse: slice,
+        })
       )
         throw new Error("This AWB is already recorded.");
       const before = `${o.awb} · ${o.package} · ${o.expected}`;
@@ -2042,7 +2121,18 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       o.package = str("package");
       o.expected = num("expected", 1);
       o.originalExpected = o.expected;
-      o.date = str("date");
+      o.date = fulfilDate();
+      // An edited AWB carries the one edited product; stale product lines from the label
+      // would no longer add up to it.
+      if (o.lines)
+        o.lines = [
+          {
+            product: p,
+            expected: o.expected,
+            originalExpected: o.expected,
+            actual: o.actual,
+          },
+        ];
       log(
         o.id,
         "Pending order edited",
@@ -2053,6 +2143,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "review-order": {
       allow("admin", "outbound");
       const o = find(s.orders);
+      expectVersion(o, "This AWB", false, () => ({ current: o }));
       if (orderReady(o)) throw new Error("This order is already reviewed.");
       o.reviewState = "confirmed";
       o.reviewedBy = str("pic");
@@ -2065,6 +2156,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       allow("admin", "outbound");
       const o = find(s.orders),
         reason = str("reason");
+      expectVersion(o, "This AWB", false, () => ({ current: o }));
       if (orderHasActivity(s, o))
         throw new Error(
           "This AWB has stock, packing or handover records. It stays for traceability; ask the stock-out supervisor for a correction instead.",
@@ -2124,8 +2216,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const date = str("date"),
         p = str("product"),
         counted = num("counted");
-      const tally = dailyTally(s, date).find((t) => t.product === p);
-      if (!tally?.awbs)
+      const tally = tallyGate(s, date, p);
+      if (!tally.awbs)
         throw new Error("No reviewed orders for this product and day.");
       const note = str("note", !!tally.count || counted !== tally.expected);
       const count: SortCount = {
@@ -2157,9 +2249,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         (g) => g.key === key,
       );
       if (!group) throw new Error("This package group is no longer available.");
-      const tally = dailyTally(s, date).find(
-        (t) => t.product === group.product,
-      )!;
+      const tally = tallyGate(s, date, group.product);
       if (!tally.count || tally.stale)
         throw new Error(
           "Record a current supervisor count before assigning packers.",
@@ -2225,6 +2315,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "split-order": {
       allow("admin", "outbound");
       const o = find(s.orders);
+      expectVersion(o, "This AWB", false, () => ({ current: o }));
       if (singleProductOrder(o))
         throw new Error("This record already has one product.");
       if (
@@ -2264,9 +2355,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (
         new Set(parcels.map((p) => p.awb)).size !== parcels.length ||
         parcels.some((p) =>
-          s.orders.some(
-            (other) => other.id !== o.id && normalizeAwb(other.awb) === p.awb,
-          ),
+          recordedAwb(s.orders, p.awb, o.date, { except: o.id, reuse: slice }),
         )
       )
         throw new Error("Enter a distinct actual AWB for each product parcel.");
@@ -2310,9 +2399,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
               "Separate brands into independent parcels before fulfilment.",
             );
           for (const line of orderLines(o)) {
-            const tally = dailyTally(s, o.date).find(
-              (t) => t.product === line.product,
-            )!;
+            const tally = tallyGate(s, o.date, line.product);
             if (!tally.count || tally.stale)
               throw new Error(
                 "Record a current supervisor count before issuing stock or assigning packers.",
@@ -2321,10 +2408,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         }
       }
       if (cmd.type === "move-orders") {
-        const date = str("date"),
+        const date = fulfilDate(),
           reason = str("reason");
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
-          throw new Error("Choose a valid fulfilment date.");
         for (const o of orders) {
           if (o.actual !== null)
             throw new Error(
@@ -2599,6 +2684,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const o = find(s.orders),
         field = str("field"),
         reason = str("reason");
+      expectVersion(o, "This AWB", false, () => ({ current: o }));
       if (field !== "actual" && field !== "expected")
         throw new Error("Choose the quantity to correct.");
       if (o.lines) {
@@ -2641,12 +2727,16 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "dispatch": {
       allow("outbound");
       const o = find(s.orders);
+      expectVersion(o, "This AWB", false, () => ({ current: o }));
       if (o.actual === null)
         throw new Error("Record the parcel quantity before handover.");
       if (o.dispatched) throw new Error("This parcel is already handed over.");
       const note = str("note", variance(o) !== 0);
       o.dispatched = true;
       o.handoverRef = str("reference");
+      // Table rows keep the handover time for the AWB reuse rule (the database stamps its
+      // own); the document keeps its shape.
+      if (slice) o.dispatchedAt = at;
       log(
         o.id,
         "Courier handover",
@@ -2924,12 +3014,20 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     throw new Error(
       "This change would add more than 2000 audit entries. Split it into smaller changes.",
     );
-  // Ceilings sized to the 2 MB workspace document. Since 20261012090000 the label records
-  // live in operator_import_rows and since 20261013090000 operational audit entries live in
-  // operator_events, so an imported AWB costs about 0.5 KB here (its order); the 2,000-order
-  // ceiling stays until orders move to tables (order volume plan, WP C).
+  // A slice is not the stored document: its order rows live in tables (20261014090000).
+  if (!slice) documentCeilings(s, recorder.kind !== "member");
+  return s;
+}
+/**
+ * Ceilings sized to the 2 MB workspace document. Since 20261012090000 the label records
+ * live in operator_import_rows and since 20261013090000 operational audit entries live in
+ * operator_events, so an imported AWB costs about 0.5 KB here (its order); the 2,000-order
+ * ceiling stays for sites whose orders are still in the document (order volume plan, WP C;
+ * C4 removes the order lines). `sandbox`: the preview keeps its audit entries here.
+ */
+export function documentCeilings(s: Draft, sandbox: boolean) {
   if (
-    (recorder.kind !== "member" && s.events.length > 4000) ||
+    (sandbox && s.events.length > 4000) ||
     s.orders.length > 2000 ||
     s.batches.length > 200 ||
     s.cartons.length > 500 ||
@@ -2943,7 +3041,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     throw new Error(
       "The test workspace is full. Export your review and reset the sample data.",
     );
-  return s;
 }
 
 // Idempotency records commit atomically with the workspace state they describe.

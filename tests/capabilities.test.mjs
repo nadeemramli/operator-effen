@@ -15,6 +15,7 @@ import {
 } from "../apps/web/src/lib/capabilities.ts";
 import { products } from "../apps/web/src/lib/draft.ts";
 import { channels } from "../apps/web/src/lib/awb-import.ts";
+import { frozen, tablesSite } from "./order-slices.mjs";
 
 const migration = (name) =>
   readFileSync(new URL(`../supabase/migrations/${name}.sql`, import.meta.url), "utf8");
@@ -272,4 +273,78 @@ test("the order tables accept exactly the app's products, units and channels", (
   assert.deepEqual(mapped, Object.fromEntries(products.map((p) => [p.id, p.unit])));
   const channel = records.match(/channel text not null check \(channel in \(([^)]*)\)\)/);
   assert.deepEqual([...channel[1].matchAll(/'([A-Za-z]+)'/g)].map(([, c]) => c), channels);
+});
+
+// Order records (20261014090000): on a tables-mode site every order command runs on a slice
+// of the rows it needs (apps/web/src/lib/order-records.ts). The slice must give the same
+// change set and the same rows as the whole document, and every change set must stay inside
+// the command's operator_record_rules scope (sliceDelta throws otherwise).
+test("every order family gives the same rows on its slice as on the whole document", async () => {
+  const clock = frozen();
+  try {
+    const day = "2026-10-20";
+    const initial = createDraft();
+    // A legacy two-brand AWB for split-order.
+    initial.orders.push({
+      id: "o-split", awb: "SLICE-MIXED", channel: "Luxana", product: "cav", package: "Mixed", expected: 3,
+      originalExpected: 3, actual: null, packer: "", labelPic: "", printed: false, dispatched: false,
+      handoverRef: "", date: day, note: "", reviewState: "pending",
+      lines: [{ product: "cav", expected: 1, originalExpected: 1, actual: null }, { product: "lip", expected: 2, originalExpected: 2, actual: null }],
+    });
+    const file = { id: "d".repeat(64), name: "slice.pdf", path: "site-a/" + "d".repeat(64) + ".pdf", pages: 2, size: 1000 };
+    const label = (page, awb, ref) => ({ file: file.id, page, method: "text", text: `Ninja Van\n${awb}\nOrder: #${ref}\nProducts:\n1x Cavernosil [cave04]` });
+    const upload = (id) => ({ id, name: "Slice upload", date: day, files: [file], createdAt: "", updatedAt: "",
+      rows: parsePages([label(1, `NVMYSLICE${id.slice(-3)}1`, `SL-${id.slice(-3)}-1`), label(2, `NVMYSLICE${id.slice(-3)}2`, `SL-${id.slice(-3)}-2`)], "Luxana", "SLICE STORE") });
+    const u1 = upload("30000000-0000-4000-8000-000000000a01"), u2 = upload("30000000-0000-4000-8000-000000000a02");
+    const site = tablesSite(initial, [u1, u2], clock);
+    const seen = new Set();
+    const step = async (role, type, input, extra) => {
+      const r = await site.step(role, type, input, extra);
+      seen.add(type);
+      return r;
+    };
+    const idOf = (awb) => site.state.orders.find((o) => o.awb === awb).id;
+    const demand = (product) => site.state.orders.filter((o) => o.date === day && o.reviewState !== "pending")
+      .flatMap((o) => o.lines ?? [o]).filter((l) => l.product === product).reduce((n, l) => n + l.expected, 0);
+
+    await step("admin", "order", { awb: "slice awb 1", product: "cav", channel: "TikTok", package: "P", expected: 2, date: day });
+    const a = idOf("SLICEAWB1");
+    await step("outbound", "edit-order", { id: a, awb: "SLICEAWB1", product: "cav", channel: "TikTok", package: "P", expected: 3, date: day, expectedVersion: 1 });
+    await step("outbound", "review-order", { id: a, pic: "S", expectedVersion: 2 });
+    await step("outbound", "split-order", { id: "o-split", pic: "S", reason: "Two brands", awb_cav: "SPLIT-CAV", awb_lip: "SPLIT-LIP", package_cav: "P", package_lip: "Q" });
+    await step("outbound", "sort-count", { date: day, product: "cav", counted: demand("cav"), pic: "S", note: "Count" });
+    await step("outbound", "print", { id: a, pic: "S" });
+    await step("outbound", "assign-orders", { ids: [a], packer: "Sample Packer A", pic: "S" });
+    await step("outbound", "issue", { cartonId: "c-cav", orderId: a, qty: 1, pic: "S" });
+    await site.refused("outbound", "issue-orders", { ids: [a], cartonId: "c-cav", qty: 3, pic: "S" }, /remaining demand/);
+    await step("outbound", "issue-orders", { ids: [a], cartonId: "c-cav", qty: 2, pic: "S" });
+    await site.refused("outbound", "issue", { cartonId: "c-cav", orderId: a, qty: 120, pic: "S" }, /Not enough stock/);
+    await step("outbound", "pack", { id: a, actual: 3, pic: "Sample Packer A", labelPic: "Sample Packer B" });
+    await step("outbound", "correct", { id: a, field: "actual", qty: 2, reason: "Recount" });
+    await step("outbound", "dispatch", { id: a, reference: "M-1", pic: "S", note: "One short" });
+    assert.ok(site.state.orders.find((o) => o.id === a).dispatchedAt, "a handover on a table row keeps its time");
+    // A package of the day for Sample Packer B, recorded with their PIN.
+    await step("admin", "order", { awb: "SLICEAWB2", product: "cav", channel: "TikTok", package: "P", expected: 3, date: day });
+    await step("outbound", "review-order", { id: idOf("SLICEAWB2"), pic: "S" });
+    await step("outbound", "sort-count", { date: day, product: "cav", counted: demand("cav"), pic: "S", note: "Recount" });
+    const group = JSON.stringify(["cav", "P", 3]);
+    const { changes } = await step("outbound", "assign-package", { date: day, group, packers: ["Sample Packer B"], allocation_0: 1, pic: "S" });
+    assert.deepEqual(changes.orders.update.map((u) => Object.keys(u.set).sort()), [["assigned_at", "assigned_packer"]]);
+    await step("packer", "pack-own", { id: idOf("SLICEAWB2"), actual: 3 }, { performer: "Sample Packer B" });
+    await step("outbound", "move-orders", { ids: ["o-4"], date: "2026-10-21", pic: "S", reason: "Tomorrow" });
+    await step("outbound", "print-orders", { ids: ["o-4", "o-6"], pic: "S" });
+    await step("admin", "order", { awb: "SLICEAWB3", product: "gly", channel: "Shopee", package: "P", expected: 1, date: day });
+    await site.refused("admin", "order", { awb: "SLICEAWB3", product: "gly", channel: "Shopee", package: "P", expected: 1, date: "2026-11-30" }, /already recorded/);
+    await site.refused("outbound", "remove-order", { id: "o-3", reason: "x" }, /stock, packing or handover/);
+    await step("admin", "remove-order", { id: idOf("SLICEAWB3"), reason: "Cancelled" });
+    await step("admin", "import-release", { id: u1.id }, undefined);
+    const released = u1.rows[0].releasedOrderId;
+    const removed = await step("admin", "remove-order", { id: released, reason: "Cancelled" });
+    assert.deepEqual(removed.changes.importEffects, { rows: [{ id: u1.rows[0].id, excluded: true, reviewNote: "Removed: Cancelled" }] });
+    await step("admin", "import-delete", { id: u1.id, reason: "Wrong day" });
+    await step("admin", "import-release", { id: u2.id });
+    assert.deepEqual([...seen].sort(), Object.keys(recordRules).sort(), "every records command ran through its slice");
+  } finally {
+    clock.restore();
+  }
 });

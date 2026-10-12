@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { sameOrigin } from "@/lib/request-origin";
 import { NextRequest, NextResponse } from "next/server";
-import { resolveAccess, type Membership } from "@/lib/supabase/server";
+import {
+  resolveAccess,
+  supabaseServer,
+  type Membership,
+} from "@/lib/supabase/server";
 import {
   applyCommand,
   ConflictError,
@@ -20,6 +24,7 @@ import {
 import {
   AccessDenied,
   attest,
+  attestRecords,
   authorizeMember,
   commitSecret,
   factoryDenial,
@@ -34,11 +39,22 @@ import {
   loadImport,
   rpcFailure,
   SANDBOX_UPLOADS,
-  UUID,
 } from "@/lib/imports-server";
 import { rebaseLoop, STALE_MESSAGE, type RebaseStep } from "@/lib/rebase";
 import { eventProblem } from "@/lib/events";
-import { commandRules } from "@/lib/capabilities";
+import { commandRules, recordRules } from "@/lib/capabilities";
+import {
+  documentView,
+  loadSlice,
+  sliceDelta,
+  stripTransient,
+  type LoadedSlice,
+} from "@/lib/order-records";
+import {
+  recordSource,
+  RecordLoadError,
+  releasedFrom,
+} from "@/lib/order-records-server";
 import {
   openPackerSession,
   PACKER_COOKIE,
@@ -341,58 +357,182 @@ export async function POST(request: NextRequest) {
   } catch (e) {
     return domainError(e);
   }
-  // Load the latest state, apply, commit with its revision; repeat if someone saved first.
+  // Load the latest state (on a tables-mode site, for an order command: the rows it needs),
+  // apply, commit with its revision (or the rows' versions); repeat if someone saved first.
   // The operation-ID replay check is the first step of every attempt.
-  return rebaseLoop(async (): Promise<RebaseStep<NextResponse>> => {
-    const prior = await db
-      .from("operator_commits")
-      .select("command,fingerprint,result_revision")
-      .eq("workspace_id", membership.workspaceId)
-      .eq("operation_id", operationId)
-      .maybeSingle();
-    const loaded = await db
-      .from("operator_workspaces")
-      .select("state,revision")
-      .eq("id", membership.workspaceId)
-      .single();
-    if (prior.error || !loaded.data)
+  const workspaceId = membership.workspaceId;
+  const packerSeal = packer ? request.cookies.get(PACKER_COOKIE)?.value ?? null : null;
+  // Each save keeps the packer's session open for another idle period. The attempt that
+  // committed is reported, so tests can tell a first-try save from a rebased one.
+  const saved = (body: Record<string, unknown>, attempt: number) => {
+    const response = json({
+      ...body,
+      ...(packer ? { packerExpiresAt: Date.now() + PACKER_IDLE_MS } : {}),
+    });
+    response.headers.set("X-Operator-Attempts", String(attempt));
+    if (packer)
+      response.cookies.set(
+        PACKER_COOKIE,
+        sealPackerSession(secret, { ...packer, expiresAt: Date.now() + PACKER_IDLE_MS }),
+        packerCookieOptions(PACKER_IDLE_MS),
+      );
+    return response;
+  };
+  return rebaseLoop(async (attempt): Promise<RebaseStep<NextResponse>> => {
+    const [prior, loaded] = await Promise.all([
+      priorCommit(db, workspaceId, operationId),
+      loadSite(db, workspaceId),
+    ]);
+    if (prior.error || loaded.error || !loaded.data)
       return { done: json({ error: "Unable to load your site workspace." }, 503) };
+    // The site's order store, read with the member's client in every attempt: an owner may
+    // move the site between attempts (20261014090000_operator_order_records.sql).
+    const tables = loaded.data.order_store === "tables";
+    const view = () => withBatchReferences(siteState(loaded.data!.state));
     if (prior.data)
       return {
         done:
-          prior.data.fingerprint === print && prior.data.command === type
-            ? json({
-                state: withBatchReferences(siteState(loaded.data.state)),
-                revision: loaded.data.revision,
-                replayed: true,
-                resultRevision: prior.data.result_revision,
-              })
-            : json(
-                {
-                  error:
-                    "This save ID was already used for a different change. Nothing new was saved; refresh and review.",
-                  code: "operation-mismatch",
-                },
-                409,
-              ),
+          prior.data.fingerprint !== print || prior.data.command !== type
+            ? mismatchResponse()
+            : prior.data.result_revision == null && prior.data.result
+              ? // A records commit: its stored result names the rows it changed.
+                json({
+                  state: view(),
+                  revision: loaded.data.revision,
+                  replayed: true,
+                  records: { replayed: true, result: prior.data.result },
+                  orderStore: "tables",
+                })
+              : json({
+                  state: view(),
+                  revision: loaded.data.revision,
+                  replayed: true,
+                  resultRevision: prior.data.result_revision,
+                }),
       };
-    const current = siteState(loaded.data.state);
     // A production supervisor limited to one factory never changes the other factory's
     // batches; the database re-checks the signed state (operator_private.assert_factory_scope).
-    const outside = factoryDenial(membership.factory, type, input, current.batches ?? []);
+    const batches = siteState(loaded.data.state).batches ?? [];
+    const outside = factoryDenial(membership.factory, type, input, batches);
     if (outside) return { done: json({ error: outside }, 403) };
+    if (tables && recordRules[type]) {
+      // Order records: apply the command to a slice of the rows it needs and commit the
+      // signed change set with the rows' versions; no document revision is involved.
+      const reader = packerSeal
+        ? await supabaseServer(undefined, { "x-operator-packer": packerSeal })
+        : db;
+      let slice: LoadedSlice;
+      try {
+        slice = await loadSlice(
+          recordSource(reader, workspaceId),
+          siteState(loaded.data.state),
+          type,
+          input,
+        );
+      } catch (e) {
+        if (e instanceof RecordLoadError || e instanceof ImportLoadError)
+          return { done: rpcFailure(e.failure) };
+        throw e;
+      }
+      let changesText: string;
+      try {
+        const after = applyCommand(slice.draft, {
+          type,
+          role: recorder.role,
+          input,
+          actor: recorder,
+          capabilities: membership.capabilities,
+          performer: packer?.profileId,
+          context: slice.context,
+          scope: "slice",
+        });
+        const changes = sliceDelta(type, slice.draft, after, {
+          effects: slice.keepEffects ? importEffects(type, input, slice.draft) : null,
+          recorder,
+        });
+        const eventIssue = eventProblem(changes.events ?? [], user.id);
+        if (eventIssue) throw new Error(eventIssue);
+        changesText = JSON.stringify(changes);
+        if (new TextEncoder().encode(changesText).length > 8000000)
+          throw new Error("This change is too large. Select fewer AWBs and save again.");
+      } catch (e) {
+        return { done: domainError(e) };
+      }
+      const packerSession = type === "pack-own" ? packerSeal : null;
+      const result = await db.rpc("operator_commit_records", {
+        p_workspace: workspaceId,
+        p_command: type,
+        p_operation: operationId,
+        p_fingerprint: print,
+        p_changes: changesText,
+        p_attestation: attestRecords(secret, {
+          workspaceId,
+          userId: user.id,
+          operationId,
+          command: type,
+          fingerprint: print,
+          changesText,
+          packerSession,
+        }),
+        p_packer_session: packerSession,
+      });
+      if (result.error) {
+        // A row changed after it was read: reload the slice and apply again. A form that
+        // sent the version it showed gets a reviewable conflict from the domain rules then.
+        if (result.error.code === "PT412") return { stale: true };
+        return {
+          done:
+            result.error.code === "42501" && /packer session/i.test(result.error.message)
+              ? json({ error: result.error.message, code: "packer-locked" }, 403)
+              : commitFailure(result.error),
+        };
+      }
+      const committed = result.data as {
+        replayed: boolean;
+        result: RecordsResult | null;
+      };
+      // A null result is an operation that was committed through the document path.
+      if (committed.replayed && committed.result === null)
+        return {
+          done: json({ state: view(), revision: loaded.data.revision, replayed: true }),
+        };
+      return {
+        done: saved(
+          {
+            state: view(),
+            revision: loaded.data.revision,
+            replayed: committed.replayed,
+            records: committed,
+            orderStore: "tables",
+          },
+          attempt,
+        ),
+      };
+    }
+    // Document commands. On a tables-mode site the document has no order lists: the
+    // shared rules see empty ones and the table's issued totals (stock balances), and
+    // neither is signed or stored.
+    let current = siteState(loaded.data.state);
+    if (tables)
+      try {
+        current = documentView(current, await recordSource(db, workspaceId).cartonTotals());
+      } catch (e) {
+        if (e instanceof RecordLoadError) return { done: rpcFailure(e.failure) };
+        throw e;
+      }
     // Uploads live in operator_imports: load what the command needs with the member's own
     // client (the database checks their access), never from the request body.
     let context: Command["context"];
     let effects: ImportEffects | null = null;
     try {
-      const upload = await uploadFor(db, membership.workspaceId, type, input, current);
+      const upload = await uploadFor(db, workspaceId, type, input, current);
       context = upload.context;
       effects = upload.keepEffects
         ? importEffects(type, input, current)
         : null;
     } catch (e) {
-      if (e instanceof ImportLoadError) return { done: rpcFailure(e.failure) };
+      if (e instanceof ImportLoadError || e instanceof RecordLoadError)
+        return { done: rpcFailure(e.failure) };
       throw e;
     }
     let stateText: string;
@@ -421,7 +561,7 @@ export async function POST(request: NextRequest) {
       // Every entry in the list is new (it started empty); the RPC appends them.
       const eventIssue = eventProblem(state.events, user.id);
       if (eventIssue) throw new Error(eventIssue);
-      stateText = JSON.stringify(state);
+      stateText = JSON.stringify(tables ? stripTransient(state) : state);
       if (new TextEncoder().encode(stateText).length > 1800000)
         throw new Error(
           "The shared workspace is full. This change has not been saved.",
@@ -432,14 +572,14 @@ export async function POST(request: NextRequest) {
     // The exact effects text is signed and sent; the database applies it with the state.
     const effectsText = effects ? JSON.stringify(effects) : null;
     const result = await db.rpc("operator_commit_workspace", {
-      p_workspace: membership.workspaceId,
+      p_workspace: workspaceId,
       p_expected_revision: loaded.data.revision,
       p_command: type,
       p_operation: operationId,
       p_fingerprint: print,
       p_state: stateText,
       p_attestation: attest(secret, {
-        workspaceId: membership.workspaceId,
+        workspaceId,
         revision: loaded.data.revision,
         userId: user.id,
         operationId,
@@ -450,47 +590,98 @@ export async function POST(request: NextRequest) {
       }),
       p_import_effects: effectsText,
     });
-    if (result.error) {
-      const code = result.error.code;
-      return {
-        done:
-          code === "42501"
-            ? json({ error: result.error.message }, 403)
-            : code === "28000"
-              ? json({ error: "Please sign in again." }, 401)
-              : code === "PT409"
-                ? json({ error: result.error.message, code: "operation-mismatch" }, 409)
-                : code === "22023"
-                  ? json({ error: result.error.message }, 400)
-                  : code === "23514"
-                    ? json({ error: result.error.message, code: "invariant" }, 409)
-                    : code === "55000"
-                      ? json({ error: result.error.message }, 503)
-                      : json(
-                          { error: "Unable to save. Your change has not been recorded." },
-                          503,
-                        ),
-      };
-    }
-    const saved = (
+    if (result.error) return { done: commitFailure(result.error) };
+    const committed = (
       result.data as { new_state: Draft; new_revision: number; replayed: boolean }[]
     )?.[0];
-    if (!saved) return { stale: true };
-    const response = json({
-      state: withBatchReferences(siteState(saved.new_state)),
-      revision: saved.new_revision,
-      replayed: saved.replayed,
-      ...(packer ? { packerExpiresAt: Date.now() + PACKER_IDLE_MS } : {}),
-    });
-    // Each save keeps the packer's session open for another idle period.
-    if (packer)
-      response.cookies.set(
-        PACKER_COOKIE,
-        sealPackerSession(secret, { ...packer, expiresAt: Date.now() + PACKER_IDLE_MS }),
-        packerCookieOptions(PACKER_IDLE_MS),
-      );
-    return { done: response };
+    if (!committed) return { stale: true };
+    return {
+      done: saved(
+        {
+          state: withBatchReferences(siteState(committed.new_state)),
+          revision: committed.new_revision,
+          replayed: committed.replayed,
+        },
+        attempt,
+      ),
+    };
   }, staleResponse);
+}
+
+/** The result a records commit stores (operator_commit_records step 15). */
+type RecordsResult = {
+  orders: { id: string; op: "insert" | "update" | "delete"; version: number }[];
+  issues: string[];
+  sortCounts: string[];
+  days: string[];
+};
+type Db = Awaited<ReturnType<typeof resolveAccess>>["db"];
+type Failure = { code?: string; message: string };
+// Before 20261014090000 is applied there is no order store or stored result: every site
+// keeps its orders in the document.
+const missingColumn = (error: Failure | null) => error?.code === "42703";
+async function loadSite(db: Db, workspaceId: string) {
+  const site = (columns: string) =>
+    db.from("operator_workspaces").select(columns).eq("id", workspaceId).single();
+  let result = await site("state,revision,order_store");
+  if (missingColumn(result.error)) result = await site("state,revision");
+  return result as unknown as {
+    data: { state: unknown; revision: number; order_store?: string } | null;
+    error: Failure | null;
+  };
+}
+async function priorCommit(db: Db, workspaceId: string, operationId: string) {
+  const commit = (columns: string) =>
+    db
+      .from("operator_commits")
+      .select(columns)
+      .eq("workspace_id", workspaceId)
+      .eq("operation_id", operationId)
+      .maybeSingle();
+  let result = await commit("command,fingerprint,result_revision,result");
+  if (missingColumn(result.error)) result = await commit("command,fingerprint,result_revision");
+  return result as unknown as {
+    data: {
+      command: string;
+      fingerprint: string;
+      result_revision: number | null;
+      result?: RecordsResult | null;
+    } | null;
+    error: Failure | null;
+  };
+}
+const mismatchResponse = () =>
+  json(
+    {
+      error:
+        "This save ID was already used for a different change. Nothing new was saved; refresh and review.",
+      code: "operation-mismatch",
+    },
+    409,
+  );
+/** Maps the commit functions' error codes (see the migration headers) to responses. */
+function commitFailure(error: Failure) {
+  switch (error.code) {
+    case "42501":
+      return json({ error: error.message }, 403);
+    case "28000":
+      return json({ error: "Please sign in again." }, 401);
+    case "PT409":
+      return json({ error: error.message, code: "operation-mismatch" }, 409);
+    // The site's orders moved between the document and the tables during this request.
+    case "PT428":
+      return json({ error: error.message, code: "store" }, 409);
+    case "23505":
+      return json({ error: "This AWB is already recorded.", code: "duplicate" }, 409);
+    case "22023":
+      return json({ error: error.message }, 400);
+    case "23514":
+      return json({ error: error.message, code: "invariant" }, 409);
+    case "55000":
+      return json({ error: error.message }, 503);
+    default:
+      return json({ error: "Unable to save. Your change has not been recorded." }, 503);
+  }
 }
 
 const staleResponse = () =>
@@ -510,7 +701,7 @@ function domainError(e: unknown) {
  * in the tables; otherwise the AWB is removed without an upload change.
  */
 async function uploadFor(
-  db: Awaited<ReturnType<typeof resolveAccess>>["db"],
+  db: Db,
   workspaceId: string,
   type: string,
   input: Record<string, unknown>,
@@ -525,42 +716,11 @@ async function uploadFor(
   const order = current.orders.find(
     (o) => typeof input.id === "string" && o.id === input.id.trim(),
   );
-  if (!order?.importId || !order.importRowId) return { keepEffects: false };
   // Upload and label identifiers are UUIDs since 20261012090000 (the backfill mapped older ones).
-  if (!UUID.test(order.importId) || !UUID.test(order.importRowId))
-    return { keepEffects: false };
-  const [header, row] = await Promise.all([
-    db
-      .from("operator_imports")
-      .select("id,name,date,files,created_at,updated_at")
-      .eq("id", order.importId)
-      .eq("workspace_id", workspaceId)
-      .maybeSingle(),
-    db
-      .from("operator_import_rows")
-      .select("id,released_order_id")
-      .eq("id", order.importRowId)
-      .eq("import_id", order.importId)
-      .maybeSingle(),
-  ]);
-  if (header.error || row.error)
-    throw new ImportLoadError({ message: "Unable to load the PDF upload." });
-  if (!header.data || row.data?.released_order_id !== order.id)
-    return { keepEffects: false };
-  return {
-    context: {
-      import: {
-        id: header.data.id,
-        name: header.data.name,
-        date: header.data.date,
-        files: header.data.files,
-        rows: [],
-        createdAt: header.data.created_at,
-        updatedAt: header.data.updated_at,
-      },
-    },
-    keepEffects: true,
-  };
+  const upload = order ? await releasedFrom(db, workspaceId, order) : null;
+  return upload
+    ? { context: { import: upload }, keepEffects: true }
+    : { keepEffects: false };
 }
 // A trip photo must be the signed-in driver's own upload in this site's folder.
 async function requireTripPhoto(

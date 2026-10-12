@@ -4,14 +4,22 @@ import { asFactory, type Factory } from "@/lib/access";
 import { effectiveCapabilities, type Capability } from "@/lib/capabilities";
 import { authCookieOptions, SESSION_ONLY_COOKIE } from "./remember";
 
-/** `sessionOnly` overrides the stored "keep me signed in" choice (used at sign-in). */
-export async function supabaseServer(sessionOnly?: boolean) {
+/**
+ * `sessionOnly` overrides the stored "keep me signed in" choice (used at sign-in).
+ * `headers` are sent on every Data API request of this client; packer reads send the sealed
+ * packer session as `x-operator-packer` (20261014090000_operator_order_records.sql).
+ */
+export async function supabaseServer(
+  sessionOnly?: boolean,
+  headers?: Record<string, string>,
+) {
   const jar = await cookies();
   const temporary = sessionOnly ?? jar.get(SESSION_ONLY_COOKIE)?.value === "1";
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
     {
+      ...(headers ? { global: { headers } } : {}),
       cookies: {
         getAll: () => jar.getAll(),
         setAll(values) {

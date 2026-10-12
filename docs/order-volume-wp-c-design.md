@@ -946,3 +946,168 @@ left as designed.
   - The database gives 23505 for anything that slips through.
 - **Packer reads.** Packer reads send the sealed cookie value as `x-operator-packer` on
   the user-scoped client.
+
+## Implementation notes (C2)
+
+C2 adds the domain and write path for tables-mode sites. There is no migration and no site
+is moved: every site stays in document mode until the owner runs `move_orders_to_tables`.
+These notes record what C2 decided or changed; the sections above are left as designed.
+
+### What was built
+
+- **Domain (`lib/draft.ts`).**
+  - `Order` gains `version?` and `dispatchedAt?`.
+  - `Draft` gains the transient `cartonIssued?` and `demand?` (keyed `demandKey(date, product)`).
+  - `available()` subtracts `cartonIssued`, and `dailyInventory()` takes it off the opening
+    balance. `demandFingerprint()` returns the database's hash when `demand` is present.
+  - New `tallyGate()` is used by `sort-count`, `assign-package`, `assign-orders` and
+    `issue-orders`.
+  - `Command.scope` is `"document"` (default) or `"slice"`. A slice skips the document
+    ceilings, now exported as `documentCeilings()`, and refuses non-order commands.
+  - `expectVersion(o, "This AWB")` runs in `edit-order`, `review-order`, `remove-order`,
+    `split-order`, `correct` and `dispatch`. It is enforced only when the input carries
+    `expectedVersion`, and the conflict carries the row as read (`conflict.current`).
+- **AWB reuse (`lib/awb-import.ts`).** `awbReuseAllowed(a, b)` mirrors
+  `operator_private.awb_reuse_allowed`. `recordedAwb(orders, awb, day, {except, reuse})` is
+  now the duplicate check for `order`, `edit-order`, `split-order`, `rowStatus` and
+  `releaseImport`.
+- **Slices (`lib/order-records.ts`, isomorphic).**
+  - `sliceSpec(type, input): SliceSpec` says which rows a command needs.
+  - `loadSlice(source: RecordSource, doc, type, input): Promise<{draft, context, keepEffects}>`
+    loads them, with the dependent steps the spec names.
+  - `buildSlice(doc, {orders, issues, sortCounts, cartonIssued?, demand?})` builds the slice Draft.
+  - `sliceDelta(type, before, after, {effects, recorder}): RecordChanges` turns the slice before
+    and after the command into C1's change set.
+  - Row mapping helpers: `orderFromRow`, `orderToRow`, `orderFromDay`, `sortCountFromDay`,
+    `issueFromRow`.
+  - `demandText()`: the text that `day_demand` hashes.
+  - `documentView()` and `stripTransient()`.
+- **Server reads (`lib/order-records-server.ts`).** `recordSource(db, workspaceId)` reads with
+  the member's client: `operator_orders`, `operator_issues` and `operator_carton_issued`
+  through the Data API (lists of 150 ids, pages of 1,000 rows), `operator_orders_day` and
+  `operator_import_get` (WP A). `releasedFrom()` is shared with the document path.
+- **Write path (`app/api/draft/route.ts`).**
+  - Every attempt reads `order_store` with `state,revision` and the prior commit's `result`.
+  - On a tables-mode site an order command loads its slice. A packer's reads go through a
+    client carrying `x-operator-packer`; `supabaseServer()` gains a `headers` argument for this.
+  - The command then runs `applyCommand(…, scope: "slice")` and `sliceDelta`. The change set
+    is checked against `eventProblem`, kept under 8,000,000 bytes, signed with `attestRecords`
+    and sent to `operator_commit_records`. `p_packer_session` is sent for `pack-own` only.
+- **Signing (`lib/access.ts`).** `attestRecords` builds the `operator-records-v1` message of 3.6.
+
+Request (unchanged): `{command: {type, role, input}, revision, operationId, workspaceId}`.
+`revision` is ignored for records commands. A form may add `input.expectedVersion`. A
+successful records response is:
+
+```jsonc
+{ "state": { /* site document: no orders, issues or sortCounts */ }, "revision": 12,
+  "replayed": false, "orderStore": "tables",
+  "records": { "replayed": false, "result": { "orders": [{ "id": "…", "op": "update", "version": 3 }],
+    "issues": [], "sortCounts": [], "days": ["2026-10-20"] } },
+  "packerExpiresAt": 1760000000000 /* pack-own only */ }
+```
+
+Error mapping:
+
+| Database | Response |
+|---|---|
+| `PT412` | Reload the slice and apply again (rebase loop, 3 attempts). A form that sent `expectedVersion` gets 409 `record` from the domain check on the reload. When attempts run out: 409 `revision`. |
+| `23505` | 409 `duplicate` "This AWB is already recorded." |
+| `PT428` | 409 `store` (also from the document path). The client reloads. |
+| `42501` | 403. Mapped to `packer-locked` when the message is about the packer session. |
+| others | As before: `28000` 401, `PT409` 409 `operation-mismatch`, `22023` 400, `23514` 409 `invariant`, `55000` 503. |
+
+Slice loading errors map as the upload routes map them (`rpcFailure`).
+
+### Changes to the design and why
+
+- **The reuse rule applies on tables-mode sites only** (`reuse: scope === "slice"`). Document
+  mode keeps "any recorded AWB is a duplicate", as requested ("document-mode behaviour
+  identical"). The document has no handover times and its database never had the rule.
+  `rowStatus(row, batch, state, {reuse})` takes it as an option. C3's upload screen passes it
+  for tables-mode sites.
+- **The date and product-line fixes apply in both modes.** The design lists them as bug fixes.
+  Today's screens always send `YYYY-MM-DD`, and a pending AWB with product lines cannot be
+  edited correctly in either mode. `move-orders` now uses the same real-date check; it
+  already required the shape.
+- **`dispatchedAt`.** `dispatch` sets `dispatchedAt` only on slices, so the document keeps its
+  shape. The differ never sends `dispatched_at`, because the database stamps it.
+- **The slice is the whole site document** plus the loaded rows, not just the document parts
+  listed in the spec. Every attempt loads the document anyway for its revision and order
+  store. The differ refuses any change outside `orders`, `issues`, `sortCounts` and `events`,
+  and that check replaces running `outOfScopeKeys` with an empty scope.
+- **Demand and counts come from `operator_orders_day`.** `day_demand` is in
+  `operator_private` and not exposed. At 2,000 AWBs that read is about 300 KB of slim day
+  rows for each `sort-count`, `assign-orders`, `assign-package` and `issue-orders`. If it
+  shows up in latency, C3 can add a narrow `operator_day_demand(ws, date, products)`.
+  `assign-package` uses the slim day rows as its slice: they hold everything
+  `packageGroups` and the gate read, and only the assignment columns are sent.
+- **Extra rows loaded.**
+  - `import-release` also loads rows sharing an order reference with an open label, because
+    `rowStatus` uses them to detect split parcels.
+  - `edit-order` does not load the target's issues; it never reads them.
+- **Replays** return `records: {replayed: true, result}` without re-reading the result's rows.
+  C3 refreshes by `days` and ids.
+- **Response shape** is `{state, revision, replayed, records, orderStore}` rather than 5's
+  `{records: {orders, deleted, issues}, result, replayed}`. This keeps the client's
+  `{state, revision}` contract.
+- **Document commands on a tables-mode site** run on `documentView(doc, carton totals)`: empty
+  order lists plus `cartonIssued`. `stripTransient()` removes both before signing.
+  - Without the empty lists `applyCommand` fails on `s.orders.length`.
+  - Without the totals, `count` would record a book quantity that ignores table issues.
+  - The commands and their rules are otherwise untouched.
+- **Missing C1 columns** (`42703` on `order_store` or `operator_commits.result`) are read as
+  document mode, so a preview against a database without 20261014090000 keeps working.
+- **Another packer's AWB.** On a tables-mode site, `pack-own` on an AWB assigned to another
+  packer answers 400 "This record could not be found". Row-level security hides the row from
+  the packer's session; the document path's "assigned to another packer" text cannot be
+  produced without reading the row. The database's own check remains.
+- **Client.** `draft-app.tsx` maps 409 `store` (reload; "Orders on this site moved to the new
+  storage. Reloading." / "Pesanan tapak ini telah dipindahkan ke storan baharu. Memuat
+  semula.") and 409 `duplicate` ("This AWB is already recorded." / "AWB ini telah
+  direkodkan."). No other screen changes.
+- **`X-Operator-Attempts`.** Every successful operational save (records or document) reports
+  the rebase attempt that committed it. The scenario uses it for acceptance 2.
+- **Not added:** the `afterRecordsCommit` hook. C3 and #11 own realtime.
+- **Tests.**
+  - Parity runs in `tests/capabilities.test.mjs` through `tests/order-slices.mjs` (an
+    in-memory `RecordSource` and a simulated tables-mode site), not in a separate
+    `order-slices.test.mjs`. All 19 records commands run on their slice and on the whole
+    document with identical change sets and rows. Refusals (remaining demand, stock,
+    cross-day duplicate, activity) are checked on both.
+  - `tests/order-records.test.mjs` covers the spec and loader shapes, one change set per
+    family (C1's database test shapes), the reuse rule, the fixes, the signature, and
+    `demandText` against hashes computed by `day_demand` on a local cluster.
+- **Real stack.**
+  - Objective D runs after A to C, which keep exercising document mode on site A. It moves
+    site A to tables with the owner's SQL, seeds a synthetic 5-unit carton, then checks
+    acceptance 1 to 3 at the API: concurrent issues, unrelated saves, response-loss replay,
+    stale version, packer scope, duplicate and reuse.
+  - Concurrent requests from one browser page reach the database one after another in this
+    harness, so the in-page races are refused by the domain rules. The database paths are
+    therefore also forced deterministically. A second `psql` session holds, for 2.5 s while
+    the API request is in flight:
+    - the carton lock with an issue of its own → 409 `invariant`;
+    - a version bump on the edited row → PT412, applied on attempt 2, or 409 `record` when
+      the form sent its version;
+    - an uncommitted insert of the same AWB and day → 409 `duplicate`.
+  - Site B stays in document mode. The earlier objectives are not rewritten against rows,
+    because the document path they test stays until C4.
+
+### What C3 needs
+
+- **Already used by the write path:** `operator_orders`, `operator_issues` and
+  `operator_carton_issued` selects, `operator_orders_day`, and `operator_import_get`.
+  `operator_orders_page`, `_summary`, `_trace`, `_export`, `operator_packer_page` and
+  `operator_packer_counts` are not wired yet.
+- **Packers:** the client sends nothing new. The server copies the HttpOnly packer cookie into
+  `x-operator-packer` with `supabaseServer(undefined, {"x-operator-packer": seal})`. C3's
+  packer reads (`operator_packer_page`) do the same.
+- **Responses:** a tables-mode `POST /api/draft` response holds the document without order
+  lists, plus `records` and `orderStore: "tables"`. `GET /api/draft` is unchanged and returns
+  the stored document, which has no order lists on a tables-mode site. C3 adds `cartonIssued`
+  and `orderStore` there and moves the screens to the read endpoints.
+- **Forms** should send `expectedVersion` (the row `version` from the read functions) for
+  edit, review, remove, split, correct and dispatch, and handle 409 `record` with
+  `conflict.current`.
+- **Uploads:** the upload review should call `rowStatus(…, {reuse: true})` on tables-mode sites.

@@ -628,6 +628,21 @@ export function DraftApp() {
           fail(data.error);
           return null;
         }
+        // The site's orders moved between the workspace document and the order tables
+        // (20261014090000) while this was open: load the site again.
+        if (res.status === 409 && data.code === "store") {
+          await load(pending.workspaceId, true);
+          throw new Error(
+            t(
+              "Orders on this site moved to the new storage. Reloading.",
+              "Pesanan tapak ini telah dipindahkan ke storan baharu. Memuat semula.",
+            ),
+          );
+        }
+        if (res.status === 409 && data.code === "duplicate")
+          throw new Error(
+            t("This AWB is already recorded.", "AWB ini telah direkodkan."),
+          );
         // Someone else changed the same record: load their version now, keep the open form
         // and its values, and let the person check and save again.
         if (res.status === 409 && (data.code === "record" || data.code === "revision")) {

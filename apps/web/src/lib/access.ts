@@ -172,3 +172,34 @@ export function attest(
   ].join("\n");
   return createHmac("sha256", secret).update(message, "utf8").digest("hex");
 }
+/**
+ * Signs a validated set of order rows for one user, command and operation (order records,
+ * 20261014090000_operator_order_records.sql): the exact change-set text sent as p_changes
+ * and the sealed packer session sent as p_packer_session (pack-own only; "" otherwise).
+ * Must match the 'operator-records-v1' message built in public.operator_commit_records.
+ * The expected row versions inside the change set replace the document revision.
+ */
+export function attestRecords(
+  secret: Buffer,
+  t: {
+    workspaceId: string;
+    userId: string;
+    operationId: string;
+    command: string;
+    fingerprint: string;
+    changesText: string;
+    packerSession?: string | null;
+  },
+) {
+  const message = [
+    "operator-records-v1",
+    t.workspaceId,
+    t.userId,
+    t.operationId,
+    t.command,
+    t.fingerprint,
+    sha256(t.changesText),
+    sha256(t.packerSession ?? ""),
+  ].join("\n");
+  return createHmac("sha256", secret).update(message, "utf8").digest("hex");
+}
