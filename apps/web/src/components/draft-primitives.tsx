@@ -24,9 +24,9 @@ import {
   tr,
   variance,
   orderLines,
-  orderIssued,
   type Draft,
 } from "@/lib/draft";
+import { issuedUnits, type ListedOrder } from "@/lib/order-reads";
 
 export function OrderProducts({ order }: { order: Order }) {
   return (
@@ -43,7 +43,8 @@ export function OrderQuantities({
   field,
   state,
 }: {
-  order: Order;
+  /** A row read from the order tables carries its issued units per product. */
+  order: ListedOrder;
   lang: Lang;
   field: "expected" | "actual" | "issued" | "variance";
   state?: Draft;
@@ -53,7 +54,7 @@ export function OrderQuantities({
       {orderLines(order).map((l) => (
         <span key={l.product}>
           {field === "issued"
-            ? orderIssued(state!, order, l.product)
+            ? issuedUnits(state ?? { issues: [], cartons: [] }, order, l.product)
             : field === "variance"
               ? l.actual === null
                 ? "—"

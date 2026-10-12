@@ -51,10 +51,12 @@ import {
   type LoadedSlice,
 } from "@/lib/order-records";
 import {
+  afterRecordsCommit,
   recordSource,
   RecordLoadError,
   releasedFrom,
 } from "@/lib/order-records-server";
+import { packerOnly, packerProjection } from "@/lib/order-reads";
 import {
   openPackerSession,
   PACKER_COOKIE,
@@ -97,6 +99,25 @@ const uploadCommands = ["import-release", "import-delete"];
  * to the table. Screens read the entries through /api/events.
  */
 const siteState = (stored: unknown): Draft => ({ ...(stored as Draft), events: [] });
+/**
+ * The site document as a member's screens receive it. On a tables-mode site
+ * (20261014090000) the document has no order lists: the screens read AWBs through
+ * /api/orders/*, and get empty lists plus the per-carton issued totals (`cartonIssued`) so
+ * stock balances count table issues. Members of the shared packer sign-in get only the
+ * staff profiles and notes there (packer projection; their AWBs come from
+ * /api/orders/packer). Document-mode sites get the document as before.
+ */
+const clientState = (
+  stored: unknown,
+  tables: boolean,
+  m: Membership,
+  cartonIssued?: Record<string, number>,
+): Draft =>
+  !tables
+    ? withBatchReferences(siteState(stored))
+    : packerOnly(m.capabilities)
+      ? packerProjection(siteState(stored))
+      : withBatchReferences(documentView(siteState(stored), cartonIssued ?? {}));
 
 export async function GET(request: NextRequest) {
   const access = await resolveAccess();
@@ -106,16 +127,21 @@ export async function GET(request: NextRequest) {
   if (memberships.length) {
     const m = pick(memberships, request.nextUrl.searchParams.get("workspace"));
     if (!m) return json({ error: "You do not have access to that site." }, 403);
-    const { data, error } = await db
-      .from("operator_workspaces")
-      .select("state,revision")
-      .eq("id", m.workspaceId)
-      .maybeSingle();
+    const { data, error } = await loadSite(db, m.workspaceId);
     if (error || !data)
       return json({ error: "Unable to load your site workspace." }, 503);
+    const tables = data.order_store === "tables";
+    let cartonIssued: Record<string, number> | undefined;
+    if (tables && !packerOnly(m.capabilities))
+      try {
+        cartonIssued = await recordSource(db, m.workspaceId).cartonTotals();
+      } catch {
+        return json({ error: "Unable to load your site workspace." }, 503);
+      }
     return json({
-      state: withBatchReferences(siteState(data.state)),
+      state: clientState(data.state, tables, m, cartonIssued),
       revision: data.revision,
+      ...(tables ? { orderStore: "tables" } : {}),
       actor: actorView(user.id, m),
       workspaces: memberships.map((w) => ({
         id: w.workspaceId,
@@ -388,7 +414,18 @@ export async function POST(request: NextRequest) {
     // The site's order store, read with the member's client in every attempt: an owner may
     // move the site between attempts (20261014090000_operator_order_records.sql).
     const tables = loaded.data.order_store === "tables";
-    const view = () => withBatchReferences(siteState(loaded.data!.state));
+    // The site document as the member's screens receive it (with fresh carton totals on a
+    // tables-mode site, after the commit when there is one).
+    const view = async (stored: unknown = loaded.data!.state) =>
+      clientState(
+        stored,
+        tables,
+        membership,
+        tables && !packerOnly(membership.capabilities)
+          ? await recordSource(db, workspaceId).cartonTotals().catch(() => ({}))
+          : undefined,
+      );
+    const store = tables ? { orderStore: "tables" } : {};
     if (prior.data)
       return {
         done:
@@ -397,17 +434,18 @@ export async function POST(request: NextRequest) {
             : prior.data.result_revision == null && prior.data.result
               ? // A records commit: its stored result names the rows it changed.
                 json({
-                  state: view(),
+                  state: await view(),
                   revision: loaded.data.revision,
                   replayed: true,
                   records: { replayed: true, result: prior.data.result },
                   orderStore: "tables",
                 })
               : json({
-                  state: view(),
+                  state: await view(),
                   revision: loaded.data.revision,
                   replayed: true,
                   resultRevision: prior.data.result_revision,
+                  ...store,
                 }),
       };
     // A production supervisor limited to one factory never changes the other factory's
@@ -494,12 +532,23 @@ export async function POST(request: NextRequest) {
       // A null result is an operation that was committed through the document path.
       if (committed.replayed && committed.result === null)
         return {
-          done: json({ state: view(), revision: loaded.data.revision, replayed: true }),
+          done: json({
+            state: await view(),
+            revision: loaded.data.revision,
+            replayed: true,
+            ...store,
+          }),
         };
+      if (committed.result && !committed.replayed)
+        afterRecordsCommit({
+          workspaceId,
+          days: committed.result.days,
+          orderIds: committed.result.orders.map((o) => o.id),
+        });
       return {
         done: saved(
           {
-            state: view(),
+            state: await view(),
             revision: loaded.data.revision,
             replayed: committed.replayed,
             records: committed,
@@ -598,9 +647,12 @@ export async function POST(request: NextRequest) {
     return {
       done: saved(
         {
-          state: withBatchReferences(siteState(committed.new_state)),
+          state: tables
+            ? clientState(committed.new_state, true, membership, current.cartonIssued)
+            : withBatchReferences(siteState(committed.new_state)),
           revision: committed.new_revision,
           replayed: committed.replayed,
+          ...store,
         },
         attempt,
       ),

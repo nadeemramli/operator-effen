@@ -1111,3 +1111,190 @@ Slice loading errors map as the upload routes map them (`rpcFailure`).
   edit, review, remove, split, correct and dispatch, and handle 409 `record` with
   `conflict.current`.
 - **Uploads:** the upload review should call `rowStatus(…, {reuse: true})` on tables-mode sites.
+
+## Implementation notes (C3)
+
+C3 moves the screens of a tables-mode site onto the read functions of C1. There is no
+migration and no site is moved: a site's screens change only once the owner runs
+`move_orders_to_tables` for it. Document-mode sites and the preview sandbox keep reading
+the workspace document. These notes record what C3 decided or changed; the sections above
+are left as designed.
+
+### What was built
+
+- **Read endpoints** (`apps/web/src/app/api/orders/`; shared steps in `lib/orders-api.ts`,
+  pure helpers in `lib/order-reads.ts`). Every read uses the member's own client, so the
+  policies decide. The capability check before the call mirrors
+  `order_reader_workspaces` (`orderReaderCapabilities` in `capabilities.ts`, checked against
+  the migration by `tests/order-reads.test.mjs`). The preview sandbox gets 403 `sandbox`;
+  errors map like the draft route (`42501` 403, `28000` 401, `22023` 400, a missing
+  function 503).
+
+  | Endpoint | Function | Response |
+  |---|---|---|
+  | `GET /api/orders?workspace&date[&product&package&q&status&group&after&limit]` | `operator_orders_page` | `{orders: Order & {version, issued}[], next, total, marker}`, ETag `"l.<marker>"` |
+  | `GET /api/orders/day?workspace&date` | `operator_orders_day` + `operator_orders_summary` | `DaySummary` (`awbs, review, multi, packages, groups, tally, packerTally, inventory, sortCounts`) `+ counts + marker`, ETag `"d.<marker>.<revision>.<carton digest>"` |
+  | `GET /api/orders/summary?workspace&date[&scope=all]` | `operator_orders_summary` | the overview counts; the day scope has ETag `"s.<marker>"` |
+  | `GET /api/orders/packer?workspace&date` | `operator_packer_page` with `x-operator-packer` | `{profileId, orders, marker}`; no cookie or an ended session → 403 `packer-locked` |
+  | `GET /api/orders/packer?workspace&date&profile=<id>` | `operator_orders` select (readers) | the same shape, for a supervisor |
+  | `GET /api/orders/packer-counts?workspace&date` | `operator_packer_counts` | `{counts: [{profileId, open}]}` |
+  | `GET /api/orders/trace?workspace&q= \| order= \| batch=[&afterDate&afterAwb]` | `operator_orders_trace` | as the function returns it |
+  | `GET /api/orders/export?workspace&from&to` | `operator_orders_export`, pages of 1,000 | `text/csv`, streamed; more than 31 days → 400 |
+  | `GET /api/orders/open?workspace&date&product[&package]` | `operator_orders_day` | `{ids}`: the AWBs "Issue stock" allocates to |
+  | `GET /api/orders/upload?workspace&id` | the C2 loaders | `{orders, issues}` that a PDF review needs |
+
+- **Day summary on the server.** `daySummary(state, date)` computes package groups (as
+  counts, without their AWBs), `dailyTally`, the tally per packer and `dailyInventory`.
+  Document-mode screens call it on the document. The day endpoint calls it on two states
+  that `dayDrafts()` builds from one `operator_orders_day` read:
+  - the day's slim rows, their issues, the counts and the database's demand;
+  - the cartons, with `cartonIssued.before` as the opening deduction and
+    `cartonIssued.within` as one issue per carton at midday.
+
+  `tests/order-reads.test.mjs` proves the server's figures equal the document's on the
+  same records.
+- **`GET /api/draft` on a tables-mode site** returns `documentView(doc, carton totals)`
+  (empty `orders` and `issues`, `cartonIssued`) and `orderStore: "tables"`. Document-mode
+  responses are unchanged. `POST /api/draft` responses on a tables-mode site carry the same
+  view: a records commit reads the carton totals again after it commits; a document command
+  reuses the totals it loaded. Members whose capabilities are only `packing.record` and
+  `feedback.post` get the packer projection (staff profiles as id, name, role, active, and
+  notes; every other list empty), in GET and POST.
+- **Client hooks** (`components/use-orders.ts`):
+  - `useDayOrders({workspaceId, date, filters, enabled, paused})` returns
+    `{orders, total, next, loadMore, loadingMore, loading, refreshing, error, updatedAt, refresh}`.
+  - `useDaySummary`, `useOrderSummary`, `usePackerOrders`, `usePackerCounts`, `useTrace`
+    and `useUploadOrders` each return `{data, loading, refreshing, error, code, updatedAt, refresh}`.
+  - `openOrderIds()` and `downloadExport()` are plain functions.
+  - `notifyOrdersChanged({workspaceId, days})` is the change bus. `DraftApp.command()`
+    calls it with `records.result.days` after a records save and on 409 `record`. Realtime
+    (#11) can call it too.
+
+  A hook is idle while its view is closed. While open it refreshes every 60 seconds and on
+  `visibilitychange`, unless a form is open or a save is in flight. Each refresh sends the
+  last ETag, so an unchanged day answers 304. When a day changes, pages loaded with "load
+  more" are read again, so the list keeps its length.
+- **Screens on a tables-mode site:**
+  - Order management and Daily tally (`order-workspace.tsx`) take their groups, tallies,
+    inventory, count history and package filter from `/day`. The parcel list comes from
+    `/api/orders`, 200 per page, with a status filter, "Showing n of total AWBs", "Show more
+    AWBs" and "Updated hh:mm" / "Refreshing…". "Issue stock" reads its AWB ids from
+    `/open` when the form opens. Removal uses `hasActivity()` on the row's `issued` units.
+  - Packing station: the unlock screen counts come from `/packer-counts`; the packer's
+    cards, package summary and trace sheet come from `/packer`; a supervisor's view of a
+    packer uses `profile=`.
+  - Trace (`draft-app.tsx`): the AWB search uses `q=`, and a reused AWB lists every
+    occurrence with its day. The sheet reads the AWB, its source cartons and its batches'
+    entries through `order=`; "Linked parcels" uses `batch=`; roles without AWB access see
+    the cartons and the units issued from them.
+  - Overview: the day's figures, or all-time with "Show all AWBs", plus the day's first two
+    count mismatches. Roles without AWB access see "—".
+  - Inventory position: "Issued to packing" adds `cartonIssued`.
+  - Upload review: rows from `/upload`, and `rowStatus(…, {reuse: true})`. Release waits
+    until the rows have loaded.
+  - CSV: **Export AWBs (CSV)** with a date range, in Order management and Daily tally.
+  - Forms for edit, review, remove, split, correct and dispatch send `expectedVersion`
+    when the row has a version.
+  - New strings are in English and Malay. The screens use Fullkit tokens and the existing
+    components.
+- **Server realtime hook:** `afterRecordsCommit({workspaceId, days, orderIds})` in
+  `order-records-server.ts`, called after every first-time records commit. It is a no-op.
+
+### Changes to the design and why
+
+- **Day marker probe.** C1 exposes `day_marker` only inside the read functions; there is no
+  standalone function. A conditional list or day request first calls
+  `operator_orders_summary`, which counts the day's rows and returns the same marker. If
+  the tag matches, the endpoint answers 304 without the page or day read. This needed no
+  migration.
+  - The `/day` tag also carries the document revision and a digest of
+    `operator_carton_issued`. The inventory also depends on cartons, returns and
+    adjustments, and on issues to other days' AWBs, which the marker does not count.
+  - Packers cannot call the summary, so the packer page is read in full and answered 304
+    when its own marker matches. The phone still downloads nothing.
+- **`/day` and `/summary`.** `/day` carries the day's counts from `operator_orders_summary`
+  next to the aggregates, so Order management needs one aggregate call. `/summary` serves
+  the overview (owner decision 2: per day, all-time on request).
+- **Two endpoints added.**
+  - `/open`: the aggregates carry no AWB ids, which keeps them small, so "Issue stock" reads
+    the pending ids when the form opens.
+  - `/upload`: section 6 extended WP A's `operator_import_get` with `released` and
+    `blocked`, which needs a migration. `/upload` returns the same rows the C2 release
+    loader reads.
+- **No `/api/orders/people`.** Reports is open only to management and HR, and owner
+  decision 1 gives them no AWB rows. On a tables-mode site Reports says who exports AWBs and
+  shows "—" in the per-person parcel columns. The CSV export moved to Order management and
+  Daily tally, where office admin and stock-out work.
+- **Search and groups.** On a tables-mode site the text search filters the parcel list on
+  the server. Package groups follow the product and package filters only, because the list
+  is paged; in document mode a search also narrowed the groups to those containing a match.
+- **"Needs a closer look"** lists the chosen day's first two mismatches, not all-time ones.
+- **Export names** performers by their staff profile names. The document-mode export keeps
+  its raw references, unchanged.
+- **The document view keeps empty order lists** on a tables-mode site instead of dropping
+  the keys, so screens and helpers that read `state.orders` stay safe until C4 removes them.
+- **No `?since=` on `GET /api/draft`.** On a tables-mode site the response carries
+  `cartonIssued`, which changes without a document revision. The document refresh still
+  sends the whole (smaller) document every minute.
+- **Conflict review is unchanged.** After a 409 `record` the open form keeps the version
+  it was opened with, and the lists refresh to the latest row. The person closes the form
+  and reopens it from the refreshed row to save, as with every other versioned record.
+- **No sandbox notice.** The preview sandbox keeps today's screens (the task asked for
+  unchanged behaviour); its reads of `/api/orders/*` answer 403 `sandbox`.
+
+### Measured payloads (real stack, 2,000 synthetic AWBs on one day)
+
+These figures come from the last real-stack check, measured with the session cookies.
+Local `next start` did not compress route-handler JSON, so the gzip figures were computed
+with zlib from the same bytes. The synthetic setup is minimal: a 14 KB site document, and
+rows with no issues and no packed counts.
+
+| | Raw | Gzip | Design target |
+|---|---|---|---|
+| Laptop, supervisor first open: document 14.0 KB + `/day` 8.4 KB + first page (200 AWBs) 92.3 KB | 114.7 KB | 10.7 KB | 0.2–0.6 MB raw, 40–80 KB gzip |
+| Packer phone first open: projected document 2.0 KB + packer page (250 AWBs) 92.9 KB | 94.9 KB | 8.2 KB | ≈ 70 KB raw, ≈ 10 KB gzip |
+| 60-second refresh, nothing changed | 304, no body | – | ≈ 1 KB |
+
+Notes on these figures:
+
+- A page row is about 460 bytes of `order_json` plus `version` and `issued`. The packer
+  page drops upload references, store, order reference, courier and server times
+  (`packerRow`), which brings it to about 370 bytes per row, still above the design's
+  250-byte estimate. Gzip is within target.
+- A real site document (≤ 0.5 MB) adds to the laptop figure, as the design expects.
+- Packed rows carry `packRecordedBy`, which adds about 150 bytes each.
+
+The C2 assertion that a tables-mode `POST /api/draft` carries no `orders` key now expects
+the document view: empty `orders` and `issues` plus `cartonIssued`.
+
+### What C4 needs
+
+- **Code to remove** once every site is in tables mode:
+  - the document branch of `filteredOrders`, `exportReport`, the document figures on
+    Overview and the per-person parcel counts in `draft-app.tsx`;
+  - `daySummary(state, …)` on the client and the document filter of the parcel list in
+    `order-workspace.tsx`;
+  - the `state.orders` count in `PackerUnlock`;
+  - `documentState.orders` in the upload review;
+  - the document fallbacks of `issuedUnits`, `hasActivity` and `OrderQuantities`;
+  - the document-mode order branch of `POST /api/draft` (including `uploadFor` for
+    `remove-order`) and the `clientState` document path;
+  - the `orders`, `issues` and `sortCounts` lines of `documentCeilings`;
+  - the sandbox order screens, to be replaced by the notice of section 6;
+  - add a test that no component reads `state.orders` or `state.issues`.
+- **Cutover migration** `20261016090000_operator_order_store_cutover.sql`, as in section 7:
+  - refuse unless every site is `tables`;
+  - delete the `operator_command_rules` rows of the records commands;
+  - `check (order_store = 'tables')` with default `'tables'`;
+  - a down file that re-inserts the rules and drops the check;
+  - verify-script entries.
+- **Owner steps, in order:**
+  1. Merge C3. It has no migration.
+  2. On the synthetic site, after checking the selected project:
+     `select operator_private.move_orders_to_tables('<synthetic site id>')`, then the floor
+     checklist on the synthetic site (order list and paging, tally, packer phone, trace,
+     export).
+  3. Move the live site the same way. It has been empty since the 2026-10-11 purge, so the
+     move is trivial.
+  4. Apply `20261016090000` (it refuses while any site is in document mode).
+  5. Merge C4.

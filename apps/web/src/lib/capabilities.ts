@@ -238,6 +238,21 @@ export const recordRules: Record<string, RecordRule> = {
   "import-release": rule("orders.import", { orderInsert: true, importEffects: "release" }),
   "import-delete": rule("orders.import", { orderDelete: true, importEffects: "delete" }),
 };
+/**
+ * Capabilities that read a site's AWB rows, issues and supervisor counts on a tables-mode
+ * site (operator_private.order_reader_workspaces; owner decision 2026-10-12: office admin
+ * and stock-out). Packers read only the AWBs assigned to the profile their PIN unlocked;
+ * management, production, stock-in, drivers and HR read none. tests/order-reads checks the
+ * list against the migration. The API checks it before a read; the policies decide.
+ */
+export const orderReaderCapabilities: Capability[] = [
+  "orders.enter",
+  "orders.import",
+  "outbound.fulfil",
+  "outbound.correct",
+];
+export const readsOrders = (capabilities: readonly string[]) =>
+  capabilities.some((c) => (orderReaderCapabilities as string[]).includes(c));
 export const grantableRoles: Partial<Record<MemberRole, MemberRole[]>> = {
   hr: [...memberRoles],
   production: ["packer", "driver"],

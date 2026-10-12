@@ -13,6 +13,7 @@ import {
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { FormError, Panel, units } from "./draft-primitives";
+import { useUploadOrders } from "./use-orders";
 import {
   orderHasActivity,
   products,
@@ -32,7 +33,7 @@ import {
   pageLimit,
   parseImport,
   rowProblems,
-  rowStatus,
+  rowStatus as statusOfRow,
   type AwbImport,
   type ImportRow,
   type ParsedPage,
@@ -58,6 +59,11 @@ type Props = {
    * uploads (they live in the operator_imports tables of a real or synthetic site).
    */
   workspaceId?: string;
+  /**
+   * The site keeps its orders as table rows (20261014090000): the review reads the
+   * recorded AWBs it needs from /api/orders/upload and applies the AWB reuse rule.
+   */
+  tables?: boolean;
   state: Draft;
   lang: Lang;
   role: Role;
@@ -71,7 +77,8 @@ type Props = {
 };
 export function AwbIntake({
   workspaceId,
-  state,
+  tables = false,
+  state: documentState,
   lang,
   role,
   busy,
@@ -107,6 +114,23 @@ export function AwbIntake({
   const abort = useRef<AbortController | null>(null);
   const batch = working;
   const row = batch?.rows.find((r) => r.id === selected);
+  // Tables mode: the recorded AWBs sharing an AWB or order reference with the upload's open
+  // labels, and the AWBs it released with their stock issues, stand in for the document's
+  // lists; a courier's number may return 30+ days after its handover (reuse rule).
+  const recorded = useUploadOrders({
+    workspaceId,
+    uploadId: batch?.id,
+    enabled: tables && screen === "review",
+  });
+  const state: Draft = tables
+    ? {
+        ...documentState,
+        orders: recorded.data?.orders ?? [],
+        issues: recorded.data?.issues ?? [],
+      }
+    : documentState;
+  const rowStatus = (r: ImportRow, b: AwbImport, s: Pick<Draft, "orders">) =>
+    statusOfRow(r, b, s, { reuse: tables });
   const statuses =
     batch?.rows.map((r) => ({ row: r, status: rowStatus(r, batch, state) })) ??
     [];
@@ -665,7 +689,9 @@ export function AwbIntake({
                   </Button>
                   <Button
                     className="action-primary"
-                    disabled={busy || pending || !ready || attention > 0}
+                    disabled={
+                      busy || pending || !ready || attention > 0 || (tables && recorded.loading)
+                    }
                     onClick={() => void save(true)}
                   >
                     <Check size={16} />

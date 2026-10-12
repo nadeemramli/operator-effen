@@ -207,6 +207,23 @@ are never converted into box inventory. Previously counted boxes remain stock.
   by Malaysia day, or latest first, 200 per page), only while that view is open; every
   active member of the site can read them. The fictional preview sandbox keeps its audit
   entries in its own document, unchanged.
+- **Order records on a tables-mode site** (migration `20261014090000_operator_order_records`,
+  WP C; the owner moves a site with `operator_private.move_orders_to_tables`): AWBs, stock
+  issues and supervisor counts are table rows, and the order screens read them through
+  `/api/orders/*` instead of the workspace document. Order management lists the chosen day
+  200 AWBs at a time (**Show more AWBs**), filtered by product, package, text and status on
+  the server; package groups, the daily tally, the tally by packer and the inventory for the
+  day are computed on the server and arrive as figures only. The packer phone reads only the
+  AWBs assigned to the profile its PIN unlocked (`/api/orders/packer`, the sealed packer
+  session) and receives only staff names and notes from the document. Trace finds an AWB
+  (every occurrence, newest first, because couriers reuse numbers), its first 6 characters
+  or an order number; a batch lists the AWBs it supplied. Office admin and stock-out read
+  AWB rows; packers read their own; management, production, stock-in, drivers and HR see
+  stock, batches and cartons but no AWBs (owner decision 2026-10-12). **Export AWBs (CSV)**
+  (Order management and Daily tally) downloads at most 31 days at a time; longer ranges are
+  refused. Open screens refresh every minute and after each save; an unchanged day answers
+  "not modified" with no body. Document-mode sites and the fictional preview sandbox keep
+  reading the document as before.
 - The day changes at midnight in Asia/Kuala_Lumpur. Supervisors can manually carry
   unpacked AWBs forward; stock allocations and assignments follow the AWB, and the
   old day's checkpoint is flagged because its order set changed.

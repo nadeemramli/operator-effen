@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { PersonBadge } from "./person-profile";
@@ -16,13 +16,8 @@ import {
 } from "./draft-primitives";
 import { channels } from "@/lib/awb-import";
 import {
-  dailyInventory,
-  packEntrySource,
-  dailyTally,
   packageGroups,
   singleProductOrder,
-  orderIssued,
-  orderHasActivity,
   orderLines,
   orderReady,
   packerProfiles,
@@ -31,11 +26,26 @@ import {
   available,
   today,
   tr,
+  type DailyInventory,
   type Draft,
   type Lang,
   type Order,
   type Role,
 } from "@/lib/draft";
+import {
+  daySummary,
+  daySpan,
+  EXPORT_DAYS,
+  hasActivity,
+  type ListedOrder,
+  type TallyRow,
+} from "@/lib/order-reads";
+import {
+  downloadExport,
+  openOrderIds,
+  useDayOrders,
+  useDaySummary,
+} from "./use-orders";
 
 type Props = {
   state: Draft;
@@ -48,7 +58,16 @@ type Props = {
   trace: (id: string) => void;
   correct: (o: Order) => void;
   dispatch: (o: Order) => void;
+  /**
+   * Set on a site whose orders are table rows (20261014090000): the day's aggregates come
+   * from /api/orders/day and the parcel list from /api/orders, 200 at a time.
+   */
+  tables?: { workspaceId: string; revision: number; paused: boolean };
 };
+/** The form field carrying the row version a form was opened with (409 `record` on a
+ * change made meanwhile). Document-mode orders carry none. */
+const versionOf = (o: Order): Record<string, number> =>
+  o.version ? { expectedVersion: o.version } : {};
 export function OrderWorkspace({
   state,
   lang,
@@ -60,34 +79,68 @@ export function OrderWorkspace({
   trace,
   correct,
   dispatch,
+  tables,
 }: Props) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [date, setDate] = useState(today);
   const [productId, setProduct] = useState("");
   const [packageName, setPackage] = useState("");
   const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
-  const dayOrders = state.orders.filter((o) => o.date === date);
-  const visible = dayOrders.filter(
-    (o) =>
-      (!productId || orderLines(o).some((l) => l.product === productId)) &&
-      (!packageName || o.package === packageName) &&
-      `${o.awb} ${o.orderRef ?? ""} ${o.channel}`
-        .toLowerCase()
-        .includes(query.toLowerCase()),
-  );
+  // Tables mode: the search goes to the server once typing pauses.
+  const [search, setSearch] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(query), 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+  const remote = useDaySummary({
+    workspaceId: tables?.workspaceId,
+    date,
+    enabled: !!tables,
+    revision: tables?.revision,
+    paused: tables?.paused,
+  });
+  const list = useDayOrders({
+    workspaceId: tables?.workspaceId,
+    date,
+    filters: { product: productId, package: packageName, q: search, status },
+    enabled: !!tables,
+    paused: tables?.paused,
+  });
+  // Document mode: the same aggregates, computed here from the workspace document.
+  const summary = tables ? remote.data : daySummary(state, date, { ids: true });
+  const dayOrders = tables ? [] : state.orders.filter((o) => o.date === date);
+  const visible: ListedOrder[] = tables
+    ? list.orders
+    : dayOrders.filter(
+        (o) =>
+          (!productId || orderLines(o).some((l) => l.product === productId)) &&
+          (!packageName || o.package === packageName) &&
+          `${o.awb} ${o.orderRef ?? ""} ${o.channel}`
+            .toLowerCase()
+            .includes(query.toLowerCase()),
+      );
   const chosen = visible.filter(
     (o) => selected.includes(o.id) && orderReady(o) && !o.dispatched,
   );
   const ids = chosen.map((o) => o.id);
-  const tally = dailyTally(state, date);
+  const tally: TallyRow[] = summary?.tally ?? [];
   const supervisor = role === "outbound";
   const eligible = visible.filter((o) => orderReady(o) && !o.dispatched);
   // Search selects matching groups; assignments always describe the whole package group.
+  // (Tables mode: the parcel list is paged, so groups follow the product and package
+  // filters only.)
   const visibleIds = new Set(visible.map((o) => o.id));
-  const groups = packageGroups(dayOrders).filter((g) =>
-    g.orders.some((o) => visibleIds.has(o.id)),
+  const groups = (summary?.groups ?? []).filter(
+    (g) =>
+      (!packageName || g.package === packageName) &&
+      (!g.ids || g.ids.some((id) => visibleIds.has(id))),
   );
+  const [issueError, setIssueError] = useState<{ product: string; message: string } | null>(
+    null,
+  );
+  const [loadingIds, setLoadingIds] = useState(false);
   // Only active packers can be assigned.
   const packers = packerProfiles(state).map((p) => ({ value: p.id, label: p.name }));
   const staffName = (id: string) =>
@@ -108,6 +161,19 @@ export function OrderWorkspace({
       fields,
     });
   }
+  const freshness =
+    tables &&
+    (remote.refreshing || list.refreshing
+      ? t("Refreshing…", "Menyegar semula…")
+      : remote.updatedAt
+        ? t("Updated", "Dikemas kini") +
+          " " +
+          new Date(Math.min(remote.updatedAt, list.updatedAt ?? remote.updatedAt)).toLocaleTimeString(
+            lang === "ms" ? "ms-MY" : "en-MY",
+            { timeZone: "Asia/Kuala_Lumpur", hour: "2-digit", minute: "2-digit" },
+          )
+        : "");
+  const loadError = tables ? remote.error || list.error : "";
   const reason: Field = {
     name: "reason",
     label: t("Reason", "Sebab"),
@@ -157,17 +223,9 @@ export function OrderWorkspace({
             }}
           >
             <option value="">{t("All packages", "Semua pakej")}</option>
-            {[
-              ...new Set(
-                dayOrders
-                  .filter(
-                    (o) =>
-                      !productId ||
-                      orderLines(o).some((l) => l.product === productId),
-                  )
-                  .map((o) => o.package),
-              ),
-            ]
+            {(summary?.packages ?? [])
+              .filter((p) => !productId || p.products.includes(productId))
+              .map((p) => p.package)
               .sort()
               .map((p) => (
                 <option key={p}>{p}</option>
@@ -184,10 +242,50 @@ export function OrderWorkspace({
             }}
           />
         </label>
+        {tables && (
+          <label>
+            {t("Status", "Status")}
+            <select
+              className="form-select"
+              value={status}
+              onChange={(e) => {
+                setStatus(e.target.value);
+                setSelected([]);
+              }}
+            >
+              <option value="">{t("All statuses", "Semua status")}</option>
+              <option value="review">{t("Awaiting review", "Menunggu semakan")}</option>
+              <option value="unassigned">{t("Awaiting assignment", "Menunggu tugasan")}</option>
+              <option value="unpacked">{t("Not packed yet", "Belum dibungkus")}</option>
+              <option value="handover">
+                {t("Ready for handover", "Sedia untuk diserahkan")}
+              </option>
+              <option value="dispatched">{t("Handed over", "Diserah")}</option>
+              <option value="mismatch">{t("Count mismatch", "Jumlah berbeza")}</option>
+            </select>
+          </label>
+        )}
       </div>
+      {tables && (loadError || freshness) && (
+        <p className="text-sm text-muted-foreground" role="status">
+          {loadError
+            ? t(
+                "AWB records could not be loaded. They will try again on the next refresh.",
+                "Rekod AWB tidak dapat dimuatkan. Ia akan dicuba semula semasa muat semula seterusnya.",
+              ) +
+              " " +
+              loadError
+            : freshness}
+        </p>
+      )}
+      {tables && !summary && !remote.error && (
+        <p className="text-sm text-muted-foreground">
+          {t("Loading AWB records…", "Memuatkan rekod AWB…")}
+        </p>
+      )}
       <div className="inline-note">
-        {dayOrders.length} AWBs ·{" "}
-        {dayOrders.filter((o) => !orderReady(o)).length}{" "}
+        {summary?.awbs ?? 0} AWBs ·{" "}
+        {summary?.review ?? 0}{" "}
         {t(
           "awaiting review (excluded from demand)",
           "menunggu semakan (tidak termasuk permintaan)",
@@ -339,7 +437,12 @@ export function OrderWorkspace({
               </Empty>
             )}
           </Panel>
-          <InventoryForDay state={state} lang={lang} date={date} tally={tally} />
+          <InventoryForDay
+            inventory={summary?.inventory ?? []}
+            lang={lang}
+            date={date}
+            tally={tally}
+          />
         </>
       )}
       {mode !== "tally" &&
@@ -352,25 +455,67 @@ export function OrderWorkspace({
           .map((p) => {
             const rows = groups.filter((g) => g.product === p.id);
             const r = tally.find((r) => r.product === p.id)!;
-            const productOrders = rows.flatMap((g) => g.orders);
-            const issueOrders = productOrders.filter(
-              (o) => !o.dispatched && o.actual === null,
-            );
-            const remaining = issueOrders.reduce(
-              (n, o) =>
-                n +
-                Math.max(
-                  0,
-                  orderLines(o).reduce((n, l) => n + l.expected, 0) -
-                    orderIssued(state, o, p.id),
-                ),
-              0,
-            );
+            const parcels = rows.reduce((n, g) => n + g.parcels, 0);
+            const units_ = rows.reduce((n, g) => n + g.parcels * g.perParcel, 0);
+            const remaining = rows.reduce((n, g) => n + g.remaining, 0);
+            // The pending AWBs to allocate stock to, in the listed order. Tables mode: the
+            // aggregates carry no AWB ids, so they are read when the form opens.
+            const issueStock = async () => {
+              setIssueError(null);
+              let issueIds = rows.flatMap((g) => g.openIds ?? []);
+              if (tables) {
+                setLoadingIds(true);
+                try {
+                  issueIds = await openOrderIds(
+                    tables.workspaceId,
+                    date,
+                    p.id,
+                    packageName || undefined,
+                  );
+                } catch (e) {
+                  setIssueError({
+                    product: p.id,
+                    message: e instanceof Error ? e.message : String(e),
+                  });
+                  return;
+                } finally {
+                  setLoadingIds(false);
+                }
+              }
+              if (!issueIds.length) return;
+              show({
+                type: "issue-orders",
+                title: t("Take stock from racks", "Ambil stok dari rak"),
+                description: `${p.name} · ${date} · ${remaining} ${units(lang, p.unit)} ${t("remaining", "berbaki")}`,
+                hidden: { ids: issueIds },
+                fields: [
+                  {
+                    name: "cartonId",
+                    label: t("Batch / rack", "Kelompok / rak"),
+                    type: "select",
+                    options: stockCartons(state)
+                      .filter((c) => c.product === p.id && available(state, c) > 0)
+                      .map((c) => ({
+                        value: c.id,
+                        label: `${c.ref} · ${c.rack} · ${available(state, c)} ${units(lang, c.unit)}`,
+                      })),
+                  },
+                  {
+                    name: "qty",
+                    type: "number",
+                    min: 1,
+                    label: t("Units physically taken", "Unit sebenar diambil"),
+                    value: remaining,
+                  },
+                  { ...pic(), type: "select" },
+                ],
+              });
+            };
             return (
               <Panel
                 key={p.id}
                 title={p.name}
-                detail={`${productOrders.length} ${t("parcels", "bungkusan")} · ${productOrders.reduce((n, o) => n + o.expected, 0)} ${units(lang, p.unit)} · ${date}`}
+                detail={`${parcels} ${t("parcels", "bungkusan")} · ${units_} ${units(lang, p.unit)} · ${date}`}
               >
                 <div className="product-count-bar">
                   <div>
@@ -489,19 +634,7 @@ export function OrderWorkspace({
                     </thead>
                     <tbody>
                       {rows.map((g) => {
-                        const pending = g.orders.filter(
-                          (o) => !o.dispatched && o.actual === null,
-                        );
-                        const names = [
-                          ...new Set(
-                            g.orders
-                              .map((o) => o.assignedPacker)
-                              .filter(Boolean),
-                          ),
-                        ] as string[];
-                        const unassigned = pending.filter(
-                          (o) => !o.assignedPacker,
-                        ).length;
+                        const unassigned = g.unassigned;
                         return (
                           <tr key={g.key}>
                             <td>
@@ -510,30 +643,24 @@ export function OrderWorkspace({
                             <td>
                               {g.perParcel} {units(lang, p.unit)}
                             </td>
-                            <td>{g.orders.length}</td>
+                            <td>{g.parcels}</td>
                             <td>
-                              <strong>{g.perParcel * g.orders.length}</strong>
+                              <strong>{g.perParcel * g.parcels}</strong>
                             </td>
                             <td>
                               <div className="package-assignments">
-                                {names.map((name) => (
+                                {g.packers.map((packer) => (
                                   <div
                                     className="package-assignment"
-                                    key={name}
+                                    key={packer.id}
                                   >
                                     <PersonBadge
-                                      name={staffName(name)}
+                                      name={staffName(packer.id)}
                                       lang={lang}
                                       caption={t("Packer", "Pembungkus")}
                                       compact
                                     />
-                                    <b>
-                                      {
-                                        g.orders.filter(
-                                          (o) => o.assignedPacker === name,
-                                        ).length
-                                      }
-                                    </b>
+                                    <b>{packer.parcels}</b>
                                   </div>
                                 ))}
                                 {unassigned > 0 && (
@@ -542,12 +669,12 @@ export function OrderWorkspace({
                                     {t("unassigned", "belum ditugaskan")}
                                   </small>
                                 )}
-                                {!names.length && !unassigned && "—"}
+                                {!g.packers.length && !unassigned && "—"}
                               </div>
                             </td>
                             <td>
-                              {g.orders.filter((o) => o.actual !== null).length}{" "}
-                              / {g.orders.length} {t("recorded", "direkod")}
+                              {g.recorded} / {g.parcels}{" "}
+                              {t("recorded", "direkod")}
                             </td>
                             {supervisor && (
                               <td>
@@ -555,7 +682,7 @@ export function OrderWorkspace({
                                   size="sm"
                                   variant="outline"
                                   disabled={
-                                    busy || !pending.length || !packers.length
+                                    busy || !g.pending || !packers.length
                                   }
                                   onClick={() =>
                                     show({
@@ -571,7 +698,7 @@ export function OrderWorkspace({
                                             "Remaining parcels",
                                             "Baki bungkusan",
                                           ),
-                                          value: String(pending.length),
+                                          value: String(g.pending),
                                         },
                                         {
                                           label: t(
@@ -610,11 +737,8 @@ export function OrderWorkspace({
                                                     "Masukkan bahagian baki bungkusan setiap pembungkus. AWB ditugaskan secara automatik; bungkusan siap kekal.",
                                                   )
                                                 : undefined,
-                                            value: pending.filter(
-                                              (o) =>
-                                                o.assignedPacker ===
-                                                person.value,
-                                            ).length,
+                                            value:
+                                              g.pendingBy[person.value] ?? 0,
                                           }),
                                         ),
                                         { ...pic(), type: "select" },
@@ -647,10 +771,8 @@ export function OrderWorkspace({
                       <tr>
                         <th>{t("Total shown", "Jumlah dipaparkan")}</th>
                         <td></td>
-                        <td>{productOrders.length}</td>
-                        <td>
-                          {productOrders.reduce((n, o) => n + o.expected, 0)}
-                        </td>
+                        <td>{parcels}</td>
+                        <td>{units_}</td>
                         <td colSpan={supervisor ? 3 : 2}></td>
                       </tr>
                     </tfoot>
@@ -666,50 +788,15 @@ export function OrderWorkspace({
                       )}
                     </p>
                     <Button
-                      disabled={busy || !remaining}
+                      disabled={busy || loadingIds || !remaining}
                       variant="outline"
-                      onClick={() =>
-                        show({
-                          type: "issue-orders",
-                          title: t(
-                            "Take stock from racks",
-                            "Ambil stok dari rak",
-                          ),
-                          description: `${p.name} · ${date} · ${remaining} ${units(lang, p.unit)} ${t("remaining", "berbaki")}`,
-                          hidden: { ids: issueOrders.map((o) => o.id) },
-                          fields: [
-                            {
-                              name: "cartonId",
-                              label: t("Batch / rack", "Kelompok / rak"),
-                              type: "select",
-                              options: stockCartons(state)
-                                .filter(
-                                  (c) =>
-                                    c.product === p.id &&
-                                    available(state, c) > 0,
-                                )
-                                .map((c) => ({
-                                  value: c.id,
-                                  label: `${c.ref} · ${c.rack} · ${available(state, c)} ${units(lang, c.unit)}`,
-                                })),
-                            },
-                            {
-                              name: "qty",
-                              type: "number",
-                              min: 1,
-                              label: t(
-                                "Units physically taken",
-                                "Unit sebenar diambil",
-                              ),
-                              value: remaining,
-                            },
-                            { ...pic(), type: "select" },
-                          ],
-                        })
-                      }
+                      onClick={() => void issueStock()}
                     >
                       {t("Issue stock", "Keluarkan stok")}
                     </Button>
+                    {issueError?.product === p.id && (
+                      <small className="text-warning">{issueError.message}</small>
+                    )}
                   </div>
                 )}
               </Panel>
@@ -726,13 +813,15 @@ export function OrderWorkspace({
       <details
         className="parcel-details"
         open={
-          visible.some((o) => !orderReady(o) || !singleProductOrder(o)) ||
+          (tables
+            ? !!summary && (summary.review > 0 || summary.multi > 0)
+            : visible.some((o) => !orderReady(o) || !singleProductOrder(o))) ||
           mode === "tally"
         }
       >
         <summary>
           {t("Parcel records & review", "Rekod bungkusan & semakan")} ·{" "}
-          {visible.length}
+          {tables ? list.total : visible.length}
         </summary>
         {supervisor && mode !== "tally" && (
           <div className="order-bulk">
@@ -876,7 +965,7 @@ export function OrderWorkspace({
                                       "Enter the actual AWB and package for each brand. Existing stock or packing records must be reconciled separately.",
                                       "Masukkan AWB sebenar dan pakej untuk setiap jenama. Rekod stok atau pembungkusan sedia ada perlu diselaraskan berasingan.",
                                     ),
-                                    hidden: { id: o.id },
+                                    hidden: { id: o.id, ...versionOf(o) },
                                     fields: [
                                       ...[
                                         ...new Set(
@@ -925,7 +1014,7 @@ export function OrderWorkspace({
                                       "Sunting pesanan belum disahkan",
                                     ),
                                     description: o.awb,
-                                    hidden: { id: o.id },
+                                    hidden: { id: o.id, ...versionOf(o) },
                                     fields: [
                                       {
                                         name: "awb",
@@ -1005,7 +1094,7 @@ export function OrderWorkspace({
                                           `${products.find((p) => p.id === l.product)?.name}: ${l.expected}`,
                                       )
                                       .join(" · ")}`,
-                                    hidden: { id: o.id },
+                                    hidden: { id: o.id, ...versionOf(o) },
                                     fields: [pic()],
                                   })
                                 }
@@ -1018,7 +1107,7 @@ export function OrderWorkspace({
                           <Status order={o} lang={lang} />
                         )}{" "}
                         {(role === "admin" || supervisor) &&
-                          !orderHasActivity(state, o) && (
+                          !hasActivity(state, o) && (
                             <Button
                               size="sm"
                               variant="ghost"
@@ -1033,7 +1122,7 @@ export function OrderWorkspace({
                                       "Nothing has been issued, packed or handed over for this AWB. It is taken off the list and its PDF label is marked excluded; the audit log keeps the reason.",
                                       "Tiada stok dikeluarkan, dibungkus atau diserahkan untuk AWB ini. Ia dibuang dari senarai dan label PDF-nya ditanda dikecualikan; log audit menyimpan sebab.",
                                     ),
-                                  hidden: { id: o.id },
+                                  hidden: { id: o.id, ...versionOf(o) },
                                   fields: [{ ...reason, required: true }],
                                   submit: t("Remove AWB", "Buang AWB"),
                                 })
@@ -1067,13 +1156,33 @@ export function OrderWorkspace({
               </tbody>
             </table>
           </div>
-          {!visible.length && (
+          {!visible.length && !(tables && list.loading) && (
             <Empty>
               {t(
                 "No matching AWBs for this day.",
                 "Tiada AWB sepadan untuk hari ini.",
               )}
             </Empty>
+          )}
+          {tables && list.total > 0 && (
+            <div className="order-bulk" role="status">
+              <span>
+                {t(
+                  `Showing ${visible.length} of ${list.total} AWBs`,
+                  `Memaparkan ${visible.length} daripada ${list.total} AWB`,
+                )}
+              </span>
+              {list.next && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={list.loadingMore}
+                  onClick={() => void list.loadMore()}
+                >
+                  {t("Show more AWBs", "Tunjuk lebih banyak AWB")}
+                </Button>
+              )}
+            </div>
           )}
         </Panel>
       </details>
@@ -1106,75 +1215,55 @@ export function OrderWorkspace({
                 </tr>
               </thead>
               <tbody>
-                {[
-                  ...new Set(
-                    dayOrders
-                      .filter(orderReady)
-                      .map((o) => o.assignedPacker ?? o.packer),
-                  ),
-                ].flatMap((packer) =>
-                  products.map((p) => {
-                    const orders = dayOrders.filter(
-                      (o) =>
-                        orderReady(o) &&
-                        (o.assignedPacker ?? o.packer) === packer &&
-                        orderLines(o).some((l) => l.product === p.id),
-                    );
-                    if (!orders.length) return null;
-                    const lines = orders.flatMap((o) =>
-                      orderLines(o).filter((l) => l.product === p.id),
-                    );
-                    return (
-                      <tr key={JSON.stringify([packer, p.id])}>
-                        <td>
-                          <PersonBadge
-                            name={staffName(packer)}
-                            lang={lang}
-                            caption={t("Packer", "Pembungkus")}
-                            compact
-                          />
-                        </td>
-                        <td>
-                          {p.name}
-                          <small>{units(lang, p.unit)}</small>
-                        </td>
-                        <td>{orders.length}</td>
-                        <td>{lines.reduce((n, l) => n + l.expected, 0)}</td>
-                        <td>
-                          {lines.reduce((n, l) => n + (l.actual ?? 0), 0)}
-                        </td>
-                        <td>{lines.filter((l) => l.actual === null).length}</td>
-                        <td>
-                          {(() => {
-                            const by = (k: string) =>
-                              orders.filter((o) => packEntrySource(o) === k).length;
-                            const parts = [
-                              [by("packer"), t("packer (PIN)", "pembungkus (PIN)")],
-                              [by("supervisor"), t("supervisor", "penyelia")],
-                              [by("unknown"), t("not recorded", "tidak direkod")],
-                            ].filter(([n]) => n);
-                            return parts.length
-                              ? parts.map(([n, label]) => `${n} ${label}`).join(" · ")
-                              : "—";
-                          })()}
-                        </td>
-                      </tr>
-                    );
-                  }),
-                )}
+                {(summary?.packerTally ?? []).map((row) => {
+                  const p = products.find((x) => x.id === row.product)!;
+                  const parts = (
+                    [
+                      [row.entered.packer, t("packer (PIN)", "pembungkus (PIN)")],
+                      [row.entered.supervisor, t("supervisor", "penyelia")],
+                      [row.entered.unknown, t("not recorded", "tidak direkod")],
+                    ] as [number, string][]
+                  ).filter(([n]) => n);
+                  return (
+                    <tr key={JSON.stringify([row.packer, row.product])}>
+                      <td>
+                        <PersonBadge
+                          name={staffName(row.packer)}
+                          lang={lang}
+                          caption={t("Packer", "Pembungkus")}
+                          compact
+                        />
+                      </td>
+                      <td>
+                        {p.name}
+                        <small>{units(lang, p.unit)}</small>
+                      </td>
+                      <td>{row.awbs}</td>
+                      <td>{row.expected}</td>
+                      <td>{row.packed}</td>
+                      <td>{row.unrecorded}</td>
+                      <td>
+                        {parts.length
+                          ? parts.map(([n, label]) => `${n} ${label}`).join(" · ")
+                          : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </Panel>
       )}
-      {(state.sortCounts ?? []).some((c) => c.date === date) && (
+      {tables && (
+        <ExportAwbs workspaceId={tables.workspaceId} date={date} lang={lang} />
+      )}
+      {!!summary?.sortCounts.length && (
         <details className="inline-note">
           <summary>
             {t("Supervisor count history", "Sejarah kiraan penyelia")}
           </summary>
-          {state.sortCounts
-            ?.filter((c) => c.date === date)
-            .map((c) => (
+          {summary.sortCounts.map((c) => (
               <p key={c.id}>
                 {products.find((p) => p.id === c.product)?.name} · {c.expected}{" "}
                 → {c.counted} · {staffName(c.pic)} ·{" "}
@@ -1268,19 +1357,19 @@ export function PackerPackageSummary({
  * "issued" figures should match; Δ shows any difference.
  */
 function InventoryForDay({
-  state,
+  inventory,
   lang,
   date,
   tally,
 }: {
-  state: Draft;
+  inventory: DailyInventory[];
   lang: Lang;
   date: string;
-  tally: ReturnType<typeof dailyTally>;
+  tally: TallyRow[];
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const isToday = date === today();
-  const rows = dailyInventory(state, date).filter(
+  const rows = inventory.filter(
     (r) =>
       r.opening ||
       r.received ||
@@ -1402,6 +1491,89 @@ function InventoryForDay({
         <Empty>
           {t("No stock on the racks for this day.", "Tiada stok di rak untuk hari ini.")}
         </Empty>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * Tables mode: the parcel CSV of a day range, read from /api/orders/export (at most 31
+ * days, owner decision 2026-10-12). The document-mode export stays in Reports.
+ */
+function ExportAwbs({
+  workspaceId,
+  date,
+  lang,
+}: {
+  workspaceId: string;
+  date: string;
+  lang: Lang;
+}) {
+  const t = (en: string, ms: string) => tr(lang, en, ms);
+  const [range, setRange] = useState<{ day: string; from: string; to: string }>({
+    day: date,
+    from: date,
+    to: date,
+  });
+  // A new fulfilment day resets the range to that day.
+  const { from, to } = range.day === date ? range : { from: date, to: date };
+  const [working, setWorking] = useState(false),
+    [error, setError] = useState("");
+  async function run() {
+    setError("");
+    if (!from || !to || to < from) {
+      setError(t("Choose a start and an end date.", "Pilih tarikh mula dan tarikh akhir."));
+      return;
+    }
+    if (daySpan(from, to) > EXPORT_DAYS) {
+      setError(
+        t(
+          `Export at most ${EXPORT_DAYS} days at a time.`,
+          `Eksport paling banyak ${EXPORT_DAYS} hari pada satu masa.`,
+        ),
+      );
+      return;
+    }
+    setWorking(true);
+    const refused = await downloadExport(workspaceId, from, to);
+    setWorking(false);
+    if (refused) setError(refused);
+  }
+  return (
+    <Panel
+      title={t("Export AWBs (CSV)", "Eksport AWB (CSV)")}
+      detail={t(
+        `One row per product line of each AWB. At most ${EXPORT_DAYS} days per export.`,
+        `Satu baris bagi setiap baris produk setiap AWB. Paling banyak ${EXPORT_DAYS} hari bagi setiap eksport.`,
+      )}
+    >
+      <div className="order-filters p-4">
+        <label>
+          {t("From", "Dari")}
+          <Input
+            type="date"
+            aria-label={t("Export from", "Eksport dari")}
+            value={from}
+            onChange={(e) => setRange({ day: date, from: e.target.value, to })}
+          />
+        </label>
+        <label>
+          {t("To", "Hingga")}
+          <Input
+            type="date"
+            aria-label={t("Export to", "Eksport hingga")}
+            value={to}
+            onChange={(e) => setRange({ day: date, from, to: e.target.value })}
+          />
+        </label>
+        <Button variant="outline" disabled={working} onClick={() => void run()}>
+          {t("Export AWBs (CSV)", "Eksport AWB (CSV)")}
+        </Button>
+      </div>
+      {error && (
+        <p className="px-4 pb-4 text-sm text-warning" role="alert">
+          {error}
+        </p>
       )}
     </Panel>
   );

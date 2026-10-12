@@ -5,6 +5,9 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import http from "node:http";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { createRequire } from "node:module";
 import { parsePages } from "../../apps/web/src/lib/awb-import.ts";
 
@@ -1039,7 +1042,9 @@ await check("D: AWBs are recorded, reviewed, counted and assigned as rows; the r
     const r = await post(outD, "order", newOrder(awb), asOut);
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.orderStore, "tables");
-    assert.equal(r.body.state.orders, undefined, "a tables-mode response carries the document without orders");
+    // The document view of a tables-mode site (C3): empty order lists, carton totals.
+    assert.deepEqual([r.body.state.orders, r.body.state.issues], [[], []], "a tables-mode response carries no AWBs");
+    assert.ok(r.body.state.cartonIssued, "and the per-carton issued totals");
     assert.equal(r.body.records.replayed, false);
     const [created] = r.body.records.result.orders;
     assert.deepEqual([created.op, created.version], ["insert", 1]);
@@ -1224,6 +1229,263 @@ await check("D: a duplicate AWB is refused; a courier's number may return 30+ da
   assert.equal(reused.status, 200, JSON.stringify(reused.body));
   assert.equal(sql(`select string_agg(to_char(fulfil_date, 'YYYY-MM-DD'), ',' order by fulfil_date) from public.operator_orders where workspace_id='${W.a}' and awb='NVMYINTD0001'`), `${mytToday},${laterDay(40)}`);
 });
+
+// ====== Objective D (continued): the screens read the order tables (WP C, PR C3) ======
+// On a tables-mode site the order screens read /api/orders/* instead of the document:
+// the day list (200 per page), the day's aggregates, the packer's own page, trace and the
+// CSV export. Synthetic rows are seeded with administrator SQL for paging and payloads.
+const orderApi = (s, path, headers = {}) =>
+  s.page.evaluate(
+    async ([path, headers]) => {
+      const res = await fetch(path, { cache: "no-store", headers });
+      const type = res.headers.get("content-type") ?? "";
+      return {
+        status: res.status,
+        etag: res.headers.get("etag"),
+        body: type.includes("json") ? await res.json().catch(() => null) : await res.text(),
+      };
+    },
+    [path, headers],
+  );
+const openParcels = async (page) => {
+  const details = page.locator("details.parcel-details");
+  await details.waitFor();
+  if (!(await details.evaluate((d) => d.open))) await details.locator("summary").click();
+};
+const parcelRows = (page) => page.locator("details.parcel-details table tbody tr");
+const ui = await session("outA");
+
+await check("D: the supervisor's order screen and daily tally read the day list and aggregates from the tables", async () => {
+  const data = await load(ui);
+  assert.equal(data.orderStore, "tables");
+  assert.deepEqual([data.state.orders, data.state.issues], [[], []], "no AWBs in the document view");
+  assert.equal(data.state.cartonIssued["c-int-d"], 5, "carton balances count table issues");
+  await ui.page.goto("/?view=orders");
+  await openParcels(ui.page);
+  for (const awb of ["NVMYINTD0002", "NVMYINTD0003", "NVMYINTPK0001"])
+    await parcelRows(ui.page).filter({ hasText: awb }).first().waitFor();
+  const today = Number(sql(`select count(*) from public.operator_orders where workspace_id='${W.a}' and fulfil_date='${mytToday}'`));
+  await ui.page.getByText(`Showing ${today} of ${today} AWBs`).waitFor();
+  // Package groups come from the server's aggregates (no AWB ids on the wire).
+  await ui.page.locator("table.package-table tbody tr", { hasText: "INT D" }).first().waitFor();
+  const day = await orderApi(ui, `/api/orders/day?workspace=${W.a}&date=${mytToday}`);
+  assert.equal(day.status, 200, JSON.stringify(day.body));
+  assert.ok(day.body.groups.length && day.body.groups.every((g) => g.ids === undefined));
+  assert.equal(day.body.counts.awbs, today);
+  await ui.page.goto("/?view=tally");
+  const required = sql(`select expected from operator_private.day_demand('${W.a}', '${mytToday}', 'cav')`);
+  const cav = ui.page.locator("table.daily-tally").first().locator("tbody tr", { hasText: "Cavernosil" });
+  await cav.waitFor();
+  assert.equal((await cav.locator("td").nth(1).innerText()).trim(), required);
+  await ui.page.getByText("Tally by assigned packer").waitFor();
+  await ui.page.locator("table tbody tr", { hasText: "Synthetic Abu" }).first().waitFor();
+});
+
+await check("D: the order list shows 200 AWBs at a time and Show more loads the rest", async () => {
+  const day = laterDay(2);
+  sql(`insert into public.operator_orders (id, workspace_id, awb, channel, product, package, expected, original_expected, fulfil_date, review_state, legacy)
+    select gen_random_uuid(), '${W.a}', 'NVMYINTPG' || lpad(g::text, 4, '0'), 'TikTok', 'cav', 'INT page', 2, 2, '${day}', 'confirmed', true
+    from generate_series(1, 230) g`);
+  await ui.page.goto("/?view=orders");
+  await ui.page.locator(".order-filters input[type=date]").first().fill(day);
+  await openParcels(ui.page);
+  await ui.page.getByText("Showing 200 of 230 AWBs").waitFor();
+  assert.equal(await parcelRows(ui.page).count(), 200);
+  assert.equal(await parcelRows(ui.page).filter({ hasText: "NVMYINTPG0201" }).count(), 0);
+  await ui.page.getByRole("button", { name: "Show more AWBs" }).click();
+  await ui.page.getByText("Showing 230 of 230 AWBs").waitFor();
+  await parcelRows(ui.page).filter({ hasText: "NVMYINTPG0230" }).waitFor();
+  assert.equal(await parcelRows(ui.page).count(), 230);
+  assert.equal(await ui.page.getByRole("button", { name: "Show more AWBs" }).count(), 0);
+  // The package group counts the whole day, not the visible page.
+  const group = ui.page.locator("table.package-table tbody tr", { hasText: "INT page" });
+  assert.match(await group.innerText(), /\b230\b/);
+});
+
+await check("D: on the packer phone Abu sees only his own AWBs from the tables and records his count", async () => {
+  const phone = await session("packerA");
+  try {
+    await phone.page.goto("/?view=packing");
+    await phone.page.getByText("Who is packing?").waitFor();
+    // Unlock screen counts come from /api/orders/packer-counts (no AWBs before a PIN).
+    await phone.page.locator("label.pic-option", { hasText: "Synthetic Abu" }).getByText("1 AWBs to pack today").waitFor();
+    const projected = await load(phone);
+    assert.equal(projected.orderStore, "tables");
+    assert.deepEqual([projected.state.batches, projected.state.cartons, projected.state.orders], [[], [], []], "packer projection");
+    assert.ok(projected.state.staffProfiles.some((p) => p.id === abu));
+    await phone.page.locator("label.pic-option", { hasText: "Synthetic Abu" }).click();
+    await phone.page.locator('input[type="password"]').fill("97531");
+    await phone.page.getByRole("button", { name: /Open my AWBs/ }).click();
+    await phone.page.getByText(/Recording as/).waitFor();
+    const card = (awb) => phone.page.locator("section.packing-card", { hasText: awb });
+    await card("NVMYINTD0002").waitFor();
+    await card("NVMYINTPK0002").waitFor();
+    assert.equal(await card("NVMYINTPK0001").count(), 0, "Ali's AWB visible to Abu");
+    assert.equal(await card("NVMYINTD0001").count(), 0);
+    const page = await orderApi(phone, `/api/orders/packer?workspace=${W.a}&date=${mytToday}`);
+    assert.equal(page.status, 200, JSON.stringify(page.body));
+    assert.equal(page.body.profileId, abu);
+    assert.ok(page.body.orders.every((o) => o.assignedPacker === abu));
+    assert.equal((await orderApi(phone, `/api/orders?workspace=${W.a}&date=${mytToday}`)).status, 403, "a packer reads no day list");
+    await card("NVMYINTD0002").getByRole("button", { name: /Record what I packed/ }).click();
+    const dialog = phone.page.getByRole("dialog");
+    await dialog.locator('input[name="actual"]').fill("3");
+    await dialog.getByRole("button", { name: /Save my count/ }).click();
+    await dialog.waitFor({ state: "hidden" });
+    await card("NVMYINTD0002").getByText(/Saved\. Ask your supervisor/).waitFor();
+    assert.equal(row(awbY, "actual || ':' || packer || ':' || (pack_recorded_by ->> 'role')"), `3:${abu}:packer`);
+    await pins(phone, "DELETE", null, "/api/packer-session");
+    const locked = await orderApi(phone, `/api/orders/packer?workspace=${W.a}&date=${mytToday}`);
+    assert.deepEqual([locked.status, locked.body.code], [403, "packer-locked"]);
+  } finally {
+    await phone.context.close();
+  }
+});
+
+await check("D: trace by a reused AWB lists every occurrence, newest first, with its activity", async () => {
+  await ui.page.goto("/?view=trace");
+  await ui.page.getByLabel(/find an AWB or order number/).fill("NVMYINTD0001");
+  const rows = ui.page.locator("table tbody tr", { hasText: "NVMYINTD0001" });
+  await rows.nth(1).waitFor();
+  assert.equal(await rows.count(), 2);
+  assert.match(await rows.nth(0).innerText(), new RegExp(laterDay(40)));
+  assert.match(await rows.nth(1).innerText(), new RegExp(mytToday));
+  const api = await orderApi(ui, `/api/orders/trace?workspace=${W.a}&q=NVMYINTD0001`);
+  assert.deepEqual(api.body.orders.map((o) => o.date), [laterDay(40), mytToday]);
+  // The handed-over occurrence opens with its source carton and its audit entries.
+  await rows.nth(1).locator("button.record-link").click();
+  const sheet = ui.page.locator(".trace-sheet");
+  await sheet.getByText("Courier handover").waitFor();
+  await sheet.getByText("SOURCE CARTONS").waitFor();
+  await ui.page.keyboard.press("Escape");
+  await sheet.waitFor({ state: "hidden" });
+  // Roles without AWB access trace a batch's cartons, not its parcels.
+  const mgmt = await session("mgmt");
+  try {
+    const batch = await orderApi(mgmt, `/api/orders/trace?workspace=${W.a}&batch=b-int-d`);
+    assert.equal(batch.status, 200, JSON.stringify(batch.body));
+    assert.deepEqual([batch.body.parcels, batch.body.orders.length, batch.body.cartons[0].issued], [false, 0, 5]);
+    assert.equal((await orderApi(mgmt, `/api/orders/trace?workspace=${W.a}&q=NVMYINTD0001`)).status, 403);
+    assert.equal((await orderApi(mgmt, `/api/orders/day?workspace=${W.a}&date=${mytToday}`)).status, 403);
+  } finally {
+    await mgmt.context.close();
+  }
+});
+
+await check("D: Export AWBs downloads the day's CSV; a range over 31 days is refused", async () => {
+  await ui.page.goto("/?view=orders");
+  const button = ui.page.getByRole("button", { name: "Export AWBs (CSV)" });
+  await button.waitFor();
+  const [download] = await Promise.all([ui.page.waitForEvent("download"), button.click()]);
+  assert.equal(download.suggestedFilename(), `operator-awbs-${mytToday}.csv`);
+  const text = readFileSync(await download.path(), "utf8");
+  const lines = text.replace(/^﻿/, "").split("\r\n");
+  assert.match(lines[0], /^"AWB","Source","Date","Product"/);
+  const expected = sql(`select sum(coalesce(jsonb_array_length(lines), 1)) from public.operator_orders where workspace_id='${W.a}' and fulfil_date='${mytToday}'`);
+  assert.equal(lines.length - 1, Number(expected));
+  assert.ok(lines.some((l) => l.startsWith('"NVMYINTD0002"')));
+  assert.ok(lines.every((l, i) => !i || l.includes(`"${mytToday}"`)), "only the chosen day");
+  await ui.page.getByLabel("Export to").fill(laterDay(40));
+  await button.click();
+  await ui.page.getByText("Export at most 31 days at a time.").waitFor();
+  const refused = await orderApi(ui, `/api/orders/export?workspace=${W.a}&from=${mytToday}&to=${laterDay(31)}`);
+  assert.equal(refused.status, 400);
+  assert.match(refused.body.error, /at most 31 days/);
+  const month = await orderApi(ui, `/api/orders/export?workspace=${W.a}&from=${mytToday}&to=${laterDay(30)}`);
+  assert.equal(month.status, 200);
+});
+
+await check("D: an unchanged day answers 304; a change, the sandbox and other sites are handled", async () => {
+  const day = `/api/orders/day?workspace=${W.a}&date=${mytToday}`;
+  const list = `/api/orders?workspace=${W.a}&date=${mytToday}`;
+  for (const path of [day, list, `/api/orders/summary?workspace=${W.a}&date=${mytToday}`]) {
+    const first = await orderApi(ui, path);
+    assert.equal(first.status, 200, path);
+    assert.ok(first.etag, path);
+    const again = await orderApi(ui, path, { "If-None-Match": first.etag });
+    assert.equal(again.status, 304, path);
+  }
+  const before = await orderApi(ui, list);
+  const added = await post(outD, "order", newOrder("NVMYINTD0011"), asOut);
+  assert.equal(added.status, 200, JSON.stringify(added.body));
+  const after = await orderApi(ui, list, { "If-None-Match": before.etag });
+  assert.equal(after.status, 200, "a new AWB changes the day marker");
+  assert.equal(after.body.total, before.body.total + 1);
+  const preview = await session("preview");
+  try {
+    const r = await orderApi(preview, list);
+    assert.deepEqual([r.status, r.body.code], [403, "sandbox"]);
+  } finally {
+    await preview.context.close();
+  }
+  // Site B keeps its orders in the document: its supervisor reads none of site A's.
+  const outsider = await session("outB");
+  try {
+    assert.equal((await orderApi(outsider, list)).status, 403);
+    assert.equal((await load(outsider)).orderStore, undefined, "a document-mode site's response is unchanged");
+  } finally {
+    await outsider.context.close();
+  }
+});
+
+await check("D: first-open payloads at 2,000 synthetic AWBs (laptop and packer phone)", async () => {
+  const day = laterDay(3);
+  sql(`insert into public.operator_orders (id, workspace_id, awb, channel, store, order_ref, courier, product, package, expected, original_expected,
+      fulfil_date, review_state, assigned_packer, legacy)
+    select gen_random_uuid(), '${W.a}', 'NVMYINTLD' || lpad(g::text, 5, '0'), (array['TikTok','Shopee','Lazada','Luxana'])[1 + g % 4],
+      'Synthetic Store ' || (g % 3), 'ORDER-INT-' || lpad(g::text, 6, '0'), 'Ninja Van',
+      (array['cav','gly','lip','syn'])[1 + g % 4], 'INT LD pack ' || (g % 12), 1 + g % 4, 1 + g % 4, '${day}', 'confirmed',
+      case when g <= 250 then '${ali}' when g <= 1500 then '${abu}' end, true
+    from generate_series(1, 2000) g`);
+  const measure = async (s, path) => {
+    const cookie = (await s.context.cookies()).map((c) => `${c.name}=${c.value}`).join("; ");
+    const res = await new Promise((resolve, reject) =>
+      http.get(app + path, { headers: { cookie, "accept-encoding": "gzip" } }, (r) => {
+        const chunks = [];
+        r.on("data", (c) => chunks.push(c));
+        r.on("end", () => resolve({ status: r.statusCode, encoding: r.headers["content-encoding"], body: Buffer.concat(chunks) }));
+      }).on("error", reject),
+    );
+    assert.equal(res.status, 200, path);
+    const raw = res.encoding === "gzip" ? gunzipSync(res.body) : res.body;
+    return { raw: raw.length, sent: res.body.length, gzip: gzipSync(raw).length, compressed: res.encoding === "gzip" };
+  };
+  const kb = (n) => (n / 1024).toFixed(1) + " KB";
+  const show = (label, parts) => {
+    const total = parts.reduce((t, p) => ({ raw: t.raw + p.raw, sent: t.sent + p.sent, gzip: t.gzip + p.gzip }), { raw: 0, sent: 0, gzip: 0 });
+    console.log(`    ${label}: ${parts.map((p) => `${p.name} ${kb(p.raw)} raw / ${kb(p.gzip)} gzip`).join(" + ")}` +
+      ` = ${kb(total.raw)} raw, ${kb(total.gzip)} gzip (${kb(total.sent)} sent by next start${parts.every((p) => p.compressed) ? ", compressed" : ", uncompressed"})`);
+    return total;
+  };
+  const laptop = [
+    { name: "document", ...(await measure(ui, `/api/draft?workspace=${W.a}`)) },
+    { name: "/day", ...(await measure(ui, `/api/orders/day?workspace=${W.a}&date=${day}`)) },
+    { name: "first page", ...(await measure(ui, `/api/orders?workspace=${W.a}&date=${day}`)) },
+  ];
+  const phone = await session("packerA");
+  try {
+    const unlocked = await pins(phone, "POST", { workspaceId: W.a, profileId: ali, pin: "2468" }, "/api/packer-session");
+    assert.equal(unlocked.status, 200, JSON.stringify(unlocked.body));
+    const packerPage = await orderApi(phone, `/api/orders/packer?workspace=${W.a}&date=${day}`);
+    assert.equal(packerPage.body.orders.length, 250);
+    const packer = [
+      { name: "document (packer projection)", ...(await measure(phone, `/api/draft?workspace=${W.a}`)) },
+      { name: "packer page (250 AWBs)", ...(await measure(phone, `/api/orders/packer?workspace=${W.a}&date=${day}`)) },
+    ];
+    const l = show("laptop, supervisor first open", laptop);
+    const p = show("packer phone first open", packer);
+    // Design section 5: laptop ≈ 0.2–0.6 MB raw, 40–80 KB gzip; phone ≈ 70 KB raw, ≈ 10 KB gzip.
+    assert.ok(laptop[1].raw < 60 * 1024, "the day's aggregates stay small");
+    assert.ok(l.raw < 600 * 1024 && l.gzip < 120 * 1024, JSON.stringify(l));
+    assert.ok(p.raw < 200 * 1024 && p.gzip < 40 * 1024, JSON.stringify(p));
+    const first = await orderApi(phone, `/api/orders/packer?workspace=${W.a}&date=${day}`);
+    const again = await orderApi(phone, `/api/orders/packer?workspace=${W.a}&date=${day}`, { "If-None-Match": first.etag });
+    assert.equal(again.status, 304, "an unchanged packer page refreshes with no body");
+  } finally {
+    await phone.context.close();
+  }
+});
+await ui.context.close();
 await outD.context.close();
 await packD.context.close();
 

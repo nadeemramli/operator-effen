@@ -2,6 +2,7 @@ import type { resolveAccess } from "@/lib/supabase/server";
 import type { AwbImport } from "@/lib/awb-import";
 import type { Order } from "@/lib/draft";
 import { loadImport, UUID } from "@/lib/imports-server";
+import type { DayRead as DayRows } from "@/lib/order-reads";
 import {
   ISSUE_COLUMNS,
   issueFromRow,
@@ -192,4 +193,53 @@ export async function releasedFrom(
     createdAt: header.data.created_at,
     updatedAt: header.data.updated_at,
   };
+}
+
+/** One public.operator_orders_day read as the database returns it (order-reads dayDrafts). */
+export async function readDay(db: Db, workspaceId: string, date: string): Promise<DayRows> {
+  const { data, error } = await db.rpc("operator_orders_day", {
+    p_workspace: workspaceId,
+    p_date: date,
+  });
+  if (error) throw new RecordLoadError(error);
+  return data as DayRows;
+}
+
+/**
+ * A packer's AWBs of a day as a supervisor reads them (office admin and stock-out read the
+ * site's rows; operator_packer_page serves the packer's own phone through the sealed
+ * session instead), by AWB.
+ */
+export async function ordersOfPacker(
+  db: Db,
+  workspaceId: string,
+  date: string,
+  profileId: string,
+): Promise<Order[]> {
+  return (
+    await all<OrderRow>((from, to) =>
+      db
+        .from("operator_orders")
+        .select(ORDER_COLUMNS)
+        .eq("workspace_id", workspaceId)
+        .eq("fulfil_date", date)
+        .eq("assigned_packer", profileId)
+        .order("awb")
+        .range(from, to) as unknown as Page<OrderRow>,
+    )
+  ).map(orderFromRow);
+}
+
+/**
+ * Realtime hook (design section 5): called after every successful records commit with the
+ * days and AWBs it touched. A no-op in WP C; readiness #11 replaces it with a Broadcast to
+ * `orders:<workspace>:<day>`, and operator_order_departures is the delete feed for
+ * reconnect reconciliation. The screens refresh by the day marker meanwhile.
+ */
+export function afterRecordsCommit(event: {
+  workspaceId: string;
+  days: string[];
+  orderIds: string[];
+}): void {
+  void event;
 }
