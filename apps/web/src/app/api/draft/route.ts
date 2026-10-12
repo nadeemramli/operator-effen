@@ -37,6 +37,7 @@ import {
   UUID,
 } from "@/lib/imports-server";
 import { rebaseLoop, STALE_MESSAGE, type RebaseStep } from "@/lib/rebase";
+import { eventProblem } from "@/lib/events";
 import { commandRules } from "@/lib/capabilities";
 import {
   openPackerSession,
@@ -73,6 +74,13 @@ const actorView = (userId: string, m?: Membership) =>
     : { kind: "preview" as const, userId };
 // Commands whose upload lives in operator_imports (20261012090000_operator_imports.sql).
 const uploadCommands = ["import-release", "import-delete"];
+/**
+ * A site document as the domain code and the screens use it. Audit entries live in
+ * operator_events since 20261013090000 and the stored document has no `events` key: the
+ * list starts empty, a command logs its new entries into it, and the commit RPC moves them
+ * to the table. Screens read the entries through /api/events.
+ */
+const siteState = (stored: unknown): Draft => ({ ...(stored as Draft), events: [] });
 
 export async function GET(request: NextRequest) {
   const access = await resolveAccess();
@@ -90,7 +98,7 @@ export async function GET(request: NextRequest) {
     if (error || !data)
       return json({ error: "Unable to load your site workspace." }, 503);
     return json({
-      state: withBatchReferences(data.state as Draft),
+      state: withBatchReferences(siteState(data.state)),
       revision: data.revision,
       actor: actorView(user.id, m),
       workspaces: memberships.map((w) => ({
@@ -354,7 +362,7 @@ export async function POST(request: NextRequest) {
         done:
           prior.data.fingerprint === print && prior.data.command === type
             ? json({
-                state: withBatchReferences(loaded.data.state as Draft),
+                state: withBatchReferences(siteState(loaded.data.state)),
                 revision: loaded.data.revision,
                 replayed: true,
                 resultRevision: prior.data.result_revision,
@@ -368,7 +376,7 @@ export async function POST(request: NextRequest) {
                 409,
               ),
       };
-    const current = loaded.data.state as Draft;
+    const current = siteState(loaded.data.state);
     // A production supervisor limited to one factory never changes the other factory's
     // batches; the database re-checks the signed state (operator_private.assert_factory_scope).
     const outside = factoryDenial(membership.factory, type, input, current.batches ?? []);
@@ -410,6 +418,9 @@ export async function POST(request: NextRequest) {
         throw new AccessDenied(
           `Your access covers the ${membership.factory} factory only. This change has not been saved.`,
         );
+      // Every entry in the list is new (it started empty); the RPC appends them.
+      const eventIssue = eventProblem(state.events, user.id);
+      if (eventIssue) throw new Error(eventIssue);
       stateText = JSON.stringify(state);
       if (new TextEncoder().encode(stateText).length > 1800000)
         throw new Error(
@@ -466,7 +477,7 @@ export async function POST(request: NextRequest) {
     )?.[0];
     if (!saved) return { stale: true };
     const response = json({
-      state: withBatchReferences(saved.new_state),
+      state: withBatchReferences(siteState(saved.new_state)),
       revision: saved.new_revision,
       replayed: saved.replayed,
       ...(packer ? { packerExpiresAt: Date.now() + PACKER_IDLE_MS } : {}),

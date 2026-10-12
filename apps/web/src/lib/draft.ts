@@ -2916,11 +2916,20 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       e.recorder = recorder;
       e.actor = recorderLabel(recorder);
     }
+  // Audit entries of operational sites live in operator_events since 20261013090000: the
+  // server loads the document without them, so `s.events` holds this command's entries only
+  // and the commit RPC moves them to the table. A sanity cap per command applies there; the
+  // preview sandbox keeps its entries in its document under the document ceiling.
+  if (s.events.length - eventsBefore > 2000)
+    throw new Error(
+      "This change would add more than 2000 audit entries. Split it into smaller changes.",
+    );
   // Ceilings sized to the 2 MB workspace document. Since 20261012090000 the label records
-  // live in operator_import_rows, so an imported AWB costs about 1 KB here (order and audit
-  // entry): room for one 2,000-AWB day until orders move to tables (order volume plan, WP C).
+  // live in operator_import_rows and since 20261013090000 operational audit entries live in
+  // operator_events, so an imported AWB costs about 0.5 KB here (its order); the 2,000-order
+  // ceiling stays until orders move to tables (order volume plan, WP C).
   if (
-    s.events.length > 4000 ||
+    (recorder.kind !== "member" && s.events.length > 4000) ||
     s.orders.length > 2000 ||
     s.batches.length > 200 ||
     s.cartons.length > 500 ||

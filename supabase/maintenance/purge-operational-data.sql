@@ -19,6 +19,10 @@ begin;
 
 -- Commit log first: it only describes the state being discarded.
 delete from public.operator_commits;
+-- Audit entries of the sites (operator_events, since 20261013090000_operator_events.sql).
+delete from public.operator_events;
+-- PDF uploads and their label rows (operator_imports, since 20261012090000; rows cascade).
+delete from public.operator_imports;
 
 -- Reset each site to the empty workspace shape. Revision keeps increasing so any open
 -- browser tab with the old revision is rejected as stale and reloads.

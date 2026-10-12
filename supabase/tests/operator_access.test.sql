@@ -93,9 +93,13 @@ begin
 end $$;
 create function pg_temp.state(p_ws uuid default '10000000-0000-4000-8000-00000000000a') returns jsonb
 language sql as $$ select state from public.operator_workspaces where id = p_ws $$;
-create function pg_temp.ev(p_id text, p_uid text) returns jsonb language sql as $$
-  select jsonb_build_object('id', p_id, 'entity', 'b1', 'action', 'test', 'detail', 'test',
-    'actor', 'x', 'at', 't', 'recorder', jsonb_build_object('userId', p_uid)) $$;
+-- An audit entry as the app writes it. Since 20261013090000 the submitted state carries only
+-- the command's new entries under `events`; the commit stores them in operator_events. The
+-- readable name maps to a stable UUID (pg_temp.ev_id).
+create function pg_temp.ev_id(p_id text) returns uuid language sql as $$ select md5('ev/' || p_id)::uuid $$;
+create function pg_temp.ev(p_id text, p_uid text, p_entity text default 'b1') returns jsonb language sql as $$
+  select jsonb_build_object('id', pg_temp.ev_id(p_id), 'entity', p_entity, 'action', 'test', 'detail', 'test',
+    'actor', 'x', 'at', '2026-10-12T01:00:00.000Z', 'recorder', jsonb_build_object('userId', p_uid)) $$;
 create function pg_temp.as_user(p uuid) returns void language plpgsql as $$
 begin
   perform set_config('request.jwt.claim.sub', p::text, true);
@@ -113,6 +117,14 @@ end $$;
 \set A '''10000000-0000-4000-8000-00000000000a'''
 \set B '''10000000-0000-4000-8000-00000000000b'''
 \set SV '''00000000-0000-4000-8000-000000000001'''
+-- Site A was seeded with an audit entry in its document, as written before 20261013090000.
+-- Move it the way that migration's backfill does (revision kept, so the cases below keep
+-- their revision numbers); section 14 checks where it went.
+do $$ begin
+  perform operator_private.backfill_events(w.id, w.state -> 'events')
+  from public.operator_workspaces w where w.site_id = 'site-a';
+  update public.operator_workspaces set state = state || '{"events": []}' where site_id = 'site-a';
+end $$;
 
 -- 1. The reported bypass: an unsigned supervisor RPC that transfers an incomplete batch and
 --    rewrites/forges audit history is rejected and changes nothing.
@@ -129,10 +141,15 @@ end $$;
 
 -- 2. Even with a valid server signature (e.g. a server bug), the database refuses
 --    transitions that break history, attribution, custody, route or stock rules.
+-- Audit entries live in operator_events (20261013090000): a changed copy of a stored entry
+-- and an entry under another user are refused by operator_private.append_events.
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch',
-  jsonb_set(pg_temp.state(), '{events,0,detail}', '"rewritten"')), '23514', 'rewrite audit event');
+  jsonb_set(pg_temp.state(), '{events}', (select jsonb_build_array(jsonb_build_object('id', e.id,
+    'entity', e.entity, 'action', e.action, 'detail', 'rewritten', 'actor', e.actor,
+    'at', operator_private.iso(e.at), 'recorder', e.recorder))
+    from public.operator_events e where e.detail = 'orig'))), '23514', 'rewrite audit event');
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch',
-  jsonb_set(pg_temp.state(), '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(
+  jsonb_set(pg_temp.state(), '{events}', jsonb_build_array(
     pg_temp.ev('e2', '00000000-0000-4000-8000-000000000006')))), '23514', 'forged recorder');
 -- (The former "five-stage transfer without Hologram" refusal is allowed since 20261009090001:
 -- transfer needs the factory stages only. Its replacement cases are in section 9.)
@@ -156,7 +173,7 @@ select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'machine',
 -- 3. Valid signed operations succeed; retries replay; reused IDs with different input fail.
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'machine',
   jsonb_set(jsonb_set(jsonb_set(pg_temp.state(), '{batches,0,steps,3,pic}', '"P4"'),
-    '{batches,0,steps,3,done}', 'true'), '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(
+    '{batches,0,steps,3,done}', 'true'), '{events}', jsonb_build_array(
     pg_temp.ev('e2', '00000000-0000-4000-8000-000000000001'))),
   p_op => '20000000-0000-4000-8000-000000000001'), 'ok', 'record Hologram completion');
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'transfer',
@@ -441,7 +458,7 @@ create function pg_temp.with_trips(p_trips jsonb) returns jsonb language sql as 
   select jsonb_set(pg_temp.state(), '{trips}', p_trips) $$;
 select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip',
   jsonb_set(pg_temp.with_trips(jsonb_build_array(pg_temp.trip('t1', :DRV))), '{events}',
-    (pg_temp.state() -> 'events') || jsonb_build_array(pg_temp.ev('e-trip', :DRV)))),
+    jsonb_build_array(pg_temp.ev('e-trip', :DRV, 'trip:t1')))),
   'ok', 'driver logs own trip');
 select pg_temp.expect(pg_temp.commit_as(:DRV, :A, 'trip',
   pg_temp.with_trips((pg_temp.state() -> 'trips') || jsonb_build_array(pg_temp.trip('t2', :DRV2)))),
@@ -740,7 +757,7 @@ select pg_temp.as_user('00000000-0000-4000-8000-000000000008');
 select public.operator_set_staff_pin(:A, 'p-ali', '9753');
 commit;
 select pg_temp.expect(pg_temp.commit_as(:PK, :A, 'pack-own',
-  jsonb_set(pg_temp.state(), '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(pg_temp.ev('e-pack', '00000000-0000-4000-8000-000000000002')))),
+  jsonb_set(pg_temp.state(), '{events}', jsonb_build_array(pg_temp.ev('e-pack', '00000000-0000-4000-8000-000000000002', 'o-pack')))),
   'ok', 'packer commits a signed pack-own');
 select pg_temp.expect(pg_temp.commit_as(:PK, :A, 'staff-profile-create',
   jsonb_set(pg_temp.state(), '{staffProfiles}', '[]')), '42501', 'packer changes packer profiles');
@@ -959,14 +976,15 @@ select pg_temp.expect(pg_temp.commit_as(:MGMT, :A, 'remove-order',
   '42501', 'management removes an AWB');
 select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'remove-order',
   jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', :U1, :R11), pg_temp.ord('o2', :U1, :R12))),
-    '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(pg_temp.ev('e-rm3', '00000000-0000-4000-8000-000000000007')))),
+    '{events}', jsonb_build_array(pg_temp.ev('e-rm3', '00000000-0000-4000-8000-000000000007', 'o3')))),
   'ok', 'admin removes the manual AWB with an audit entry (no upload change)');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
   jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', :U1, :R12))), '{batches,0,code}', '"X"')),
   '42501', 'remove-order used to edit batches');
+-- (Formerly "dropping audit entries": the document no longer holds them, 20261013090000.)
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', :U1, :R12))), '{events}', '[]')),
-  '23514', 'remove-order dropping audit entries');
+  jsonb_set(pg_temp.state(), '{events}', jsonb_build_array(pg_temp.ev('e-rm-forged', :SV, 'o2')))),
+  '23514', 'remove-order with an audit entry under another user');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
   jsonb_set(pg_temp.state(), '{issues}', (pg_temp.state() -> 'issues')
     || '[{"id":"i-o2","cartonId":"c1","orderId":"o2","qty":1,"pic":"SO","at":"t"}]')),
@@ -1188,6 +1206,133 @@ do $$ begin
     or exists (select 1 from public.operator_command_rules
       where command in ('import-release', 'import-delete', 'remove-order') and state_keys <> '{orders,events}') then
     raise exception 'FAIL: upload command rules'; end if;
+end $$;
+
+-- 14. Audit entries in operator_events (20261013090000): appended by the commit RPC from the
+--     submitted entries, attributed to the caller, readable by the site's members only,
+--     never written directly, never duplicated by a retried save.
+do $$ begin
+  -- The backfill moved site A's seeded entry as recorded.
+  if (select string_agg(command || ':' || entity || ':' || (recorder ->> 'userId'), ',')
+      from public.operator_events where workspace_id = '10000000-0000-4000-8000-00000000000a' and detail = 'orig')
+    <> 'backfill:b1:00000000-0000-4000-8000-000000000001'
+    or (select id from public.operator_events where detail = 'orig')
+      <> operator_private.legacy_uuid('e1', 'event/10000000-0000-4000-8000-00000000000a') then
+    raise exception 'FAIL: the seeded entry was not backfilled as recorded'; end if;
+  -- Commits stored their entries, attributed to the caller, and the documents no longer hold any.
+  if (select command || ':' || operation_id || ':' || (recorder ->> 'userId') from public.operator_events
+      where id = pg_temp.ev_id('e2'))
+    <> 'machine:20000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000001' then
+    raise exception 'FAIL: the Hologram entry was not appended by its commit'; end if;
+  if (select command || ':' || entity || ':' || (recorder ->> 'userId') from public.operator_events
+      where id = pg_temp.ev_id('e-pack'))
+    <> 'pack-own:o-pack:00000000-0000-4000-8000-000000000002' then
+    raise exception 'FAIL: the packer''s own count entry does not carry the packer recorder'; end if;
+  -- Committed documents keep an empty list (read by servers and tabs from before the change).
+  if exists (select 1 from public.operator_workspaces where state -> 'events' <> '[]'::jsonb
+      and site_id in ('site-a', 'site-b', 'site-w')) then
+    raise exception 'FAIL: a committed document still holds audit entries'; end if;
+end $$;
+-- Reading: every active member of the site (packers included) reads its entries; another
+-- site's supervisor, an outsider and anonymous callers read none.
+do $$
+declare
+  v_all text := (select count(*)::text from public.operator_events
+    where workspace_id = '10000000-0000-4000-8000-00000000000a');
+  q text := 'select to_jsonb(count(*)) from public.operator_events where workspace_id = ''10000000-0000-4000-8000-00000000000a''';
+  r jsonb;
+begin
+  if v_all::int < 5 then raise exception 'FAIL: expected at least 5 site A entries, got %', v_all; end if;
+  foreach r in array array[
+    pg_temp.call_as('00000000-0000-4000-8000-000000000001', q),  -- production SV
+    pg_temp.call_as('00000000-0000-4000-8000-000000000002', q),  -- packer
+    pg_temp.call_as('00000000-0000-4000-8000-000000000004', q)]  -- all-sites management
+  loop
+    if r -> 'result' <> to_jsonb(v_all::int) then raise exception 'FAIL: member reads % of % entries', r, v_all; end if;
+  end loop;
+  foreach r in array array[
+    pg_temp.call_as('00000000-0000-4000-8000-000000000003', 'select to_jsonb(count(*)) from public.operator_events'),
+    pg_temp.call_as('00000000-0000-4000-8000-000000000011', 'select to_jsonb(count(*)) from public.operator_events'),
+    pg_temp.call_as('00000000-0000-4000-8000-000000000005', q)]  -- revoked SV
+  loop
+    if r -> 'result' <> '0' then raise exception 'FAIL: non-member reads entries %', r; end if;
+  end loop;
+  r := pg_temp.call_as(null, 'select to_jsonb(count(*)) from public.operator_events');
+  if r ->> 'code' is distinct from '42501' then raise exception 'FAIL: anonymous read %', r; end if;
+end $$;
+-- Writing: nobody inserts, changes or deletes entries directly, not even the site's admin.
+begin;
+select pg_temp.as_user(:SV);
+select pg_temp.expect_denied(format($q$insert into public.operator_events (id, workspace_id, entity, action, detail, actor, at, recorder, command, operation_id) values (gen_random_uuid(), %s, 'b1', 'x', 'x', 'x', now(), '{"userId": "00000000-0000-4000-8000-000000000001"}', 'batch', gen_random_uuid())$q$, :'A'), 'direct audit insert');
+select pg_temp.expect_denied($q$update public.operator_events set detail = 'rewritten'$q$, 'direct audit update');
+select pg_temp.expect_denied($q$delete from public.operator_events$q$, 'direct audit delete');
+select pg_temp.expect_denied(format('select operator_private.append_events(%s, %L, %s, %L, gen_random_uuid())', :'A', jsonb_build_array(pg_temp.ev('e-direct', '00000000-0000-4000-8000-000000000001')), :'SV', 'batch'), 'calling the appender directly');
+rollback;
+begin;
+select pg_temp.as_user(:ADM);
+select pg_temp.expect_denied($q$delete from public.operator_events$q$, 'admin deletes audit entries');
+rollback;
+-- Order: the app stores newest first; the table numbers them oldest first.
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch', jsonb_set(pg_temp.state(), '{events}',
+  jsonb_build_array(pg_temp.ev('e-newer', :SV), pg_temp.ev('e-older', :SV)))), 'ok', 'two entries in one commit');
+do $$ begin
+  if (select seq from public.operator_events where id = pg_temp.ev_id('e-older'))
+    >= (select seq from public.operator_events where id = pg_temp.ev_id('e-newer')) then
+    raise exception 'FAIL: seq order is not chronological'; end if;
+end $$;
+-- A retried or rebased save that carries the same entry adds nothing; a changed copy is refused.
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch', jsonb_set(pg_temp.state(), '{events}',
+  jsonb_build_array(pg_temp.ev('e-newer', :SV), pg_temp.ev('e-retry', :SV)))), 'ok', 'rebased save repeating an entry');
+do $$ begin
+  if (select count(*) from public.operator_events where id = pg_temp.ev_id('e-newer')) <> 1
+    or (select count(*) from public.operator_events where id = pg_temp.ev_id('e-retry')) <> 1 then
+    raise exception 'FAIL: a repeated entry was stored twice or the new one is missing'; end if;
+  if operator_private.append_events('10000000-0000-4000-8000-00000000000a',
+      jsonb_build_array(pg_temp.ev('e-retry', '00000000-0000-4000-8000-000000000001'),
+        pg_temp.ev('e-fresh', '00000000-0000-4000-8000-000000000001')),
+      '00000000-0000-4000-8000-000000000001', 'batch', gen_random_uuid()) <> 1 then
+    raise exception 'FAIL: the appender should report one new entry'; end if;
+end $$;
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch', jsonb_set(pg_temp.state(), '{events}',
+  jsonb_build_array(pg_temp.ev('e-newer', :SV) || '{"detail": "changed"}'))), '23514', 'changed copy of a stored entry');
+select pg_temp.expect(pg_temp.commit_as(:SVB, :B, 'batch', jsonb_set(pg_temp.state(:B), '{events}',
+  jsonb_build_array(pg_temp.ev('e-newer', :SV)))), '23514', 'site A entry claimed at site B');
+-- Shape, scope and size.
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch', jsonb_set(pg_temp.state(), '{events}',
+  jsonb_build_array(pg_temp.ev('e-bad-time', :SV) || '{"at": "t"}'))), '22023', 'entry without a valid time');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch', jsonb_set(pg_temp.state(), '{events}',
+  jsonb_build_array(pg_temp.ev('e-bad-id', :SV) || '{"id": "e1"}'))), '22023', 'entry without a UUID');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch', jsonb_set(pg_temp.state(), '{events}',
+  jsonb_build_array(pg_temp.ev('e-dup', :SV), pg_temp.ev('e-dup', :SV)))), '23514', 'duplicate entry identifiers');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch', jsonb_set(pg_temp.state(), '{events}',
+  (select jsonb_agg(pg_temp.ev('e-many-' || g, '00000000-0000-4000-8000-000000000001')) from generate_series(1, 2001) g))),
+  '23514', '2,001 entries in one change');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000002', :A, 'feedback',
+  jsonb_set(pg_temp.state(), '{events}', jsonb_build_array(pg_temp.ev('e-feedback', '00000000-0000-4000-8000-000000000002')))),
+  '42501', 'feedback adding audit entries (outside its scope)');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch', jsonb_set(pg_temp.state(), '{events}',
+  jsonb_build_array(pg_temp.ev('e-rev', :SV))), p_rev => 0), 'conflict', 'stale revision appends nothing');
+do $$ begin
+  if exists (select 1 from public.operator_events where id in (pg_temp.ev_id('e-bad-time'),
+      pg_temp.ev_id('e-dup'), pg_temp.ev_id('e-many-1'), pg_temp.ev_id('e-feedback'), pg_temp.ev_id('e-rev'))) then
+    raise exception 'FAIL: a refused change left an audit entry'; end if;
+end $$;
+-- A document that still holds entries (written before 20261013090000) hands them over, as
+-- recorded, on its next commit.
+update public.operator_workspaces set state = state || jsonb_build_object('events', jsonb_build_array(
+  jsonb_build_object('id', 'legacy-b', 'entity', 'workspace', 'action', 'Old entry', 'detail', 'kept',
+    'actor', 'Someone', 'at', '2026-10-01T00:00:00.000Z')))
+where site_id = 'site-b';
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000004', :B, 'review',
+  jsonb_set(jsonb_set(pg_temp.state(:B), '{notes}', (pg_temp.state(:B) -> 'notes')
+    || '[{"id":"n14","kind":"review","text":"Check","author":{"userId":"00000000-0000-4000-8000-000000000004"}}]'),
+    '{events}', jsonb_build_array(pg_temp.ev('e-review-b', '00000000-0000-4000-8000-000000000004', 'n14')))),
+  'ok', 'commit at a site whose document still holds an entry');
+do $$ begin
+  if (select string_agg(command || ':' || detail, ',' order by seq) from public.operator_events
+      where workspace_id = '10000000-0000-4000-8000-00000000000b') <> 'backfill:kept,review:test'
+    or (select state -> 'events' from public.operator_workspaces where site_id = 'site-b') <> '[]'::jsonb then
+    raise exception 'FAIL: the document''s entry was not handed over before the review entry'; end if;
 end $$;
 
 select 'operator access tests passed' as result;

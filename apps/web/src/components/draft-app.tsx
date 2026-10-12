@@ -44,6 +44,7 @@ import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { DriverTrips } from "./driver-trips";
 import { PackerProfiles, PackerUnlock } from "./packer-station";
+import { useSiteActivity } from "./use-site-activity";
 import { channels } from "@/lib/awb-import";
 import {
   allowedViews,
@@ -279,6 +280,28 @@ const signInHref = (expired: boolean) => {
   return "/login" + (query ? "?" + query : "");
 };
 
+/**
+ * Records whose audit entries a trace shows: the record itself, the batch of a carton, and
+ * for an AWB the batches of the cartons it drew stock from.
+ */
+function traceEntityIds(state: Draft | null, trace: string | null): string[] {
+  if (!state || !trace) return [];
+  const carton = state.cartons.find((c) => c.id === trace);
+  const batch = state.batches.find((b) => b.id === trace) ??
+    (carton ? state.batches.find((b) => b.id === carton.batchId) : undefined);
+  const order = state.orders.find((o) => o.id === trace);
+  const ids = [
+    trace,
+    batch?.id,
+    ...(order
+      ? state.issues
+          .filter((i) => i.orderId === order.id)
+          .map((i) => state.cartons.find((c) => c.id === i.cartonId)?.batchId)
+      : []),
+  ];
+  return [...new Set(ids.filter((id): id is string => !!id))];
+}
+
 export function DraftApp() {
   const revisionRef = useRef(0);
   const [actor, setActor] = useState<Actor | null>(null),
@@ -477,6 +500,20 @@ export function DraftApp() {
       window.clearInterval(timer);
     };
   }, [packerStation, packerProfile, lockPacker]);
+  // Operational sites keep their audit entries in operator_events (20261013090000): the
+  // trace sheet and the overview read them through /api/events while they are open, and
+  // again whenever the workspace revision moves. The sandbox reads its document.
+  const siteTrace = useSiteActivity(
+    member ? workspaceId : undefined,
+    // The endpoint takes up to 20 records: the traced one and its batches come first.
+    member && trace ? { entities: traceEntityIds(state, trace).slice(0, 20) } : null,
+    revision,
+  );
+  const siteRecent = useSiteActivity(
+    member ? workspaceId : undefined,
+    member && view === "overview" ? { recent: 4 } : null,
+    revision,
+  );
   // Until the server says who is signed in, no screen is chosen: the role decides the
   // screen, and a guessed role sent every refresh to that guess's first screen.
   if (!actor)
@@ -1255,18 +1292,10 @@ export function DraftApp() {
     (selectedCarton
       ? state?.batches.find((b) => b.id === selectedCarton.batchId)
       : undefined);
-  const traceIds = new Set([
-    trace,
-    linkedBatch?.id,
-    ...(selectedOrder
-      ? (state?.issues
-          .filter((i) => i.orderId === selectedOrder.id)
-          .map(
-            (i) => state.cartons.find((c) => c.id === i.cartonId)?.batchId,
-          ) ?? [])
-      : []),
-  ]);
-  const events = state?.events.filter((e) => traceIds.has(e.entity)) ?? [];
+  const traceIds = new Set(traceEntityIds(state, trace));
+  const events = member
+    ? siteTrace.events
+    : (state?.events.filter((e) => traceIds.has(e.entity)) ?? []);
 
   function orderTable(actions: boolean) {
     return (
@@ -1680,13 +1709,28 @@ export function DraftApp() {
           </Panel>
           <Panel
             title={t("Latest activity", "Aktiviti terkini")}
-            detail={t(
-              "Shared across everyone using the test login",
-              "Dikongsi dengan semua pengguna log masuk ujian",
-            )}
+            detail={
+              member
+                ? t(
+                    "Latest entries recorded at your site",
+                    "Entri terkini yang direkodkan di tapak anda",
+                  )
+                : t(
+                    "Shared across everyone using the test login",
+                    "Dikongsi dengan semua pengguna log masuk ujian",
+                  )
+            }
           >
+            {member && siteRecent.failed && (
+              <p className="text-sm text-muted-foreground">
+                {t(
+                  "Recent activity could not be loaded. It will try again on the next refresh.",
+                  "Aktiviti terkini tidak dapat dimuatkan. Ia akan dicuba semula semasa muat semula seterusnya.",
+                )}
+              </p>
+            )}
             <div className="activity-list">
-              {state.events.slice(0, 4).map((e) => (
+              {(member ? siteRecent.events : state.events.slice(0, 4)).map((e) => (
                 <div key={e.id}>
                   <span className="activity-dot" />
                   <div>
@@ -3503,10 +3547,22 @@ export function DraftApp() {
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                {t(
-                  "This is an initial sample record. New actions will appear here.",
-                  "Ini rekod contoh asal. Tindakan baharu akan muncul di sini.",
-                )}
+                {!member
+                  ? t(
+                      "This is an initial sample record. New actions will appear here.",
+                      "Ini rekod contoh asal. Tindakan baharu akan muncul di sini.",
+                    )
+                  : siteTrace.loading
+                    ? t("Loading activity…", "Memuatkan aktiviti…")
+                    : siteTrace.failed
+                      ? t(
+                          "The activity log could not be loaded. It will try again on the next refresh.",
+                          "Log aktiviti tidak dapat dimuatkan. Ia akan dicuba semula semasa muat semula seterusnya.",
+                        )
+                      : t(
+                          "No activity recorded for this record yet.",
+                          "Belum ada aktiviti direkodkan untuk rekod ini.",
+                        )}
               </p>
             )}
           </div>

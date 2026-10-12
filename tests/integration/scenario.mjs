@@ -147,6 +147,12 @@ const imports = (s, method, path, body) =>
     },
     [method, path, body],
   );
+// Audit entries of operational sites (operator_events, since 20261013090000): GET /api/events.
+const eventsApi = (s, query) =>
+  s.page.evaluate(async (query) => {
+    const res = await fetch("/api/events" + query, { cache: "no-store" });
+    return { status: res.status, body: await res.json().catch(() => null) };
+  }, query);
 
 const prod = await session("prodA");
 const intake = await session("intakeA");
@@ -518,7 +524,9 @@ await check("B: office admin uploads a site source, saves its review in the tabl
   const imported = stored(W.a).orders.find((o) => o.awb === "NVMYINT000001");
   assert.ok(imported);
   assert.equal(imported.importId, batch.id);
-  assert.equal(stored(W.a).events.find((e) => e.entity === imported.id).recorder.userId, people.admin.id);
+  // Audit entries live in operator_events (20261013090000), not in the document.
+  assert.equal(sql(`select recorder ->> 'userId' from public.operator_events where workspace_id='${W.a}' and entity='${imported.id}' and command='import-release'`), people.admin.id);
+  assert.deepEqual(stored(W.a).events, [], "audit entries no longer live in the document");
   assert.equal(stored(W.a).awbImports, undefined, "uploads no longer live in the document");
   assert.equal(sql(`select released_order_id from public.operator_import_rows where import_id='${batch.id}'`), imported.id);
   assert.equal(sql(`select confirmed_at is not null from public.operator_imports where id='${batch.id}'`), "t");
@@ -715,6 +723,11 @@ await check("B: shared preview account stays in the fictional sandbox", async ()
   // PDF uploads are not part of the sandbox: no upload tab or history, manual entry stays.
   const upload = await api(p, "POST", { command: { type: "import-release", role: "admin", input: { id: randomUUID() } }, revision: sandboxWrite.body.revision });
   assert.equal(upload.status, 403);
+  // The sandbox keeps its audit entries in its document; the table endpoint is for sites.
+  assert.ok(sandboxWrite.body.state.events.length > 0);
+  const sandboxEvents = await eventsApi(p, "?recent=1");
+  assert.equal(sandboxEvents.status, 403);
+  assert.equal(sandboxEvents.body.code, "sandbox");
   await p.page.locator("#role-switch").selectOption("admin");
   await p.page.goto("/?view=input");
   await p.page.getByText(/PDF uploads are tested on the synthetic operational site/).waitFor();
@@ -827,6 +840,49 @@ await check("C: on the shared packer sign-in, Ali taps his name, enters his PIN 
   assert.equal(o.packer, ali);
   assert.equal(o.packRecordedBy.userId, people.packerA.id);
   assert.equal(sql(`select command from public.operator_commits where user_id='${people.packerA.id}' order by committed_at desc limit 1`), "pack-own");
+  // The AWB's activity log reads the table through /api/events on the packer phone too.
+  await packers.page.locator("section.packing-card", { hasText: "NVMYINTPK0001" }).locator("button.record-link").click();
+  await packers.page.locator(".trace-sheet").getByText("Parcel quantity recorded").waitFor();
+  await packers.page.keyboard.press("Escape");
+  await packers.page.locator(".trace-sheet").waitFor({ state: "hidden" });
+});
+
+await check("C: audit entries are rows: read by entity, day and latest; attributed; never written directly", async () => {
+  const byAwb = await eventsApi(packers, `?workspace=${W.a}&entity=${aliAwb}`);
+  assert.equal(byAwb.status, 200, JSON.stringify(byAwb.body));
+  const packed = byAwb.body.events[0];
+  assert.equal(packed.action, "Parcel quantity recorded");
+  assert.equal(packed.recorder.userId, people.packerA.id);
+  assert.equal(packed.performer, ali, "the performer profile the PIN unlocked");
+  assert.ok(packed.occurredAt);
+  assert.ok(byAwb.body.events.every((e, i, all) => i === 0 || all[i - 1].seq > e.seq), "newest first");
+  assert.ok(byAwb.body.events.some((e) => e.action === "Packer assigned"));
+  const day = new Date(Date.parse(packed.at) + 8 * 3600e3).toISOString().slice(0, 10);
+  const byDay = await eventsApi(outC, `?workspace=${W.a}&date=${day}`);
+  assert.equal(byDay.status, 200, JSON.stringify(byDay.body));
+  assert.ok(byDay.body.events.some((e) => e.id === packed.id));
+  const latest = await eventsApi(outC, `?workspace=${W.a}&recent=1&limit=2`);
+  assert.equal(latest.body.events.length, 2);
+  assert.equal(latest.body.next, latest.body.events[1].seq);
+  const older = await eventsApi(outC, `?workspace=${W.a}&recent=1&limit=2&before=${latest.body.next}`);
+  assert.ok(older.body.events.every((e) => e.seq < latest.body.next));
+  assert.equal((await eventsApi(outC, `?workspace=${W.a}&date=2026-02-30`)).status, 400);
+  assert.equal((await eventsApi(outC, `?workspace=${W.b}&recent=1`)).status, 403);
+  // Same rules through the Data API with the members' own tokens.
+  const otherSite = await token("prodB");
+  assert.deepEqual(await (await rest(`operator_events?select=id&workspace_id=eq.${W.a}`, otherSite)).json(), []);
+  const jwt = await token("outA");
+  const forged = { id: randomUUID(), workspace_id: W.a, entity: aliAwb, action: "x", detail: "x", actor: "x", at: new Date().toISOString(), recorder: { userId: people.outA.id }, command: "pack", operation_id: randomUUID() };
+  for (const [path, init] of [
+    ["operator_events", { method: "POST", body: JSON.stringify(forged) }],
+    [`operator_events?id=eq.${packed.id}`, { method: "PATCH", body: JSON.stringify({ detail: "rewritten" }) }],
+    [`operator_events?id=eq.${packed.id}`, { method: "DELETE" }],
+  ]) {
+    const res = await rest(path, jwt, init);
+    assert.ok(!res.ok || (await res.text()) === "[]", `${init.method} ${path} -> ${res.status}`);
+  }
+  assert.equal(sql(`select detail <> 'rewritten' from public.operator_events where id='${packed.id}'`), "t");
+  assert.equal(sql(`select count(*) from public.operator_events where id='${forged.id}'`), "0");
 });
 
 await check("C: a packer cannot record another packer's AWB, re-record, or save without an unlocked PIN", async () => {

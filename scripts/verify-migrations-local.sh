@@ -16,6 +16,16 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+# Audit entries go back into the documents, newest first, before the table is dropped.
+entries="$("${psql[@]}" -At -c "select count(*) from public.operator_events where workspace_id = '10000000-0000-4000-8000-00000000000a'")"
+newest="$("${psql[@]}" -At -c "select id from public.operator_events where workspace_id = '10000000-0000-4000-8000-00000000000a' order by seq desc limit 1")"
+"${psql[@]}" -f "$root/supabase/rollback/20261013090000_operator_events.down.sql"
+"${psql[@]}" -At -c "select to_regclass('public.operator_events') is null
+  and to_regprocedure('operator_private.append_events(uuid, jsonb, uuid, text, uuid)') is null
+  and to_regprocedure('public.operator_commit_workspace(uuid, integer, text, uuid, text, text, text, text)') is not null
+  and not exists (select 1 from public.operator_workspaces where not state ? 'events')" | grep -qx t
+"${psql[@]}" -At -c "select jsonb_array_length(state -> 'events') || ':' || (state -> 'events' -> 0 ->> 'id')
+  from public.operator_workspaces where id = '10000000-0000-4000-8000-00000000000a'" | grep -qx "$entries:$newest"
 "${psql[@]}" -f "$root/supabase/rollback/20261012090000_operator_imports.down.sql"
 "${psql[@]}" -At -c "select to_regclass('public.operator_imports') is null and to_regclass('public.operator_import_rows') is null
   and to_regprocedure('public.operator_commit_workspace(uuid, integer, text, uuid, text, text, text)') is not null
@@ -102,4 +112,22 @@ before="$("${psql[@]}" -At -c "select revision from public.operator_workspaces w
   join public.operator_import_rows r on r.id = (o ->> 'importRowId')::uuid and r.import_id = (o ->> 'importId')::uuid
   where w.site_id = 'site-x' and r.released_order_id = o ->> 'id'" | grep -qx 2
 "${psql[@]}" -At -c "select (state ? 'awbImports')::text || ':' || revision from public.ui_draft_workspaces where user_id = '00000000-0000-4000-8000-000000000002'" | grep -qx 'false:5'
+echo "audit entries move from the document to a table"
+"${psql[@]}" -c "update public.operator_workspaces set state = state || '{
+  \"events\": [
+    {\"id\": \"40000000-0000-4000-8000-0000000000e2\", \"entity\": \"o-bf1\", \"action\": \"AWB imported\", \"detail\": \"newest\",
+     \"actor\": \"Synthetic admin\", \"at\": \"2026-10-10T02:00:00.000Z\", \"recorder\": {\"userId\": \"00000000-0000-4000-8000-000000000002\"}},
+    {\"id\": \"seed\", \"entity\": \"workspace\", \"action\": \"Prepared\", \"detail\": \"oldest\", \"actor\": \"Setup\",
+     \"at\": \"2026-10-09T00:00:00.000Z\"}]}'::jsonb where site_id = 'site-x';
+  update public.ui_draft_workspaces set state = state || '{\"events\": [{\"id\": \"seed\"}]}'
+  where user_id = '00000000-0000-4000-8000-000000000002'"
+before="$("${psql[@]}" -At -c "select revision from public.operator_workspaces where site_id = 'site-x'")"
+"${psql[@]}" -f "$root/supabase/migrations/20261013090000_operator_events.sql"
+"${psql[@]}" -At -c "select to_regclass('public.operator_events') is not null
+  and to_regprocedure('operator_private.append_events(uuid, jsonb, uuid, text, uuid)') is not null" | grep -qx t
+"${psql[@]}" -At -c "select (state -> 'events')::text || ':' || (revision - $before) from public.operator_workspaces where site_id = 'site-x'" | grep -qx '\[\]:1'
+# Chronological order (the document stored newest first); history without a recorder is kept.
+"${psql[@]}" -At -c "select string_agg(detail || '/' || command || '/' || coalesce(recorder ->> 'userId', '-'), ',' order by seq) from public.operator_events" \
+  | grep -qx 'oldest/backfill/-,newest/backfill/00000000-0000-4000-8000-000000000002'
+"${psql[@]}" -At -c "select state ? 'events' from public.ui_draft_workspaces where user_id = '00000000-0000-4000-8000-000000000002'" | grep -qx t
 echo "ok"
