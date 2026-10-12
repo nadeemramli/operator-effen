@@ -222,11 +222,11 @@ export function AwbIntake({
   );
   async function upload() {
     setError("");
-    if (!files.length || files.length > fileLimit || !store.trim() || !date) {
+    if (!files.length || files.length > fileLimit || !date) {
       setError(
         t(
-          `Choose up to ${fileLimit} PDFs, a store and work date.`,
-          `Pilih sehingga ${fileLimit} PDF, kedai dan tarikh kerja.`,
+          `Choose up to ${fileLimit} PDFs and a work date.`,
+          `Pilih sehingga ${fileLimit} PDF dan tarikh kerja.`,
         ),
       );
       return;
@@ -321,7 +321,7 @@ export function AwbIntake({
       const b: AwbImport = {
         id: crypto.randomUUID(),
         date,
-        name: `${store.trim()} · ${date}`,
+        name: `${store.trim() || channel} · ${date}`,
         files: sourceFiles.map((f) => {
           const skipped = parsed.skipped
             .filter((p) => p.file === f.id)
@@ -479,12 +479,18 @@ export function AwbIntake({
                 </select>
               </label>
               <label>
-                {t("Store / seller account", "Kedai / akaun penjual")}
+                {t(
+                  "Store / seller account (optional)",
+                  "Kedai / akaun penjual (pilihan)",
+                )}
                 <Input
                   value={store}
                   maxLength={120}
                   onChange={(e) => setStore(e.target.value)}
-                  placeholder="e.g. Nuvital HQ MY"
+                  placeholder={t(
+                    "Only if the source has more than one shop",
+                    "Hanya jika sumber ada lebih daripada satu kedai",
+                  )}
                   disabled={processing}
                 />
               </label>
