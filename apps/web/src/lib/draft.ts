@@ -2910,9 +2910,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       e.recorder = recorder;
       e.actor = recorderLabel(recorder);
     }
+  // Ceilings sized to the 2 MB workspace document (about 2 KB per imported AWB with its
+  // label record and audit entries). Raised 2026-10-12 with the 300-label upload limit.
   if (
-    s.events.length > 1500 ||
-    s.orders.length > 500 ||
+    s.events.length > 3000 ||
+    s.orders.length > 1000 ||
     s.batches.length > 200 ||
     s.cartons.length > 500 ||
     (s.adypocideReceipts?.length ?? 0) > 500 ||

@@ -1,4 +1,4 @@
-import { needsOcr, type ParsedPage } from "./awb-import";
+import { needsOcr, pageLimit, type ParsedPage } from "./awb-import";
 
 export async function readAwbPdf(
   file: File,
@@ -6,6 +6,8 @@ export async function readAwbPdf(
   progress: (page: number, total: number, ocr: boolean) => void,
   signal: AbortSignal,
   forceOcr = false,
+  /** Pages already read from earlier files of the same upload. */
+  pagesBefore = 0,
 ) {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.mjs";
@@ -23,7 +25,13 @@ export async function readAwbPdf(
   signal.addEventListener("abort", abort, { once: true });
   const pages: ParsedPage[] = [];
   try {
-    if (doc.numPages > 200) throw new Error("Use PDFs with up to 200 pages.");
+    // Checked before any page is read, so an oversized upload fails in seconds, not after OCR.
+    if (pagesBefore + doc.numPages > pageLimit)
+      throw new Error(
+        `Use up to ${pageLimit} PDF pages per upload: ${file.name} has ${doc.numPages} pages` +
+          (pagesBefore ? ` and ${pagesBefore} are already chosen.` : ".") +
+          " Split the labels into two uploads.",
+      );
     for (let i = 1; i <= doc.numPages; i++) {
       signal.throwIfAborted();
       progress(i, doc.numPages, false);

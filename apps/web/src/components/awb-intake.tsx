@@ -26,7 +26,9 @@ import {
   channels,
   couriers,
   defaultFor,
+  importLimit,
   OCR_NOTE,
+  pageLimit,
   parseImport,
   rowProblems,
   rowStatus,
@@ -165,12 +167,13 @@ export function AwbIntake({
             ),
           abort.current.signal,
           forceOcr,
+          pages.length,
         );
-        if (pages.length + read.pages.length > 200)
+        if (pages.length + read.pages.length > pageLimit)
           throw new Error(
             t(
-              "Use up to 200 PDF pages per batch.",
-              "Gunakan sehingga 200 halaman setiap kelompok.",
+              `Use up to ${pageLimit} PDF pages per upload.`,
+              `Gunakan sehingga ${pageLimit} halaman setiap muat naik.`,
             ),
           );
         const res = await fetch("/api/awb-files", {
@@ -223,11 +226,11 @@ export function AwbIntake({
         createdAt: "",
         updatedAt: "",
       };
-      if (b.rows.length > 200)
+      if (b.rows.length > importLimit)
         throw new Error(
           t(
-            "Use up to 200 label records per batch. Split this PDF into smaller files.",
-            "Gunakan sehingga 200 rekod label. Pecahkan PDF kepada fail lebih kecil.",
+            `This upload has ${b.rows.length} labels. Use up to ${importLimit} per upload: split the labels into two uploads.`,
+            `Muat naik ini ada ${b.rows.length} label. Gunakan sehingga ${importLimit} setiap muat naik: pecahkan label kepada dua muat naik.`,
           ),
         );
       setWorking(b);
@@ -388,8 +391,8 @@ export function AwbIntake({
               </strong>
               <span>
                 {t(
-                  "or choose files · up to 10 PDFs, 20 MB each, 200 pages in total",
-                  "atau pilih fail · sehingga 10 PDF, 20 MB setiap satu, 200 halaman keseluruhan",
+                  `or choose files · up to 10 PDFs, 20 MB each, ${pageLimit} pages and ${importLimit} labels in total`,
+                  `atau pilih fail · sehingga 10 PDF, 20 MB setiap satu, ${pageLimit} halaman dan ${importLimit} label keseluruhan`,
                 )}
               </span>
               <input
