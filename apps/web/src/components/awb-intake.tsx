@@ -13,6 +13,7 @@ import {
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { FormError, Panel, units } from "./draft-primitives";
+import { useUploadOrders } from "./use-orders";
 import {
   orderHasActivity,
   products,
@@ -26,21 +27,43 @@ import {
   channels,
   couriers,
   defaultFor,
+  fileLimit,
   importLimit,
   OCR_NOTE,
   pageLimit,
   parseImport,
   rowProblems,
-  rowStatus,
+  rowStatus as statusOfRow,
   type AwbImport,
   type ImportRow,
   type ParsedPage,
   type ImportFile,
 } from "@/lib/awb-import";
 
+/** One upload in the site's list (GET /api/imports): no rows, only their counts. */
+type ImportSummary = Omit<AwbImport, "rows"> & {
+  counts: { rows: number; released: number };
+};
+class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+  }
+}
 type Props = {
-  /** Operational site for uploads; absent in the fictional sandbox. */
+  /**
+   * Operational site for uploads; absent in the fictional sandbox, which does not cover
+   * uploads (they live in the operator_imports tables of a real or synthetic site).
+   */
   workspaceId?: string;
+  /**
+   * The site keeps its orders as table rows (20261014090000): the review reads the
+   * recorded AWBs it needs from /api/orders/upload and applies the AWB reuse rule.
+   */
+  tables?: boolean;
   state: Draft;
   lang: Lang;
   role: Role;
@@ -54,7 +77,8 @@ type Props = {
 };
 export function AwbIntake({
   workspaceId,
-  state,
+  tables = false,
+  state: documentState,
   lang,
   role,
   busy,
@@ -76,7 +100,13 @@ export function AwbIntake({
     [forceOcr, setForceOcr] = useState(false),
     [receiveError, setReceiveError] = useState(""),
     [deleting, setDeleting] = useState(false),
-    [deleteError, setDeleteError] = useState("");
+    [deleteError, setDeleteError] = useState(""),
+    [list, setList] = useState<ImportSummary[] | null>(null),
+    [listError, setListError] = useState(""),
+    [pending, setPending] = useState(false);
+  // Uploads live in the operator_imports tables of an operational site (real or synthetic).
+  const operational = !!workspaceId;
+  const site = encodeURIComponent(workspaceId ?? "");
   const [filter, setFilter] = useState("all"),
     [preview, setPreview] = useState<{ file: ImportFile; page: number } | null>(
       null,
@@ -84,10 +114,27 @@ export function AwbIntake({
   const abort = useRef<AbortController | null>(null);
   const batch = working;
   const row = batch?.rows.find((r) => r.id === selected);
+  // Tables mode: the recorded AWBs sharing an AWB or order reference with the upload's open
+  // labels, and the AWBs it released with their stock issues, stand in for the document's
+  // lists; a courier's number may return 30+ days after its handover (reuse rule).
+  const recorded = useUploadOrders({
+    workspaceId,
+    uploadId: batch?.id,
+    enabled: tables && screen === "review",
+  });
+  const state: Draft = tables
+    ? {
+        ...documentState,
+        orders: recorded.data?.orders ?? [],
+        issues: recorded.data?.issues ?? [],
+      }
+    : documentState;
+  const rowStatus = (r: ImportRow, b: AwbImport, s: Pick<Draft, "orders">) =>
+    statusOfRow(r, b, s, { reuse: tables });
   const statuses =
     batch?.rows.map((r) => ({ row: r, status: rowStatus(r, batch, state) })) ??
     [];
-  const canEdit = role === "admin" && !batch?.confirmedAt && !busy;
+  const canEdit = role === "admin" && !batch?.confirmedAt && !busy && !pending;
   useEffect(() => {
     if (!processing && !dirty) return;
     const prevent = (e: BeforeUnloadEvent) => {
@@ -97,6 +144,89 @@ export function AwbIntake({
     return () => window.removeEventListener("beforeunload", prevent);
   }, [processing, dirty]);
   useEffect(() => () => abort.current?.abort(), []);
+  /** GET or POST one of the /api/imports endpoints; throws ApiError with the server message. */
+  async function call(url: string, body?: unknown) {
+    let res: Response;
+    try {
+      res = await fetch(
+        url,
+        body === undefined
+          ? undefined
+          : {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            },
+      );
+    } catch {
+      throw new ApiError(
+        t(
+          "Connection lost. Nothing was saved; try again when you are back online.",
+          "Sambungan terputus. Tiada yang disimpan; cuba lagi apabila dalam talian.",
+        ),
+        0,
+      );
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok)
+      throw new ApiError(
+        data.error ?? t("Unable to load. Please retry.", "Gagal dimuatkan. Sila cuba lagi."),
+        res.status,
+        data.code,
+      );
+    return data;
+  }
+  const message = (e: unknown) =>
+    e instanceof ApiError && e.code === "record"
+      ? t(
+          "A teammate updated this PDF review. Reopen the batch before saving.",
+          "Rakan sepasukan telah mengemas kini semakan PDF ini. Buka semula kelompok sebelum menyimpan.",
+        )
+      : e instanceof Error
+        ? e.message
+        : t("Unable to save.", "Gagal disimpan.");
+  async function loadList() {
+    if (!operational) return;
+    setListError("");
+    try {
+      const data = await call("/api/imports?workspace=" + site);
+      setList(data.imports as ImportSummary[]);
+    } catch (e) {
+      setListError(message(e));
+    }
+  }
+  async function openById(id: string, onError: (m: string) => void = setError) {
+    setPending(true);
+    try {
+      const data = await call(
+        `/api/imports/${encodeURIComponent(id)}?workspace=${site}`,
+      );
+      open(data.import as AwbImport);
+      return true;
+    } catch (e) {
+      onError(message(e));
+      return false;
+    } finally {
+      setPending(false);
+    }
+  }
+  /** Saves the review; expectedUpdatedAt is the version it was opened with. */
+  async function saveBatch(b: AwbImport) {
+    setPending(true);
+    try {
+      const data = await call("/api/imports", {
+        workspace: workspaceId,
+        batch: b,
+        expectedUpdatedAt: b.updatedAt || null,
+      });
+      return data.import as AwbImport;
+    } catch (e) {
+      setError(message(e));
+      return null;
+    } finally {
+      setPending(false);
+    }
+  }
   function open(b: AwbImport) {
     setWorking(structuredClone(b));
     setScreen("review");
@@ -116,11 +246,11 @@ export function AwbIntake({
   );
   async function upload() {
     setError("");
-    if (!files.length || files.length > 10 || !date) {
+    if (!files.length || files.length > fileLimit || !date) {
       setError(
         t(
-          "Choose up to 10 PDFs and a work date.",
-          "Pilih sehingga 10 PDF dan tarikh kerja.",
+          `Choose up to ${fileLimit} PDFs and a work date.`,
+          `Pilih sehingga ${fileLimit} PDF dan tarikh kerja.`,
         ),
       );
       return;
@@ -237,8 +367,8 @@ export function AwbIntake({
       setScreen("review");
       setSelected(b.rows[0]?.id ?? "");
       setDirty(true);
-      const saved = await onCommand("import-save", { batch: b }, { onError: setError });
-      if (saved) open(saved.awbImports!.find((x) => x.id === b.id)!);
+      const saved = await saveBatch(b);
+      if (saved) open(saved);
     } catch (e) {
       setError(
         e instanceof Error && e.name !== "AbortError"
@@ -264,16 +394,20 @@ export function AwbIntake({
   async function save(release = false) {
     if (!batch) return;
     setError("");
-    const saved = await onCommand("import-save", { batch }, { onError: setError });
+    const saved = await saveBatch(batch);
     if (!saved) return;
-    open(saved.awbImports!.find((b) => b.id === batch.id)!);
+    open(saved);
     if (release) {
+      // A signed document command: creates the AWBs and marks the upload confirmed.
       const released = await onCommand(
         "import-release",
         { id: batch.id },
         { onError: setError },
       );
-      if (released) open(released.awbImports!.find((b) => b.id === batch.id)!);
+      if (released) {
+        await openById(batch.id);
+        void loadList();
+      }
     }
   }
   const ready = statuses.filter((x) => x.status === "ready").length,
@@ -312,26 +446,37 @@ export function AwbIntake({
       >
         {[
           ["register", t("Manual / scanned AWB", "AWB manual / diimbas")],
-          ...(role === "admin"
+          ...(operational && role === "admin"
             ? [["upload", t("Upload AWB batch", "Muat naik kelompok AWB")]]
             : []),
-          ["batches", t("Import history", "Sejarah import")],
+          ...(operational
+            ? [["batches", t("Import history", "Sejarah import")]]
+            : []),
         ].map(([key, label]) => (
           <Button
             key={key}
             variant={screen === key ? "secondary" : "ghost"}
-            disabled={processing || dirty || busy}
+            disabled={processing || dirty || busy || pending}
             onClick={() => {
               setScreen(key);
               setError("");
+              if (key === "batches") void loadList();
             }}
           >
             {label}
           </Button>
         ))}
       </nav>
+      {!operational && (
+        <p className="field-hint">
+          {t(
+            "PDF uploads are tested on the synthetic operational site; this preview covers manual AWB entry only.",
+            "Muat naik PDF diuji di tapak operasi sintetik; pratonton ini merangkumi kemasukan AWB manual sahaja.",
+          )}
+        </p>
+      )}
       {screen === "register" ? children : null}
-      {screen === "upload" && (
+      {operational && screen === "upload" && (
         <Panel
           title={t(
             "Bulk AWB input and review",
@@ -397,8 +542,8 @@ export function AwbIntake({
               </strong>
               <span>
                 {t(
-                  `or choose files · up to 10 PDFs, 20 MB each, ${pageLimit} pages and ${importLimit} labels in total`,
-                  `atau pilih fail · sehingga 10 PDF, 20 MB setiap satu, ${pageLimit} halaman dan ${importLimit} label keseluruhan`,
+                  `or choose files · up to ${fileLimit} PDFs, 20 MB each, ${pageLimit.toLocaleString("en-MY")} pages and ${importLimit.toLocaleString("en-MY")} labels in total`,
+                  `atau pilih fail · sehingga ${fileLimit} PDF, 20 MB setiap satu, ${pageLimit.toLocaleString("ms-MY")} halaman dan ${importLimit.toLocaleString("ms-MY")} label keseluruhan`,
                 )}
               </span>
               <input
@@ -457,7 +602,7 @@ export function AwbIntake({
               ) : (
                 <Button
                   className="action-primary"
-                  disabled={!files.length || busy}
+                  disabled={!files.length || busy || pending}
                   onClick={() => void upload()}
                 >
                   <Upload size={16} />
@@ -468,7 +613,7 @@ export function AwbIntake({
           </div>
         </Panel>
       )}
-      {screen === "batches" && (
+      {operational && screen === "batches" && (
         <Panel
           title={t("Import history", "Sejarah import")}
           detail={t(
@@ -477,21 +622,29 @@ export function AwbIntake({
           )}
         >
           <div className="awb-batch-list">
-            {!state.awbImports?.length && (
+            <FormError message={listError} />
+            {list === null && !listError && (
+              <p role="status">
+                <LoaderCircle className="animate-spin" size={16} />{" "}
+                {t("Loading uploads…", "Memuatkan muat naik…")}
+              </p>
+            )}
+            {list?.length === 0 && (
               <p>{t("No PDF batches yet.", "Belum ada kelompok PDF.")}</p>
             )}
-            {state.awbImports?.map((b) => (
+            {list?.map((b) => (
               <button
                 key={b.id}
                 className="awb-batch-link"
-                onClick={() => open(b)}
+                disabled={pending}
+                onClick={() => void openById(b.id, setListError)}
               >
                 <FileText size={18} />
                 <span>
                   <strong>{b.name}</strong>
                   <small>
-                    {b.files.length} PDF ·{" "}
-                    {b.rows.filter((r) => r.releasedOrderId).length}{" "}
+                    {b.files.length} PDF · {b.counts.rows}{" "}
+                    {t("labels", "label")} · {b.counts.released}{" "}
                     {t("released AWBs", "AWB diserahkan")}
                   </small>
                 </span>
@@ -512,8 +665,11 @@ export function AwbIntake({
           <div className="toolbar">
             <Button
               variant="ghost"
-              disabled={busy || dirty}
-              onClick={() => setScreen("batches")}
+              disabled={busy || dirty || pending}
+              onClick={() => {
+                setScreen("batches");
+                void loadList();
+              }}
             >
               <ArrowLeft size={16} />
               {t("Batches", "Kelompok")}
@@ -524,7 +680,7 @@ export function AwbIntake({
                 <>
                   <Button
                     variant="outline"
-                    disabled={busy}
+                    disabled={busy || pending}
                     onClick={() => void save()}
                   >
                     {dirty
@@ -533,7 +689,9 @@ export function AwbIntake({
                   </Button>
                   <Button
                     className="action-primary"
-                    disabled={busy || !ready || attention > 0}
+                    disabled={
+                      busy || pending || !ready || attention > 0 || (tables && recorded.loading)
+                    }
                     onClick={() => void save(true)}
                   >
                     <Check size={16} />
@@ -576,7 +734,9 @@ export function AwbIntake({
                   setDeleting(false);
                   setWorking(null);
                   setSelected("");
+                  setDirty(false);
                   setScreen("batches");
+                  void loadList();
                 }
               }}
             >
@@ -708,13 +868,18 @@ export function AwbIntake({
                 e.preventDefault();
                 setReceiveError("");
                 const pic = String(new FormData(e.currentTarget).get("pic"));
-                const saved = await onCommand(
-                  "import-receive",
-                  { id: batch.id, pic },
-                  { onError: setReceiveError },
-                );
-                if (saved)
-                  open(saved.awbImports!.find((b) => b.id === batch.id)!);
+                setPending(true);
+                try {
+                  const data = await call(
+                    `/api/imports/${encodeURIComponent(batch.id)}/receive`,
+                    { workspace: workspaceId, pic },
+                  );
+                  open(data.import as AwbImport);
+                } catch (err) {
+                  setReceiveError(message(err));
+                } finally {
+                  setPending(false);
+                }
               }}
             >
               <label>
@@ -722,7 +887,7 @@ export function AwbIntake({
                 <Input name="pic" required maxLength={100} />
               </label>
               <FormError message={receiveError} />
-              <Button type="submit" disabled={busy}>
+              <Button type="submit" disabled={busy || pending}>
                 {t("Acknowledge receipt", "Sahkan penerimaan")}
               </Button>
             </form>

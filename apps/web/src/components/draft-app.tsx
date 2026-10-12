@@ -44,6 +44,22 @@ import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { DriverTrips } from "./driver-trips";
 import { PackerProfiles, PackerUnlock } from "./packer-station";
+import { useSiteActivity } from "./use-site-activity";
+import {
+  notifyOrdersChanged,
+  useDayOrders,
+  useOrderSummary,
+  usePackerCounts,
+  usePackerOrders,
+  useTrace,
+} from "./use-orders";
+import { readsOrders } from "@/lib/capabilities";
+import {
+  csvDocument,
+  exportRows,
+  issuedUnits,
+  type ListedOrder,
+} from "@/lib/order-reads";
 import { channels } from "@/lib/awb-import";
 import {
   allowedViews,
@@ -102,7 +118,6 @@ import {
   stockCartons,
   type AdypocideReceipt,
   batchUnit,
-  orderIssued,
   orderLines,
   packEntrySource,
   packerProfiles,
@@ -122,6 +137,7 @@ import {
   type Lang,
   type Order,
   type Role,
+  type Unit,
 } from "@/lib/draft";
 
 /** Sidebar labels and icons; which roles see each screen lives in lib/landing. */
@@ -279,6 +295,34 @@ const signInHref = (expired: boolean) => {
   return "/login" + (query ? "?" + query : "");
 };
 
+/** The row version an AWB form was opened with (tables mode; 409 `record` if it moved). */
+const versionOf = (o: Order): Record<string, number> =>
+  o.version ? { expectedVersion: o.version } : {};
+/**
+ * Records whose audit entries a trace shows: the record itself, the batch of a carton, and
+ * for an AWB the batches of the cartons it drew stock from.
+ */
+function traceEntityIds(
+  state: Pick<Draft, "cartons" | "batches" | "orders" | "issues"> | null,
+  trace: string | null,
+): string[] {
+  if (!state || !trace) return [];
+  const carton = state.cartons.find((c) => c.id === trace);
+  const batch = state.batches.find((b) => b.id === trace) ??
+    (carton ? state.batches.find((b) => b.id === carton.batchId) : undefined);
+  const order = state.orders.find((o) => o.id === trace);
+  const ids = [
+    trace,
+    batch?.id,
+    ...(order
+      ? state.issues
+          .filter((i) => i.orderId === order.id)
+          .map((i) => state.cartons.find((c) => c.id === i.cartonId)?.batchId)
+      : []),
+  ];
+  return [...new Set(ids.filter((id): id is string => !!id))];
+}
+
 export function DraftApp() {
   const revisionRef = useRef(0);
   const [actor, setActor] = useState<Actor | null>(null),
@@ -311,7 +355,12 @@ export function DraftApp() {
     [packerProfile, setPackerProfile] = useState(""),
     [packingDate, setPackingDate] = useState(today),
     [packingSelection, setPackingSelection] = useState<string[]>([]),
-    [trace, setTrace] = useState<string | null>(null);
+    [trace, setTrace] = useState<string | null>(null),
+    // "tables" when the site's orders are table rows (20261014090000): order screens then
+    // read /api/orders/* instead of the document.
+    [orderStore, setOrderStore] = useState<"document" | "tables">("document"),
+    [overviewAll, setOverviewAll] = useState(false),
+    [traceQuery, setTraceQuery] = useState("");
   const t = (en: string, ms: string) => tr(lang, en, ms);
   // Display only: the server and database decide. Members get their site capabilities;
   // the fictional preview gets the previewed role's defaults inside the sandbox.
@@ -319,6 +368,10 @@ export function DraftApp() {
     ? (actor?.capabilities ?? [])
     : previewCapabilities(role);
   const can = (capability: string) => caps.includes(capability);
+  const tables = member && orderStore === "tables";
+  // Office admin and stock-out read AWB rows on a tables-mode site (owner decision
+  // 2026-10-12); packers read their own assigned AWBs; other roles read none.
+  const readsAwbs = readsOrders(caps);
   const operational = caps.some((c) => c !== "feedback.post");
   const allowed = allowedViews(role).map((id) => ({ id, ...navigation[id] }));
   const viewingAs = canViewAs && role !== "management";
@@ -372,11 +425,13 @@ export function DraftApp() {
         // Another site may have been chosen meanwhile; only refresh the one on screen.
         if (workspace && data.actor?.workspaceId !== workspace) return;
         setState(data.state);
+        setOrderStore(data.orderStore === "tables" ? "tables" : "document");
         setRevision(data.revision);
         revisionRef.current = data.revision;
         return;
       }
       setState(data.state);
+      setOrderStore(data.orderStore === "tables" ? "tables" : "document");
       setRevision(data.revision);
       revisionRef.current = data.revision;
       setActor(data.actor ?? null);
@@ -477,6 +532,89 @@ export function DraftApp() {
       window.clearInterval(timer);
     };
   }, [packerStation, packerProfile, lockPacker]);
+  // Order records on a tables-mode site (20261014090000): each open screen reads its AWBs
+  // through /api/orders/* (use-orders), refreshed by the day marker, after saves and every
+  // minute while it is open. Document-mode sites and the sandbox read the document.
+  const traceInDocument =
+    !!trace &&
+    !!state &&
+    (state.batches.some((b) => b.id === trace) || state.cartons.some((c) => c.id === trace));
+  const traceBatchId =
+    trace && state
+      ? (state.batches.find((b) => b.id === trace)?.id ??
+        state.cartons.find((c) => c.id === trace)?.batchId)
+      : undefined;
+  const traceOrder = useTrace(
+    workspaceId,
+    tables && readsAwbs && trace && !traceInDocument ? { order: trace } : null,
+  );
+  const traceBatch = useTrace(
+    workspaceId,
+    tables && traceBatchId ? { batch: traceBatchId } : null,
+  );
+  useEffect(() => {
+    if (view !== "trace") return;
+    const timer = setTimeout(() => setTraceQuery(query.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [query, view]);
+  const traceSearch = useTrace(
+    workspaceId,
+    tables && readsAwbs && view === "trace" && traceQuery ? { q: traceQuery } : null,
+  );
+  const packerRows = usePackerOrders({
+    workspaceId,
+    date: packingDate,
+    profile: packerStation ? undefined : packerProfile || undefined,
+    enabled: tables && view === "packing" && !!packerProfile,
+    paused: !idle,
+  });
+  const packerCounts = usePackerCounts({
+    workspaceId,
+    date: packingDate,
+    enabled: tables && view === "packing" && packerStation && !packerProfile,
+  });
+  const overviewCounts = useOrderSummary({
+    workspaceId,
+    date: today(),
+    all: overviewAll,
+    enabled: tables && readsAwbs && view === "overview",
+    paused: !idle,
+  });
+  const overviewMismatches = useDayOrders({
+    workspaceId,
+    date: today(),
+    filters: { status: "mismatch", limit: 2 },
+    enabled: tables && readsAwbs && view === "overview",
+    paused: !idle,
+  });
+  // The packer's session ended on the server: show the unlock screen again.
+  const packerLocked = packerRows.code === "packer-locked";
+  useEffect(() => {
+    if (packerLocked && packerStation) void Promise.resolve().then(lockPacker);
+  }, [packerLocked, packerStation, lockPacker]);
+  const selectedOrder: ListedOrder | undefined = tables
+    ? (traceOrder.data?.orders.find((o) => o.id === trace) ??
+      packerRows.data?.orders.find((o) => o.id === trace))
+    : state?.orders.find((o) => o.id === trace);
+  const orderIssues = tables ? (traceOrder.data?.issues ?? []) : (state?.issues ?? []);
+  const traceRecords =
+    state && tables
+      ? { ...state, orders: selectedOrder ? [selectedOrder] : [], issues: orderIssues }
+      : state;
+  // Operational sites keep their audit entries in operator_events (20261013090000): the
+  // trace sheet and the overview read them through /api/events while they are open, and
+  // again whenever the workspace revision moves. The sandbox reads its document.
+  const siteTrace = useSiteActivity(
+    member ? workspaceId : undefined,
+    // The endpoint takes up to 20 records: the traced one and its batches come first.
+    member && trace ? { entities: traceEntityIds(traceRecords, trace).slice(0, 20) } : null,
+    revision,
+  );
+  const siteRecent = useSiteActivity(
+    member ? workspaceId : undefined,
+    member && view === "overview" ? { recent: 4 } : null,
+    revision,
+  );
   // Until the server says who is signed in, no screen is chosen: the role decides the
   // screen, and a guessed role sent every refresh to that guess's first screen.
   if (!actor)
@@ -591,10 +729,26 @@ export function DraftApp() {
           fail(data.error);
           return null;
         }
+        // The site's orders moved between the workspace document and the order tables
+        // (20261014090000) while this was open: load the site again.
+        if (res.status === 409 && data.code === "store") {
+          await load(pending.workspaceId, true);
+          throw new Error(
+            t(
+              "Orders on this site moved to the new storage. Reloading.",
+              "Pesanan tapak ini telah dipindahkan ke storan baharu. Memuat semula.",
+            ),
+          );
+        }
+        if (res.status === 409 && data.code === "duplicate")
+          throw new Error(
+            t("This AWB is already recorded.", "AWB ini telah direkodkan."),
+          );
         // Someone else changed the same record: load their version now, keep the open form
         // and its values, and let the person check and save again.
         if (res.status === 409 && (data.code === "record" || data.code === "revision")) {
           await load(pending.workspaceId, true);
+          notifyOrdersChanged({ workspaceId: pending.workspaceId });
           conflicted = true;
           throw new Error(
             (data.error ?? "") +
@@ -609,8 +763,16 @@ export function DraftApp() {
       }
       clear();
       setState(data.state);
+      if (member) setOrderStore(data.orderStore === "tables" ? "tables" : "document");
       setRevision(data.revision);
       revisionRef.current = data.revision;
+      // A records commit names the days it touched: the open order views of those days
+      // refresh (their next read answers 304 when nothing they show changed).
+      if (data.records)
+        notifyOrdersChanged({
+          workspaceId: pending.workspaceId,
+          days: data.records.result?.days ?? null,
+        });
       setForm(null);
       setReset(false);
       setNotice(
@@ -1088,7 +1250,7 @@ export function DraftApp() {
           "The previous value and your reason remain in the activity log.",
           "Nilai sebelumnya dan sebab anda kekal dalam log aktiviti.",
         ),
-      hidden: { id: o.id },
+      hidden: { id: o.id, ...versionOf(o) },
       fields: [
         ...(o.lines
           ? [
@@ -1138,7 +1300,7 @@ export function DraftApp() {
           "Record the physical courier handover.",
           "Rekod serahan fizikal kepada kurier.",
         ),
-      hidden: { id: o.id },
+      hidden: { id: o.id, ...versionOf(o) },
       fields: [
         {
           name: "reference",
@@ -1219,13 +1381,23 @@ export function DraftApp() {
   ).map((p) => ({ value: p.id, label: p.name }));
   const search = (value: string) =>
     value.toLowerCase().includes(query.toLowerCase());
-  const filteredOrders =
-    state?.orders.filter(
-      (o) =>
-        (view !== "packing" ||
-          (o.date === packingDate &&
-            (!packingSelection.length || packingSelection.includes(o.id)))) &&
-        (channel === "all" || o.channel === channel) &&
+  // Tables mode: the packing screen lists the packer's page (already of the day and the
+  // packer); the trace screen lists what the trace search found (AWB, prefix or order
+  // reference). Document mode: the document's orders, filtered here.
+  const orderSource: ListedOrder[] = tables
+    ? view === "packing"
+      ? (packerRows.data?.orders ?? [])
+      : view === "trace"
+        ? (traceSearch.data?.orders ?? [])
+        : []
+    : (state?.orders ?? []);
+  const filteredOrders = orderSource.filter(
+    (o) =>
+      (view !== "packing" ||
+        (o.date === packingDate &&
+          (!packingSelection.length || packingSelection.includes(o.id)))) &&
+      (channel === "all" || o.channel === channel) &&
+      ((tables && view === "trace") ||
         search(
           o.awb +
             " " +
@@ -1234,8 +1406,8 @@ export function DraftApp() {
               .join(" ") +
             " " +
             o.package,
-        ),
-    ) ?? [];
+        )),
+  );
   const receipts = state ? adypocideReceipts(state) : [];
   const pendingBoxing = receipts.filter((r) => !r.stockedAt);
   const inventoryCartons = state ? stockCartons(state) : [];
@@ -1243,30 +1415,40 @@ export function DraftApp() {
     state?.counts.filter((count) =>
       inventoryCartons.some((c) => c.id === count.cartonId),
     ) ?? [];
-  const pending = state?.orders.filter((o) => !o.dispatched) ?? [];
-  const mismatches =
-    state?.orders.filter((o) => variance(o) !== null && variance(o) !== 0) ??
-    [];
+  // Overview figures. Tables mode: the chosen day's counts (or all-time on request) from
+  // /api/orders/summary, read by office admin and stock-out only; other roles see "—".
+  const counts = overviewCounts.data;
+  const figure = (n: number | null | undefined) => n ?? "—";
+  const pendingCount = tables
+    ? counts && counts.awbs - counts.dispatched
+    : (state?.orders.filter((o) => !o.dispatched).length ?? 0);
+  const dispatchedCount = tables
+    ? counts?.dispatched
+    : (state?.orders.filter((o) => o.dispatched).length ?? 0);
+  const packedCount = tables
+    ? counts && counts.handover + counts.dispatched
+    : (state?.orders.filter((o) => o.actual !== null).length ?? 0);
+  const mismatches: ListedOrder[] = tables
+    ? overviewMismatches.orders
+    : (state?.orders.filter((o) => variance(o) !== null && variance(o) !== 0) ?? []);
+  const mismatchCount = tables ? counts?.mismatch : mismatches.length;
+  const dayLabel = (date: string) =>
+    new Date(date + "T12:00:00+08:00").toLocaleDateString(lang === "ms" ? "ms-MY" : "en-MY", {
+      timeZone: "Asia/Kuala_Lumpur",
+      day: "numeric",
+      month: "short",
+    });
   const selectedBatch = state?.batches.find((b) => b.id === trace);
-  const selectedOrder = state?.orders.find((o) => o.id === trace);
   const selectedCarton = state?.cartons.find((c) => c.id === trace);
   const linkedBatch =
     selectedBatch ??
     (selectedCarton
       ? state?.batches.find((b) => b.id === selectedCarton.batchId)
       : undefined);
-  const traceIds = new Set([
-    trace,
-    linkedBatch?.id,
-    ...(selectedOrder
-      ? (state?.issues
-          .filter((i) => i.orderId === selectedOrder.id)
-          .map(
-            (i) => state.cartons.find((c) => c.id === i.cartonId)?.batchId,
-          ) ?? [])
-      : []),
-  ]);
-  const events = state?.events.filter((e) => traceIds.has(e.entity)) ?? [];
+  const traceIds = new Set(traceEntityIds(traceRecords, trace));
+  const events = member
+    ? siteTrace.events
+    : (state?.events.filter((e) => traceIds.has(e.entity)) ?? []);
 
   function orderTable(actions: boolean) {
     return (
@@ -1296,7 +1478,8 @@ export function DraftApp() {
                     {o.awb}
                   </button>
                   <small>
-                    {[o.channel, o.store, o.courier]
+                    {/* A courier may reuse an AWB: tables-mode rows show their day. */}
+                    {[o.channel, o.store, o.courier, tables ? o.date : null]
                       .filter(Boolean)
                       .join(" · ")}
                   </small>
@@ -1409,7 +1592,11 @@ export function DraftApp() {
                               c.unit === unit,
                           ),
                         )
-                        .reduce((n, i) => n + i.qty, 0),
+                        .reduce((n, i) => n + i.qty, 0) +
+                        // Tables mode: units issued by table rows, per carton.
+                        state!.cartons
+                          .filter((c) => c.product === p.id && c.unit === unit)
+                          .reduce((n, c) => n + (state!.cartonIssued?.[c.id] ?? 0), 0),
                     )}
                   </td>
                   <td className="num">
@@ -1428,63 +1615,17 @@ export function DraftApp() {
       </div>
     );
   }
+  // Document mode: the parcel CSV from the workspace document. Tables mode exports through
+  // /api/orders/export (Order management and Daily tally), at most 31 days at a time.
   function exportReport() {
     if (!state) return;
-    const rows: (string | number)[][] = [
-      [
-        "AWB",
-        "Source",
-        "Date",
-        "Product",
-        "Unit",
-        "Package",
-        "Expected",
-        "Issued",
-        "Packed",
-        "Variance",
-        "Packer",
-        "Packed at",
-        "Pack entered by",
-        "AWB attached by",
-        "Handed over",
-        "Manifest",
-      ],
-    ];
-    state.orders.forEach((o) =>
-      orderLines(o).forEach((line) =>
-        rows.push([
-          o.awb,
-          o.channel,
-          o.date,
-          product(line.product).name,
-          product(line.product).unit,
-          o.package,
-          line.expected,
-          orderIssued(state, o, line.product),
-          line.actual ?? "",
-          line.actual === null ? "" : line.actual - line.expected,
-          o.packer,
-          o.packedAt ?? "",
-          recorderLabel(o.packRecordedBy),
-          o.labelPic,
-          o.dispatched ? "Yes" : "No",
-          o.handoverRef,
-        ]),
+    const csv = csvDocument(
+      state.orders.flatMap((o) =>
+        exportRows(o, (order, productId) => issuedUnits(state, order, productId)),
       ),
     );
-    const csv = rows
-      .map((row) =>
-        row
-          .map((value) => {
-            let x = String(value);
-            if (/^[=+@\-\t\r]/.test(x)) x = "'" + x;
-            return '"' + x.replaceAll('"', '""') + '"';
-          })
-          .join(","),
-      )
-      .join("\r\n");
     const url = URL.createObjectURL(
-      new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }),
+      new Blob([csv], { type: "text/csv;charset=utf-8" }),
     );
     const a = document.createElement("a");
     a.href = url;
@@ -1518,16 +1659,33 @@ export function DraftApp() {
             />
             <Metric
               label={t("AWBs to fulfil", "AWB untuk dipenuhi")}
-              value={pending.length}
+              value={figure(pendingCount)}
               detail={
-                state.orders.length +
-                " " +
-                t("orders recorded in this workspace", "pesanan direkodkan")
+                !tables
+                  ? state.orders.length +
+                    " " +
+                    t("orders recorded in this workspace", "pesanan direkodkan")
+                  : !readsAwbs
+                    ? t(
+                        "AWB records at this site are read by office admin and stock-out.",
+                        "Rekod AWB di tapak ini dibaca oleh admin pejabat dan penyelia stok keluar.",
+                      )
+                    : counts && overviewAll
+                      ? t(
+                          `${counts.awbs} AWBs in the last 90 days`,
+                          `${counts.awbs} AWB dalam 90 hari lepas`,
+                        )
+                      : counts
+                        ? t(
+                            `${counts.awbs} AWBs for ${dayLabel(counts.date)} · ${counts.openEarlier} still open from earlier days`,
+                            `${counts.awbs} AWB untuk ${dayLabel(counts.date)} · ${counts.openEarlier} masih belum selesai dari hari sebelumnya`,
+                          )
+                        : ""
               }
             />
             <Metric
               label={t("Courier handovers", "Serahan kurier")}
-              value={state.orders.filter((o) => o.dispatched).length}
+              value={figure(dispatchedCount)}
               detail={t(
                 "Parcels physically handed over",
                 "Bungkusan diserahkan secara fizikal",
@@ -1536,7 +1694,7 @@ export function DraftApp() {
             />
             <Metric
               label={t("Count exceptions", "Pengecualian kiraan")}
-              value={mismatches.length}
+              value={figure(mismatchCount)}
               detail={t(
                 "Expected vs declared parcel contents",
                 "Kandungan dijangka berbanding direkodkan",
@@ -1544,13 +1702,34 @@ export function DraftApp() {
               color="var(--warning)"
             />
           </div>
+          {tables && readsAwbs && (
+            <div className="toolbar">
+              <span className="inline-label">
+                {overviewAll
+                  ? t("All AWBs (last 90 days)", "Semua AWB (90 hari lepas)")
+                  : t("Today's AWBs", "AWB hari ini")}
+              </span>
+              <Button variant="outline" size="sm" onClick={() => setOverviewAll(!overviewAll)}>
+                {overviewAll
+                  ? t("Show today only", "Papar hari ini sahaja")
+                  : t("Show all AWBs", "Papar semua AWB")}
+              </Button>
+            </div>
+          )}
           <div className="overview-grid">
             <Panel
               title={t("The operations pipeline", "Aliran operasi")}
-              detail={t(
-                "All test records · each stage counts its own records",
-                "Semua rekod ujian · setiap peringkat mengira rekodnya sendiri",
-              )}
+              detail={
+                tables
+                  ? t(
+                      "This day's records · each stage counts its own records",
+                      "Rekod hari ini · setiap peringkat mengira rekodnya sendiri",
+                    )
+                  : t(
+                      "All test records · each stage counts its own records",
+                      "Semua rekod ujian · setiap peringkat mengira rekodnya sendiri",
+                    )
+              }
             >
               <div className="pipeline">
                 {[
@@ -1571,14 +1750,14 @@ export function DraftApp() {
                   {
                     icon: PackageCheck,
                     title: t("Packing", "Pembungkusan"),
-                    count: state.orders.filter((o) => o.actual !== null).length,
+                    count: figure(packedCount),
                     unit: t("parcels counted", "bungkusan dikira"),
                     color: "var(--warning)",
                   },
                   {
                     icon: Truck,
                     title: t("Handover", "Serahan"),
-                    count: state.orders.filter((o) => o.dispatched).length,
+                    count: figure(dispatchedCount),
                     unit: t("parcels dispatched", "bungkusan diserah"),
                     color: "var(--success)",
                   },
@@ -1653,7 +1832,7 @@ export function DraftApp() {
                     </span>
                   </div>
                 )}
-                {!mismatches.length && (
+                {!mismatches.length && (!tables || readsAwbs) && (
                   <p className="p-5 text-sm text-success">
                     {t(
                       "No parcel count mismatches.",
@@ -1680,13 +1859,28 @@ export function DraftApp() {
           </Panel>
           <Panel
             title={t("Latest activity", "Aktiviti terkini")}
-            detail={t(
-              "Shared across everyone using the test login",
-              "Dikongsi dengan semua pengguna log masuk ujian",
-            )}
+            detail={
+              member
+                ? t(
+                    "Latest entries recorded at your site",
+                    "Entri terkini yang direkodkan di tapak anda",
+                  )
+                : t(
+                    "Shared across everyone using the test login",
+                    "Dikongsi dengan semua pengguna log masuk ujian",
+                  )
+            }
           >
+            {member && siteRecent.failed && (
+              <p className="text-sm text-muted-foreground">
+                {t(
+                  "Recent activity could not be loaded. It will try again on the next refresh.",
+                  "Aktiviti terkini tidak dapat dimuatkan. Ia akan dicuba semula semasa muat semula seterusnya.",
+                )}
+              </p>
+            )}
             <div className="activity-list">
-              {state.events.slice(0, 4).map((e) => (
+              {(member ? siteRecent.events : state.events.slice(0, 4)).map((e) => (
                 <div key={e.id}>
                   <span className="activity-dot" />
                   <div>
@@ -2131,6 +2325,7 @@ export function DraftApp() {
       return (
         <AwbIntake
           workspaceId={actor?.workspaceId}
+          tables={tables}
           state={state}
           lang={lang}
           role={role}
@@ -2162,6 +2357,16 @@ export function DraftApp() {
           </Panel>
         </AwbIntake>
       );
+    if ((view === "orders" || view === "tally") && tables && !readsAwbs)
+      return (
+        <div className="inline-note">
+          <ShieldCheck size={18} />
+          {t(
+            "AWB records at this site are read by office admin and stock-out. Your role sees stock and batches.",
+            "Rekod AWB di tapak ini dibaca oleh admin pejabat dan penyelia stok keluar. Peranan anda melihat stok dan kelompok.",
+          )}
+        </div>
+      );
     if (view === "orders" || view === "tally")
       return (
         <OrderWorkspace
@@ -2176,6 +2381,9 @@ export function DraftApp() {
           trace={setTrace}
           correct={correct}
           dispatch={dispatch}
+          tables={
+            tables && workspaceId ? { workspaceId, revision, paused: !idle } : undefined
+          }
         />
       );
     if (view === "packing" && packerStation && !packerProfile)
@@ -2186,6 +2394,7 @@ export function DraftApp() {
           date={packingDate}
           workspaceId={actor?.workspaceId}
           preview={!member}
+          counts={tables ? packerCounts : undefined}
           onUnlock={(id) => {
             setPackerProfile(id);
             setPackingSelection([]);
@@ -2264,8 +2473,17 @@ export function DraftApp() {
               }}
             />
           </label>
+          {tables && packerRows.error && !packerLocked && (
+            <p className="text-sm text-muted-foreground" role="status">
+              {t(
+                "AWB records could not be loaded. They will try again on the next refresh.",
+                "Rekod AWB tidak dapat dimuatkan. Ia akan dicuba semula semasa muat semula seterusnya.",
+              )}{" "}
+              {packerRows.error}
+            </p>
+          )}
           <PackerPackageSummary
-            orders={state.orders.filter(
+            orders={orderSource.filter(
               (o) =>
                 o.date === packingDate &&
                 !!packerProfile &&
@@ -2442,10 +2660,17 @@ export function DraftApp() {
           <SearchBox
             query={query}
             setQuery={setQuery}
-            placeholder={t(
-              "Search batch number, carton or AWB…",
-              "Cari nombor kelompok, karton atau AWB…",
-            )}
+            placeholder={
+              tables
+                ? t(
+                    "Search a batch number or carton, or find an AWB or order number (last 90 days)",
+                    "Cari nombor kelompok atau karton, atau cari AWB atau nombor pesanan (90 hari lepas)",
+                  )
+                : t(
+                    "Search batch number, carton or AWB…",
+                    "Cari nombor kelompok, karton atau AWB…",
+                  )
+            }
           />
           <div className="inline-note">
             <ScanLine size={18} />
@@ -2495,8 +2720,26 @@ export function DraftApp() {
                 ))}
             </div>
           </Panel>
-          <Panel title={t("AWB records", "Rekod AWB")}>
-            {orderTable(false)}
+          <Panel
+            title={t("AWB records", "Rekod AWB")}
+            detail={
+              tables
+                ? readsAwbs
+                  ? t(
+                      "Type a whole AWB, its first 6 characters or more, or an order number. A reused AWB shows every occurrence, newest first.",
+                      "Taip AWB penuh, sekurang-kurangnya 6 aksara pertama, atau nombor pesanan. AWB yang digunakan semula memaparkan setiap kejadian, terbaru dahulu.",
+                    )
+                  : t(
+                      "AWB records at this site are read by office admin and stock-out. Open a batch to see its cartons and the units issued from them.",
+                      "Rekod AWB di tapak ini dibaca oleh admin pejabat dan penyelia stok keluar. Buka kelompok untuk melihat karton dan unit yang dikeluarkan daripadanya.",
+                    )
+                : undefined
+            }
+          >
+            {(!tables || readsAwbs) && orderTable(false)}
+            {tables && traceSearch.error && (
+              <p className="p-4 text-sm text-muted-foreground">{traceSearch.error}</p>
+            )}
           </Panel>
         </>
       );
@@ -2511,10 +2754,12 @@ export function DraftApp() {
               )}
             </span>
             <div className="flex gap-2">
-              <Button variant="outline" onClick={exportReport}>
-                <Download size={16} />
-                {t("Export parcels", "Eksport bungkusan")}
-              </Button>
+              {!tables && (
+                <Button variant="outline" onClick={exportReport}>
+                  <Download size={16} />
+                  {t("Export parcels", "Eksport bungkusan")}
+                </Button>
+              )}
               <Button className="action-primary" onClick={() => feedback(true)}>
                 <MessageSquare size={16} />
                 {t("Request follow-up", "Minta susulan")}
@@ -2537,7 +2782,16 @@ export function DraftApp() {
               "Jumlah dijangka, dikeluarkan dan direkodkan dipaparkan secara berasingan.",
             )}
           >
-            {orderTable(false)}
+            {tables ? (
+              <p className="p-5 text-sm text-muted-foreground">
+                {t(
+                  "AWB records at this site are read by office admin and stock-out, who export them as CSV (Export AWBs, at most 31 days) from Order management or the Daily tally.",
+                  "Rekod AWB di tapak ini dibaca oleh admin pejabat dan penyelia stok keluar, yang mengeksportnya sebagai CSV (Eksport AWB, paling banyak 31 hari) dari Pengurusan pesanan atau Jumlah akhir hari.",
+                )}
+              </p>
+            ) : (
+              orderTable(false)
+            )}
           </Panel>
           <Panel
             title={t("People & assignments", "Pasukan & tugasan")}
@@ -2576,10 +2830,10 @@ export function DraftApp() {
                         }
                       </td>
                       <td className="num">
-                        {state.orders.filter((o) => o.packer === p).length}
+                        {tables ? "—" : state.orders.filter((o) => o.packer === p).length}
                       </td>
                       <td className="num">
-                        {state.orders.filter((o) => o.labelPic === p).length}
+                        {tables ? "—" : state.orders.filter((o) => o.labelPic === p).length}
                       </td>
                     </tr>
                   ))}
@@ -3280,7 +3534,7 @@ export function DraftApp() {
                 {selectedOrder.actual !== null &&
                   orderLines(selectedOrder).some(
                     (l) =>
-                      orderIssued(state, selectedOrder, l.product) !== l.actual,
+                      issuedUnits(state, selectedOrder, l.product) !== l.actual,
                   ) && (
                     <div className="inline-note">
                       <AlertTriangle size={16} />
@@ -3293,9 +3547,9 @@ export function DraftApp() {
                 <h3 className="section-label">
                   {t("SOURCE CARTONS", "KARTON SUMBER")}
                 </h3>
-                {state.issues.filter((i) => i.orderId === selectedOrder.id)
+                {orderIssues.filter((i) => i.orderId === selectedOrder.id)
                   .length ? (
-                  state.issues
+                  orderIssues
                     .filter((i) => i.orderId === selectedOrder.id)
                     .map((i) => (
                       <button
@@ -3305,13 +3559,14 @@ export function DraftApp() {
                       >
                         <Boxes size={16} />
                         <span>
-                          {state.cartons.find((c) => c.id === i.cartonId)?.ref}
+                          {state.cartons.find((c) => c.id === i.cartonId)?.ref ?? i.cartonId}
                           <small>
                             {i.qty}{" "}
                             {units(
                               lang,
-                              state.cartons.find((c) => c.id === i.cartonId)!
-                                .unit,
+                              state.cartons.find((c) => c.id === i.cartonId)?.unit ??
+                                (i as { unit?: Unit }).unit ??
+                                "bottle",
                             )}{" "}
                             · {i.pic}
                           </small>
@@ -3453,19 +3708,31 @@ export function DraftApp() {
                     <h3 className="section-label">
                       {t("LINKED PARCELS", "BUNGKUSAN BERKAITAN")}
                     </h3>
-                    {state.orders
-                      .filter((o) =>
-                        state.issues.some(
-                          (i) =>
-                            i.orderId === o.id &&
-                            state.cartons.some(
-                              (c) =>
-                                c.id === i.cartonId &&
-                                c.batchId === linkedBatch.id,
-                            ),
-                        ),
-                      )
-                      .map((o) => (
+                    {tables && traceBatch.data && !traceBatch.data.parcels && (
+                      <p className="text-sm text-muted-foreground">
+                        {t(
+                          "Your role sees this batch's cartons and the units issued from them, not the AWBs.",
+                          "Peranan anda melihat karton kelompok ini dan unit yang dikeluarkan daripadanya, bukan AWB.",
+                        )}{" "}
+                        {traceBatch.data.cartons
+                          .map((c) => `${c.ref}: ${fmt(Number(c.issued))} ${units(lang, c.unit as Unit)}`)
+                          .join(" · ")}
+                      </p>
+                    )}
+                    {(tables
+                      ? (traceBatch.data?.orders ?? [])
+                      : state.orders.filter((o) =>
+                          state.issues.some(
+                            (i) =>
+                              i.orderId === o.id &&
+                              state.cartons.some(
+                                (c) =>
+                                  c.id === i.cartonId &&
+                                  c.batchId === linkedBatch.id,
+                              ),
+                          ),
+                        )
+                    ).map((o) => (
                         <button
                           key={o.id}
                           className="linked-record"
@@ -3503,10 +3770,22 @@ export function DraftApp() {
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                {t(
-                  "This is an initial sample record. New actions will appear here.",
-                  "Ini rekod contoh asal. Tindakan baharu akan muncul di sini.",
-                )}
+                {!member
+                  ? t(
+                      "This is an initial sample record. New actions will appear here.",
+                      "Ini rekod contoh asal. Tindakan baharu akan muncul di sini.",
+                    )
+                  : siteTrace.loading
+                    ? t("Loading activity…", "Memuatkan aktiviti…")
+                    : siteTrace.failed
+                      ? t(
+                          "The activity log could not be loaded. It will try again on the next refresh.",
+                          "Log aktiviti tidak dapat dimuatkan. Ia akan dicuba semula semasa muat semula seterusnya.",
+                        )
+                      : t(
+                          "No activity recorded for this record yet.",
+                          "Belum ada aktiviti direkodkan untuk rekod ini.",
+                        )}
               </p>
             )}
           </div>

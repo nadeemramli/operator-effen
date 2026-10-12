@@ -2,10 +2,15 @@ import type { Draft, Order } from "./draft";
 
 export const channels = ["Luxana", "Shopee", "TikTok", "Lazada"];
 export const couriers = ["Ninja Van", "SPX", "J&T", "LEX", "Other"];
-/** Label records one upload may hold (released AWBs are counted in the workspace ceiling). */
-export const importLimit = 300;
+// Upload limits (20261012090000_operator_imports.sql enforces the same numbers). Uploads live
+// in operator_imports / operator_import_rows; released AWBs still count in the workspace
+// document's ceiling until orders move to tables.
+/** Label records one upload may hold. */
+export const importLimit = 1200;
 /** PDF pages one upload may hold across its files, read in the browser before review. */
-export const pageLimit = 600;
+export const pageLimit = 2500;
+/** PDF files one upload may hold. */
+export const fileLimit = 10;
 export type PackageDefault = {
   sku: string;
   product: string;
@@ -154,6 +159,57 @@ export type ParsedPage = {
 };
 export const normalizeAwb = (value: string) =>
   value.trim().toUpperCase().replace(/\s+/g, "");
+/**
+ * Couriers reuse tracking numbers (owner decision 2026-10-12), so the same AWB may be
+ * recorded again once the earlier parcel was handed over more than this many days before
+ * the later one's fulfilment day.
+ */
+export const AWB_REUSE_DAYS = 30;
+/** Malaysia calendar day (UTC+8) of a timestamp, or null when it cannot be read. */
+const mytDate = (iso?: string) => {
+  const time = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(time)
+    ? new Date(time + 8 * 3600000).toISOString().slice(0, 10)
+    : null;
+};
+const dayNumber = (day: string) => Date.parse(day + "T00:00:00Z") / 86400000;
+type AwbOccurrence = Pick<Order, "date" | "dispatched" | "dispatchedAt">;
+/**
+ * Whether two orders may carry the same AWB: the earlier one was handed over more than
+ * AWB_REUSE_DAYS before the later one's day (the handover's Malaysia day, or the earlier
+ * order's own day when no handover time is known). Mirrors
+ * operator_private.awb_reuse_allowed (20261014090000_operator_order_records.sql).
+ */
+export function awbReuseAllowed(a: AwbOccurrence, b: AwbOccurrence) {
+  const handedOver = (earlier: AwbOccurrence, laterDay: string) =>
+    !!earlier.dispatched &&
+    dayNumber(laterDay) - dayNumber(mytDate(earlier.dispatchedAt) ?? earlier.date) >
+      AWB_REUSE_DAYS;
+  return a.date < b.date
+    ? handedOver(a, b.date)
+    : b.date < a.date
+      ? handedOver(b, a.date)
+      : false;
+}
+/**
+ * The recorded order that makes `awb` a duplicate for a new or edited order on `date`, if
+ * any. Without `reuse` (sites that keep orders in the workspace document) every recorded
+ * order with the AWB counts; with it (sites whose orders are table rows) an order handed
+ * over long enough before does not.
+ */
+export function recordedAwb(
+  orders: readonly Order[],
+  awb: string,
+  date: string,
+  opts: { except?: string; reuse?: boolean } = {},
+) {
+  return orders.find(
+    (o) =>
+      o.id !== opts.except &&
+      normalizeAwb(o.awb) === awb &&
+      !(opts.reuse && awbReuseAllowed(o, { date, dispatched: false })),
+  );
+}
 export function defaultFor(sku: string) {
   return packageDefaults.find((p) => p.sku === sku.trim().toLowerCase());
 }
@@ -475,13 +531,14 @@ function contents(lines: ImportLine[]) {
 export function rowStatus(
   row: ImportRow,
   batch: AwbImport,
-  state: Draft,
+  state: Pick<Draft, "orders">,
+  opts: { reuse?: boolean } = {},
 ): "released" | "excluded" | "review" | "duplicate" | "conflict" | "ready" {
   if (row.releasedOrderId) return "released";
   if (row.excluded) return "excluded";
   if (rowProblems(row).length) return "review";
   const key = normalizeAwb(row.awb);
-  const existing = state.orders.find((o) => normalizeAwb(o.awb) === key);
+  const existing = recordedAwb(state.orders, key, batch.date, opts);
   if (existing) {
     const lines = existing.lines ?? [
       { product: existing.product, expected: existing.expected },
@@ -533,6 +590,8 @@ export function rowStatus(
   return "ready";
 }
 
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Revalidate all client input before accepting a saved draft or release.
 export function validateImport(value: unknown): AwbImport {
   if (!value || typeof value !== "object") throw new Error("Invalid import.");
@@ -541,18 +600,20 @@ export function validateImport(value: unknown): AwbImport {
     typeof v === "string" && v.length <= max;
   if (
     !text(b.id, 80) ||
-    !b.id ||
     !text(b.name) ||
     !/^\d{4}-\d{2}-\d{2}$/.test(b.date) ||
     !Array.isArray(b.files) ||
-    b.files.length > 10 ||
+    b.files.length > fileLimit ||
     !Array.isArray(b.rows) ||
     b.rows.length > importLimit
   )
-    throw new Error(`Use up to 10 PDFs and ${importLimit} labels per batch.`);
+    throw new Error(
+      `Use up to ${fileLimit} PDFs and ${importLimit} labels per batch.`,
+    );
+  if (!UUID.test(b.id)) throw new Error("Invalid import.");
   if (
     new Set(b.files.map((f) => f.id)).size !== b.files.length ||
-    new Set(b.rows.map((r) => r.id)).size !== b.rows.length
+    new Set(b.rows.map((r) => r?.id)).size !== b.rows.length
   )
     throw new Error("Duplicate import record identifiers.");
   for (const f of b.files)
@@ -572,12 +633,15 @@ export function validateImport(value: unknown): AwbImport {
           f.skippedPages.some((n) => !whole(n) || n > f.pages)))
     )
       throw new Error("Invalid source file.");
+  if (b.files.reduce((n, f) => n + f.pages, 0) > pageLimit)
+    throw new Error(`Use up to ${pageLimit} PDF pages per upload.`);
   for (const r of b.rows) {
     if (
       !r ||
       ![r.id, r.awb, r.orderRef, r.channel, r.store, r.courier].every((x) =>
         text(x),
       ) ||
+      !UUID.test(r.id) ||
       !text(r.reviewNote, 1000) ||
       !text(r.original, 10000) ||
       typeof r.excluded !== "boolean" ||
@@ -624,63 +688,26 @@ export function validateImport(value: unknown): AwbImport {
   }
   return structuredClone(b);
 }
-export function applyImportCommand(
+/**
+ * Releases the ready labels of an upload as AWBs in the workspace document (the upload itself
+ * lives in operator_imports; the API server loads it and the commit marks it confirmed).
+ * Mutates `state` (orders, events) and `batch` (releasedOrderId, confirmedAt); returns the
+ * audit detail. No print, packing or stock movement is inferred.
+ */
+export function releaseImport(
   state: Draft,
-  type: string,
-  input: Record<string, unknown>,
+  batch: AwbImport,
   role: string,
   at: string,
+  opts: { reuse?: boolean } = {},
 ) {
-  state.awbImports ??= [];
-  if (type === "import-save") {
-    if (role !== "admin") throw new Error("Use the office admin role.");
-    const batch = validateImport(input.batch);
-    const old = state.awbImports.find((b) => b.id === batch.id);
-    if (old?.confirmedAt)
-      throw new Error(
-        "Released batches cannot be edited. Make a new handoff for remaining labels.",
-      );
-    if (old && old.updatedAt !== batch.updatedAt)
-      throw new Error(
-        "A teammate updated this PDF review. Reopen the batch before saving.",
-      );
-    batch.createdAt = old?.createdAt ?? at;
-    batch.updatedAt = at;
-    delete batch.confirmedAt;
-    delete batch.receivedAt;
-    delete batch.receivedBy;
-    for (const row of batch.rows) {
-      delete row.releasedOrderId;
-      const previous = old?.rows.find((r) => r.id === row.id);
-      if (previous) row.original = previous.original;
-    }
-    if (old) state.awbImports[state.awbImports.indexOf(old)] = batch;
-    else state.awbImports.unshift(batch);
-    return `Saved ${batch.rows.length} label records for review`;
-  }
-  const batch = state.awbImports.find((b) => b.id === input.id);
-  if (!batch) throw new Error("Upload batch not found.");
-  if (type === "import-receive") {
-    if (role !== "outbound" || !batch.confirmedAt || batch.receivedAt)
-      throw new Error("Only stock-out can acknowledge a released batch once.");
-    if (
-      typeof input.pic !== "string" ||
-      !input.pic.trim() ||
-      input.pic.length > 100
-    )
-      throw new Error("Choose the receiving PIC.");
-    batch.receivedAt = at;
-    batch.receivedBy = input.pic.trim();
-    return "Handoff received · " + batch.receivedBy;
-  }
   if (role !== "admin") throw new Error("Use the office admin role.");
-  if (type !== "import-release") throw new Error("Unknown import action.");
   if (batch.confirmedAt) throw new Error("This handoff is already confirmed.");
   const ready = batch.rows.filter(
-    (r) => rowStatus(r, batch, state) === "ready",
+    (r) => rowStatus(r, batch, state, opts) === "ready",
   );
   const unresolved = batch.rows.filter((r) =>
-    ["review", "conflict"].includes(rowStatus(r, batch, state)),
+    ["review", "conflict"].includes(rowStatus(r, batch, state, opts)),
   );
   if (unresolved.length)
     throw new Error(
@@ -740,4 +767,46 @@ export function applyImportCommand(
   batch.confirmedAt = at;
   batch.updatedAt = at;
   return `Handoff confirmed · ${ready.length} new AWBs · no print, packing or stock movement inferred`;
+}
+
+/**
+ * What a signed document command changes in the upload tables (applied by
+ * operator_commit_workspace in the same transaction). Must match the shapes accepted by
+ * operator_private.apply_import_effects in 20261012090000_operator_imports.sql.
+ */
+export type ImportEffects =
+  | { release: string }
+  | { delete: string; reason: string }
+  | { rows: { id: string; excluded: true; reviewNote: string }[] };
+/**
+ * The upload effects of a command that applyCommand accepted, from its input and the state
+ * it was applied to. remove-order marks the AWB's PDF label excluded when the AWB came from
+ * an upload; the API server drops that effect when the label is not (or no longer) the
+ * AWB's released label in the tables.
+ */
+export function importEffects(
+  type: string,
+  input: Record<string, unknown>,
+  before: Pick<Draft, "orders">,
+): ImportEffects | null {
+  const text = (k: string) =>
+    typeof input[k] === "string" ? (input[k] as string).trim() : "";
+  if (type === "import-release") return { release: text("id") };
+  if (type === "import-delete")
+    return { delete: text("id"), reason: text("reason") };
+  if (type === "remove-order") {
+    const o = before.orders.find((x) => x.id === text("id"));
+    return o?.importId && o.importRowId
+      ? {
+          rows: [
+            {
+              id: o.importRowId,
+              excluded: true,
+              reviewNote: "Removed: " + text("reason"),
+            },
+          ],
+        }
+      : null;
+  }
+  return null;
 }

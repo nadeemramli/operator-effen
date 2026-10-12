@@ -70,7 +70,7 @@ The committed `supabase/config.toml` is generated local CLI configuration, with 
 
 ### Clearing keyed-in records
 
-`supabase/maintenance/purge-operational-data.sql` empties every site workspace (batches, cartons, AWBs and imports, trips, counts, receipts, events, closed days) and its commit log while keeping user accounts, memberships, roles, staff PINs, and the staff profile and machine configuration. Run it in the hosted project's SQL editor after confirming the selected project; it cannot be undone without a backup. Uploaded PDFs and trip photos stay in their storage buckets until those are emptied from the dashboard. The preview sandbox rows are a separate, commented-out step.
+`supabase/maintenance/purge-operational-data.sql` empties every site workspace (batches, cartons, AWBs and imports, trips, counts, receipts, closed days), the site audit log (`operator_events`), the order record tables (`operator_orders`, `operator_issues`, `operator_carton_issued`, `operator_sort_counts`, `operator_order_departures`) and the commit log while keeping user accounts, memberships, roles, staff PINs, and the staff profile and machine configuration. Run it in the hosted project's SQL editor after confirming the selected project; it cannot be undone without a backup. Uploaded PDFs and trip photos stay in their storage buckets until those are emptied from the dashboard. The preview sandbox rows are a separate, commented-out step.
 
 ## Hosting
 
@@ -152,10 +152,19 @@ are never converted into box inventory. Previously counted boxes remain stock.
   PDF upload the same way, which removes every AWB it released, as long as none of them
   has stock, packing or handover records. The audit log lists what was removed and why;
   source PDFs stay in storage.
-  One upload takes up to 10 PDFs, 600 pages and 300 labels (raised from 200 pages and 200
-  labels on 12 October 2026); oversized uploads are refused before any page is read, and a
-  day's labels can go in as several uploads. A site workspace holds up to 1,000 AWBs and
-  3,000 audit entries within its 2 MB document.
+  Since migration `20261012090000_operator_imports` PDF uploads and their label rows live in
+  the `operator_imports` and `operator_import_rows` tables, outside the site's workspace
+  document: the review is saved through `/api/imports` (a teammate's newer save is reported,
+  not overwritten), confirming releases the AWBs into the order list in one signed commit
+  that also marks the upload confirmed, and stock-out acknowledges receipt once. Members with
+  `orders.import` or `sources.read` at the site can open uploads; deleted uploads are hidden.
+  One upload takes up to 10 PDFs, 2,500 pages and 1,200 labels (raised from 600 pages and
+  300 labels on 12 October 2026); oversized uploads are refused before any page is read, and
+  a day's labels can still go in as several uploads. Released AWBs stay in the document
+  until orders move to tables: a site workspace holds up to 2,000 AWBs within its 2 MB
+  document (audit entries no longer count, see "Audit log" below). The fictional preview sandbox no longer
+  covers PDF uploads (manual AWB entry stays); uploads are tested on the synthetic
+  operational site.
   Since 9 October 2026 PDF intake reads text first and runs OCR automatically on any page
   whose text has no AWB and no order reference ("Force OCR on every page" remains as a slow,
   unticked fallback). Pages with no tracking number, order reference or known SKU (cover,
@@ -188,6 +197,33 @@ are never converted into box inventory. Previously counted boxes remain stock.
   days). Derived from stock movements only; no new records. Δ compares stock that left the
   racks with the tally's issued-to-orders figure, which should match. **Export inventory**
   downloads the same figures; the parcel CSV is unchanged.
+- **Audit log** (since migration `20261013090000_operator_events`): every audit entry of an
+  operational site is a row in the `operator_events` table instead of an entry in the site's
+  workspace document (which keeps an empty `events` list for builds from before the change),
+  so the document no longer grows with each AWB. Commands log as before;
+  the signed commit stores the new entries in the same transaction, attributed to the
+  signed-in user, and nobody can change or delete them. Trace lookup ("Activity log" on a
+  record) and the overview's latest activity read them through `GET /api/events` (by record,
+  by Malaysia day, or latest first, 200 per page), only while that view is open; every
+  active member of the site can read them. The fictional preview sandbox keeps its audit
+  entries in its own document, unchanged.
+- **Order records on a tables-mode site** (migration `20261014090000_operator_order_records`,
+  WP C; the owner moves a site with `operator_private.move_orders_to_tables`): AWBs, stock
+  issues and supervisor counts are table rows, and the order screens read them through
+  `/api/orders/*` instead of the workspace document. Order management lists the chosen day
+  200 AWBs at a time (**Show more AWBs**), filtered by product, package, text and status on
+  the server; package groups, the daily tally, the tally by packer and the inventory for the
+  day are computed on the server and arrive as figures only. The packer phone reads only the
+  AWBs assigned to the profile its PIN unlocked (`/api/orders/packer`, the sealed packer
+  session) and receives only staff names and notes from the document. Trace finds an AWB
+  (every occurrence, newest first, because couriers reuse numbers), its first 6 characters
+  or an order number; a batch lists the AWBs it supplied. Office admin and stock-out read
+  AWB rows; packers read their own; management, production, stock-in, drivers and HR see
+  stock, batches and cartons but no AWBs (owner decision 2026-10-12). **Export AWBs (CSV)**
+  (Order management and Daily tally) downloads at most 31 days at a time; longer ranges are
+  refused. Open screens refresh every minute and after each save; an unchanged day answers
+  "not modified" with no body. Document-mode sites and the fictional preview sandbox keep
+  reading the document as before.
 - The day changes at midnight in Asia/Kuala_Lumpur. Supervisors can manually carry
   unpacked AWBs forward; stock allocations and assignments follow the AWB, and the
   old day's checkpoint is flagged because its order set changed.

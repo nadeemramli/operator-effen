@@ -4,13 +4,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { applyCommand, createDraft } from "../apps/web/src/lib/draft.ts";
+import { parsePages } from "../apps/web/src/lib/awb-import.ts";
 import { effectiveCapabilities, outOfScopeKeys } from "../apps/web/src/lib/access.ts";
 import {
   commandRules,
   grantableRoles,
   memberRoles,
+  recordRules,
   roleCapabilities,
 } from "../apps/web/src/lib/capabilities.ts";
+import { products } from "../apps/web/src/lib/draft.ts";
+import { channels } from "../apps/web/src/lib/awb-import.ts";
+import { frozen, tablesSite } from "./order-slices.mjs";
 
 const migration = (name) =>
   readFileSync(new URL(`../supabase/migrations/${name}.sql`, import.meta.url), "utf8");
@@ -29,11 +34,37 @@ const later = [
   "20261009090003_operator_trip_dropoffs",
   "20261011090000_operator_remove_awbs",
 ].map(migration);
+// 20261012: uploads move to tables; two command rules deleted, three rescoped.
+const imports = migration("20261012090000_operator_imports");
 const merged = (table) =>
   section(table) +
   section(table, trips) +
   section(table, packers) +
-  later.map((m) => section(table, m)).join("");
+  later.map((m) => section(table, m)).join("") +
+  section(table, imports);
+const ruleRow = /\('([a-z-]+)', '([a-z.]+)', '\{([a-zA-Z,]+)\}'\)/g;
+const commandList = (list) => [...list.matchAll(/'([a-z-]+)'/g)].map(([, c]) => c);
+/** Command rules after every migration, in order: inserts, then deletes, then rescopes. */
+function databaseRules() {
+  const rows = {};
+  for (const source of [sql, trips, packers, ...later, imports]) {
+    for (const [, cmd, cap, keys] of section("operator_command_rules", source).matchAll(ruleRow))
+      rows[cmd] = { capability: cap, stateKeys: keys.split(",") };
+    for (const [, list] of source.matchAll(/delete from public\.operator_command_rules where command in \(([^)]*)\);/g))
+      for (const cmd of commandList(list)) {
+        assert.ok(rows[cmd], "deleting an unknown rule " + cmd);
+        delete rows[cmd];
+      }
+    for (const [, keys, list] of source.matchAll(
+      /update public\.operator_command_rules set state_keys = '\{([a-zA-Z,]+)\}'\s+where command in \(([^)]*)\);/g,
+    ))
+      for (const cmd of commandList(list)) {
+        assert.ok(rows[cmd], "rescoping an unknown rule " + cmd);
+        rows[cmd].stateKeys = keys.split(",");
+      }
+  }
+  return rows;
+}
 
 test("one driver role: the migration removes the separate assistant role", () => {
   assert.match(trips, /update public\.operator_memberships\s+set role = 'driver', updated_at = now\(\)\s+where role = 'assistant';/);
@@ -55,12 +86,17 @@ test("role capabilities match the database seed", () => {
 });
 
 test("command rules match the database seed", () => {
-  const rows = Object.fromEntries(
-    [...merged("operator_command_rules").matchAll(/\('([a-z-]+)', '([a-z.]+)', '\{([a-zA-Z,]+)\}'\)/g)].map(
-      ([, cmd, cap, keys]) => [cmd, { capability: cap, stateKeys: keys.split(",") }],
-    ),
-  );
-  assert.deepEqual(rows, commandRules);
+  assert.deepEqual(databaseRules(), commandRules);
+});
+
+test("uploads left the document: no command rule touches awbImports", () => {
+  // The 20261012 statements are present as written (the parser above depends on them).
+  assert.match(imports, /delete from public\.operator_command_rules where command in \('import-save', 'import-receive'\);/);
+  assert.match(imports, /update public\.operator_command_rules set state_keys = '\{orders,events\}'\s+where command in \('import-release', 'import-delete', 'remove-order'\);/);
+  for (const [cmd, rule] of Object.entries(databaseRules()))
+    assert.ok(!rule.stateKeys.includes("awbImports"), cmd);
+  assert.equal(commandRules["import-save"], undefined);
+  assert.equal(commandRules["import-receive"], undefined);
 });
 
 test("grantable roles match the database seed", () => {
@@ -79,13 +115,14 @@ test("every operational command stays inside its database scope", () => {
   const seen = new Set();
   const actor = (role) => ({ kind: "member", role, name: role, userId: "u-" + role, siteId: "site-a" });
   let s = createDraft();
-  const run = (role, type, input) => {
+  const run = (role, type, input, context) => {
     const next = applyCommand(s, {
       type,
       role,
       input,
       actor: actor(role),
       capabilities: effectiveCapabilities(role),
+      context,
     });
     assert.deepEqual(outOfScopeKeys(type, s, next), [], type);
     seen.add(type);
@@ -156,6 +193,15 @@ test("every operational command stays inside its database scope", () => {
   run("outbound", "dispatch", { id: o, reference: "M-1", pic: "D" });
   run("admin", "order", { awb: "COV-AWB-3", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });
   run("outbound", "remove-order", { id: s.orders[0].id, reason: "Cancelled by the customer" });
+  // Uploads come from operator_imports as server-loaded context, never from the document.
+  const file = { id: "c".repeat(64), name: "coverage.pdf", path: "site-a/" + "c".repeat(64) + ".pdf", pages: 1, size: 1000 };
+  const upload = {
+    id: crypto.randomUUID(), name: "Coverage upload", date: "2026-10-01", files: [file],
+    rows: parsePages([{ file: file.id, page: 1, method: "text", text: "Ninja Van\nNVMYCOV0000001\nOrder: #COV-1\nProducts:\n1x Cavernosil [cave04]" }], "Luxana", "COV STORE"),
+    createdAt: "", updatedAt: "",
+  };
+  run("admin", "import-release", { id: upload.id }, { import: upload });
+  run("admin", "import-delete", { id: upload.id, reason: "Coverage" }, { import: upload });
   run("management", "review", { text: "Check" });
   run("packer", "feedback", { text: "Note" });
   run("production", "close", { date: "2026-10-01", note: "Done" });
@@ -175,13 +221,130 @@ test("every operational command stays inside its database scope", () => {
   const untested = Object.keys(commandRules).filter((c) => !seen.has(c));
   assert.deepEqual(untested.sort(), [
     "assign-package",
-    "import-delete",
-    "import-receive",
-    "import-release",
-    "import-save",
     "issue",
     "move-orders",
     "print",
     "split-order",
   ]);
+});
+
+// 20261014: orders, issues and sort counts as table rows; operator_record_rules scopes the
+// records path (operator_commit_records) per command.
+const records = migration("20261014090000_operator_order_records");
+const recordRow =
+  /\('([a-z-]+)', '([a-z.]+)', (true|false), (true|false), '\{([a-z_,]*)\}', (true|false), (true|false), (null|'[a-z]+')\)/g;
+
+test("record rules match the database seed", () => {
+  const block = section("operator_record_rules", records);
+  assert.match(block, /\(command, capability, order_insert, order_delete, order_columns, issues, sort_counts, import_effects\)/);
+  const rows = {};
+  for (const [, cmd, capability, insert, del, columns, issues, counts, effects] of block.matchAll(recordRow))
+    rows[cmd] = {
+      capability,
+      orderInsert: insert === "true",
+      orderDelete: del === "true",
+      orderColumns: columns ? columns.split(",") : [],
+      issues: issues === "true",
+      sortCounts: counts === "true",
+      importEffects: effects === "null" ? null : effects.slice(1, -1),
+    };
+  assert.equal(Object.keys(rows).length, 19);
+  assert.deepEqual(rows, recordRules);
+});
+
+test("every records command is a document command with the same capability", () => {
+  // Until the cutover (C4) both paths exist; a site's order_store decides which one runs.
+  for (const [cmd, r] of Object.entries(recordRules)) {
+    assert.ok(commandRules[cmd], cmd);
+    assert.equal(r.capability, commandRules[cmd].capability, cmd);
+  }
+  // Every document command that changes orders, issues or sort counts has a records rule.
+  for (const [cmd, r] of Object.entries(commandRules))
+    if (r.stateKeys.some((k) => ["orders", "issues", "sortCounts"].includes(k)))
+      assert.ok(recordRules[cmd], "no records rule for " + cmd);
+});
+
+test("the order tables accept exactly the app's products, units and channels", () => {
+  const unit = records.match(/create function operator_private\.product_unit[\s\S]*?\$\$\s*select case (.*?) end\s*\$\$/);
+  assert.ok(unit, "product_unit not found");
+  const mapped = {};
+  for (const [, one, many, u] of unit[1].matchAll(/when p (?:= '([a-z]+)'|in \(([^)]*)\)) then '([a-z]+)'/g))
+    for (const [p] of (one ?? many).matchAll(/[a-z]+/g)) mapped[p] = u;
+  assert.deepEqual(mapped, Object.fromEntries(products.map((p) => [p.id, p.unit])));
+  const channel = records.match(/channel text not null check \(channel in \(([^)]*)\)\)/);
+  assert.deepEqual([...channel[1].matchAll(/'([A-Za-z]+)'/g)].map(([, c]) => c), channels);
+});
+
+// Order records (20261014090000): on a tables-mode site every order command runs on a slice
+// of the rows it needs (apps/web/src/lib/order-records.ts). The slice must give the same
+// change set and the same rows as the whole document, and every change set must stay inside
+// the command's operator_record_rules scope (sliceDelta throws otherwise).
+test("every order family gives the same rows on its slice as on the whole document", async () => {
+  const clock = frozen();
+  try {
+    const day = "2026-10-20";
+    const initial = createDraft();
+    // A legacy two-brand AWB for split-order.
+    initial.orders.push({
+      id: "o-split", awb: "SLICE-MIXED", channel: "Luxana", product: "cav", package: "Mixed", expected: 3,
+      originalExpected: 3, actual: null, packer: "", labelPic: "", printed: false, dispatched: false,
+      handoverRef: "", date: day, note: "", reviewState: "pending",
+      lines: [{ product: "cav", expected: 1, originalExpected: 1, actual: null }, { product: "lip", expected: 2, originalExpected: 2, actual: null }],
+    });
+    const file = { id: "d".repeat(64), name: "slice.pdf", path: "site-a/" + "d".repeat(64) + ".pdf", pages: 2, size: 1000 };
+    const label = (page, awb, ref) => ({ file: file.id, page, method: "text", text: `Ninja Van\n${awb}\nOrder: #${ref}\nProducts:\n1x Cavernosil [cave04]` });
+    const upload = (id) => ({ id, name: "Slice upload", date: day, files: [file], createdAt: "", updatedAt: "",
+      rows: parsePages([label(1, `NVMYSLICE${id.slice(-3)}1`, `SL-${id.slice(-3)}-1`), label(2, `NVMYSLICE${id.slice(-3)}2`, `SL-${id.slice(-3)}-2`)], "Luxana", "SLICE STORE") });
+    const u1 = upload("30000000-0000-4000-8000-000000000a01"), u2 = upload("30000000-0000-4000-8000-000000000a02");
+    const site = tablesSite(initial, [u1, u2], clock);
+    const seen = new Set();
+    const step = async (role, type, input, extra) => {
+      const r = await site.step(role, type, input, extra);
+      seen.add(type);
+      return r;
+    };
+    const idOf = (awb) => site.state.orders.find((o) => o.awb === awb).id;
+    const demand = (product) => site.state.orders.filter((o) => o.date === day && o.reviewState !== "pending")
+      .flatMap((o) => o.lines ?? [o]).filter((l) => l.product === product).reduce((n, l) => n + l.expected, 0);
+
+    await step("admin", "order", { awb: "slice awb 1", product: "cav", channel: "TikTok", package: "P", expected: 2, date: day });
+    const a = idOf("SLICEAWB1");
+    await step("outbound", "edit-order", { id: a, awb: "SLICEAWB1", product: "cav", channel: "TikTok", package: "P", expected: 3, date: day, expectedVersion: 1 });
+    await step("outbound", "review-order", { id: a, pic: "S", expectedVersion: 2 });
+    await step("outbound", "split-order", { id: "o-split", pic: "S", reason: "Two brands", awb_cav: "SPLIT-CAV", awb_lip: "SPLIT-LIP", package_cav: "P", package_lip: "Q" });
+    await step("outbound", "sort-count", { date: day, product: "cav", counted: demand("cav"), pic: "S", note: "Count" });
+    await step("outbound", "print", { id: a, pic: "S" });
+    await step("outbound", "assign-orders", { ids: [a], packer: "Sample Packer A", pic: "S" });
+    await step("outbound", "issue", { cartonId: "c-cav", orderId: a, qty: 1, pic: "S" });
+    await site.refused("outbound", "issue-orders", { ids: [a], cartonId: "c-cav", qty: 3, pic: "S" }, /remaining demand/);
+    await step("outbound", "issue-orders", { ids: [a], cartonId: "c-cav", qty: 2, pic: "S" });
+    await site.refused("outbound", "issue", { cartonId: "c-cav", orderId: a, qty: 120, pic: "S" }, /Not enough stock/);
+    await step("outbound", "pack", { id: a, actual: 3, pic: "Sample Packer A", labelPic: "Sample Packer B" });
+    await step("outbound", "correct", { id: a, field: "actual", qty: 2, reason: "Recount" });
+    await step("outbound", "dispatch", { id: a, reference: "M-1", pic: "S", note: "One short" });
+    assert.ok(site.state.orders.find((o) => o.id === a).dispatchedAt, "a handover on a table row keeps its time");
+    // A package of the day for Sample Packer B, recorded with their PIN.
+    await step("admin", "order", { awb: "SLICEAWB2", product: "cav", channel: "TikTok", package: "P", expected: 3, date: day });
+    await step("outbound", "review-order", { id: idOf("SLICEAWB2"), pic: "S" });
+    await step("outbound", "sort-count", { date: day, product: "cav", counted: demand("cav"), pic: "S", note: "Recount" });
+    const group = JSON.stringify(["cav", "P", 3]);
+    const { changes } = await step("outbound", "assign-package", { date: day, group, packers: ["Sample Packer B"], allocation_0: 1, pic: "S" });
+    assert.deepEqual(changes.orders.update.map((u) => Object.keys(u.set).sort()), [["assigned_at", "assigned_packer"]]);
+    await step("packer", "pack-own", { id: idOf("SLICEAWB2"), actual: 3 }, { performer: "Sample Packer B" });
+    await step("outbound", "move-orders", { ids: ["o-4"], date: "2026-10-21", pic: "S", reason: "Tomorrow" });
+    await step("outbound", "print-orders", { ids: ["o-4", "o-6"], pic: "S" });
+    await step("admin", "order", { awb: "SLICEAWB3", product: "gly", channel: "Shopee", package: "P", expected: 1, date: day });
+    await site.refused("admin", "order", { awb: "SLICEAWB3", product: "gly", channel: "Shopee", package: "P", expected: 1, date: "2026-11-30" }, /already recorded/);
+    await site.refused("outbound", "remove-order", { id: "o-3", reason: "x" }, /stock, packing or handover/);
+    await step("admin", "remove-order", { id: idOf("SLICEAWB3"), reason: "Cancelled" });
+    await step("admin", "import-release", { id: u1.id }, undefined);
+    const released = u1.rows[0].releasedOrderId;
+    const removed = await step("admin", "remove-order", { id: released, reason: "Cancelled" });
+    assert.deepEqual(removed.changes.importEffects, { rows: [{ id: u1.rows[0].id, excluded: true, reviewNote: "Removed: Cancelled" }] });
+    await step("admin", "import-delete", { id: u1.id, reason: "Wrong day" });
+    await step("admin", "import-release", { id: u2.id });
+    assert.deepEqual([...seen].sort(), Object.keys(recordRules).sort(), "every records command ran through its slice");
+  } finally {
+    clock.restore();
+  }
 });

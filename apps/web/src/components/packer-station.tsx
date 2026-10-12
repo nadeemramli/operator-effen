@@ -25,6 +25,7 @@ export function PackerUnlock({
   date,
   workspaceId,
   preview,
+  counts,
   onUnlock,
 }: {
   state: Draft;
@@ -32,6 +33,11 @@ export function PackerUnlock({
   date: string;
   workspaceId?: string;
   preview: boolean;
+  /**
+   * Tables-mode site: unpacked AWBs per profile from /api/orders/packer-counts (the phone
+   * reads no AWBs before a PIN unlocks one profile). Absent: counted from the document.
+   */
+  counts?: Record<string, number> | null;
   onUnlock: (profileId: string, expiresAt?: number) => void;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
@@ -41,9 +47,11 @@ export function PackerUnlock({
     [error, setError] = useState("");
   const packers = packerProfiles(state);
   const assigned = (id: string) =>
-    state.orders.filter(
-      (o) => o.date === date && o.assignedPacker === id && o.actual === null,
-    ).length;
+    counts !== undefined
+      ? (counts?.[id] ?? 0)
+      : state.orders.filter(
+          (o) => o.date === date && o.assignedPacker === id && o.actual === null,
+        ).length;
   async function unlock() {
     setBusy(true);
     setError("");

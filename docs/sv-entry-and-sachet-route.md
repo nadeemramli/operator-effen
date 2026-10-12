@@ -102,10 +102,11 @@ values (null, '<auth user id>', 'hr', '<display name>', 'all-sites');
   rules for direct Storage API calls.
 - `/api/awb-files` authorizes before signing; signed download URLs live 60 seconds. Malformed,
   guessed, missing or unauthorized paths all return the same 404; storage outages return 503.
-- `import-save` only accepts files already stored under the same site.
+- Saving an upload review (`POST /api/imports`, `operator_import_save`) only accepts files
+  already stored under the same site.
 - The fictional sandbox keeps `awb-draft-sources/<account id>/…`; sandbox files are fictional
   and are not migrated. Operational and sandbox paths are never mixed (the bucket follows the
-  caller's mode).
+  caller's mode). Since 20261012090000 the sandbox screens no longer offer PDF uploads.
 
 ## Fictional preview sandbox
 

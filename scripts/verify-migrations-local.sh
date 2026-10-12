@@ -15,7 +15,43 @@ for file in "$root"/supabase/migrations/*.sql; do
   "${psql[@]}" -f "$file"
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
+bash "$root/supabase/tests/operator_records_concurrency.sh" -h "$dir" -U postgres -d postgres
 echo "rollback rehearsal"
+# Order records go back into the documents (compared as sets) before the tables are dropped.
+site_c="'10000000-0000-4000-8000-0000000000c2'"
+orders="$("${psql[@]}" -At -c "select string_agg(id::text, ',' order by id) from public.operator_orders where workspace_id = $site_c")"
+issues="$("${psql[@]}" -At -c "select string_agg(id::text, ',' order by id) from public.operator_issues where workspace_id = $site_c")"
+[ -n "$orders" ] && [ -n "$issues" ]
+"${psql[@]}" -At -c "select count(*) from public.operator_workspaces where order_store = 'tables'" | grep -qx 2
+"${psql[@]}" -f "$root/supabase/rollback/20261014090000_operator_order_records.down.sql"
+"${psql[@]}" -At -c "select to_regclass('public.operator_orders') is null and to_regclass('public.operator_issues') is null
+  and to_regclass('public.operator_carton_issued') is null and to_regclass('public.operator_record_rules') is null
+  and to_regprocedure('public.operator_commit_records(uuid, text, uuid, text, text, text, text)') is null
+  and to_regprocedure('public.operator_commit_workspace(uuid, integer, text, uuid, text, text, text, text)') is not null
+  and not exists (select 1 from information_schema.columns where table_name = 'operator_workspaces' and column_name = 'order_store')
+  and not exists (select 1 from information_schema.columns where table_name = 'operator_commits' and column_name = 'result')
+  and exists (select 1 from information_schema.columns where table_name = 'operator_commits'
+    and column_name = 'result_revision' and is_nullable = 'NO')" | grep -qx t
+"${psql[@]}" -At -c "select string_agg(o ->> 'id', ',' order by (o ->> 'id')::uuid) from public.operator_workspaces w,
+  jsonb_array_elements(w.state -> 'orders') o where w.id = $site_c" | grep -qx "$orders"
+"${psql[@]}" -At -c "select string_agg(i ->> 'id', ',' order by (i ->> 'id')::uuid) from public.operator_workspaces w,
+  jsonb_array_elements(w.state -> 'issues') i where w.id = $site_c" | grep -qx "$issues"
+# Audit entries go back into the documents, newest first, before the table is dropped.
+entries="$("${psql[@]}" -At -c "select count(*) from public.operator_events where workspace_id = '10000000-0000-4000-8000-00000000000a'")"
+newest="$("${psql[@]}" -At -c "select id from public.operator_events where workspace_id = '10000000-0000-4000-8000-00000000000a' order by seq desc limit 1")"
+"${psql[@]}" -f "$root/supabase/rollback/20261013090000_operator_events.down.sql"
+"${psql[@]}" -At -c "select to_regclass('public.operator_events') is null
+  and to_regprocedure('operator_private.append_events(uuid, jsonb, uuid, text, uuid)') is null
+  and to_regprocedure('public.operator_commit_workspace(uuid, integer, text, uuid, text, text, text, text)') is not null
+  and not exists (select 1 from public.operator_workspaces where not state ? 'events')" | grep -qx t
+"${psql[@]}" -At -c "select jsonb_array_length(state -> 'events') || ':' || (state -> 'events' -> 0 ->> 'id')
+  from public.operator_workspaces where id = '10000000-0000-4000-8000-00000000000a'" | grep -qx "$entries:$newest"
+"${psql[@]}" -f "$root/supabase/rollback/20261012090000_operator_imports.down.sql"
+"${psql[@]}" -At -c "select to_regclass('public.operator_imports') is null and to_regclass('public.operator_import_rows') is null
+  and to_regprocedure('public.operator_commit_workspace(uuid, integer, text, uuid, text, text, text)') is not null
+  and to_regprocedure('public.operator_commit_workspace(uuid, integer, text, uuid, text, text, text, text)') is null" | grep -qx t
+"${psql[@]}" -At -c "select string_agg(command || ':' || array_to_string(state_keys, '+'), ',' order by command) from public.operator_command_rules where command like 'import-%' or command = 'remove-order'" \
+  | grep -qx 'import-delete:awbImports+orders+events,import-receive:awbImports+orders+events,import-release:awbImports+orders+events,import-save:awbImports+events,remove-order:orders+awbImports+events'
 "${psql[@]}" -f "$root/supabase/rollback/20261011090000_operator_remove_awbs.down.sql"
 "${psql[@]}" -At -c "select count(*) from public.operator_command_rules where command in ('remove-order', 'import-delete')" | grep -qx 0
 "${psql[@]}" -f "$root/supabase/rollback/20261009090003_operator_trip_dropoffs.down.sql"
@@ -60,4 +96,70 @@ echo "assistant memberships become driver memberships"
 "${psql[@]}" -At -c "select capability from public.operator_command_rules where command = 'trip-dropoff'" | grep -qx trips.log
 "${psql[@]}" -f "$root/supabase/migrations/20261011090000_operator_remove_awbs.sql"
 "${psql[@]}" -At -c "select string_agg(command || ':' || capability, ',' order by command) from public.operator_command_rules where command in ('import-delete', 'remove-order')" | grep -qx 'import-delete:orders.import,remove-order:orders.enter'
+echo "uploads move from the document to tables"
+"${psql[@]}" -c "update public.operator_workspaces set state = state || '{
+  \"awbImports\": [
+    {\"id\": \"30000000-0000-4000-8000-0000000000f1\", \"name\": \"Synthetic released\", \"date\": \"2026-10-10\",
+     \"files\": [], \"createdAt\": \"2026-10-10T01:00:00.000Z\", \"updatedAt\": \"2026-10-10T02:00:00.000Z\",
+     \"confirmedAt\": \"2026-10-10T02:00:00.000Z\", \"rows\": [
+      {\"id\": \"31000000-0000-4000-8000-0000000000f1\", \"awb\": \"NVMYBF1\", \"orderRef\": \"R1\", \"channel\": \"Luxana\",
+       \"store\": \"S\", \"courier\": \"Ninja Van\", \"lines\": [], \"sources\": [], \"warnings\": [], \"reviewed\": false,
+       \"reviewNote\": \"\", \"excluded\": false, \"releasedOrderId\": \"o-bf1\", \"original\": \"raw\"},
+      {\"id\": \"31000000-0000-4000-8000-0000000000f2\", \"awb\": \"NVMYBF2\", \"orderRef\": \"R2\", \"channel\": \"Luxana\",
+       \"store\": \"S\", \"courier\": \"Ninja Van\", \"lines\": [], \"sources\": [], \"warnings\": [], \"reviewed\": true,
+       \"reviewNote\": \"Not ours\", \"excluded\": true, \"original\": \"raw 2\"}]},
+    {\"id\": \"legacy-1\", \"name\": \"Synthetic legacy\", \"date\": \"2026-10-09\", \"files\": [], \"createdAt\": \"\",
+     \"updatedAt\": \"\", \"rows\": [{\"id\": \"r1\", \"awb\": \"NVMYBF3\", \"lines\": [], \"sources\": [], \"warnings\": [],
+       \"reviewed\": false, \"reviewNote\": \"\", \"excluded\": false, \"releasedOrderId\": \"o-bf3\"}]}],
+  \"orders\": [{\"id\": \"o-bf1\", \"awb\": \"NVMYBF1\", \"importId\": \"30000000-0000-4000-8000-0000000000f1\",
+     \"importRowId\": \"31000000-0000-4000-8000-0000000000f1\"},
+    {\"id\": \"o-bf3\", \"awb\": \"NVMYBF3\", \"importId\": \"legacy-1\", \"importRowId\": \"r1\"},
+    {\"id\": \"o-man\", \"awb\": \"MANUAL-1\"}]}'::jsonb where site_id = 'site-x';
+  insert into public.ui_draft_workspaces (user_id, state, revision)
+  values ('00000000-0000-4000-8000-000000000002', '{\"version\": 1, \"orders\": [], \"awbImports\": [{\"id\": \"x\"}]}', 4)
+  on conflict (user_id) do update set state = excluded.state, revision = excluded.revision"
+before="$("${psql[@]}" -At -c "select revision from public.operator_workspaces where site_id = 'site-x'")"
+"${psql[@]}" -f "$root/supabase/migrations/20261012090000_operator_imports.sql"
+"${psql[@]}" -At -c "select to_regclass('public.operator_imports') is not null and to_regclass('public.operator_import_rows') is not null" | grep -qx t
+"${psql[@]}" -At -c "select string_agg(command || ':' || array_to_string(state_keys, '+'), ',' order by command) from public.operator_command_rules where command like 'import-%' or command = 'remove-order'" \
+  | grep -qx 'import-delete:orders+events,import-release:orders+events,remove-order:orders+events'
+"${psql[@]}" -At -c "select (state ? 'awbImports')::text || ':' || (revision - $before) from public.operator_workspaces where site_id = 'site-x'" | grep -qx 'false:1'
+"${psql[@]}" -At -c "select count(*) || ':' || count(confirmed_at) from public.operator_imports" | grep -qx '2:1'
+"${psql[@]}" -At -c "select string_agg(awb || '=' || coalesce(released_order_id, '-') || '/' || excluded || '/' || original, ',' order by awb) from public.operator_import_rows" \
+  | grep -qx 'NVMYBF1=o-bf1/false/raw,NVMYBF2=-/true/raw 2,NVMYBF3=o-bf3/false/'
+# The legacy identifiers got derived UUIDs, and the order that points at them followed.
+"${psql[@]}" -At -c "select count(*) from public.operator_workspaces w, jsonb_array_elements(w.state -> 'orders') o
+  join public.operator_import_rows r on r.id = (o ->> 'importRowId')::uuid and r.import_id = (o ->> 'importId')::uuid
+  where w.site_id = 'site-x' and r.released_order_id = o ->> 'id'" | grep -qx 2
+"${psql[@]}" -At -c "select (state ? 'awbImports')::text || ':' || revision from public.ui_draft_workspaces where user_id = '00000000-0000-4000-8000-000000000002'" | grep -qx 'false:5'
+echo "audit entries move from the document to a table"
+"${psql[@]}" -c "update public.operator_workspaces set state = state || '{
+  \"events\": [
+    {\"id\": \"40000000-0000-4000-8000-0000000000e2\", \"entity\": \"o-bf1\", \"action\": \"AWB imported\", \"detail\": \"newest\",
+     \"actor\": \"Synthetic admin\", \"at\": \"2026-10-10T02:00:00.000Z\", \"recorder\": {\"userId\": \"00000000-0000-4000-8000-000000000002\"}},
+    {\"id\": \"seed\", \"entity\": \"workspace\", \"action\": \"Prepared\", \"detail\": \"oldest\", \"actor\": \"Setup\",
+     \"at\": \"2026-10-09T00:00:00.000Z\"}]}'::jsonb where site_id = 'site-x';
+  update public.ui_draft_workspaces set state = state || '{\"events\": [{\"id\": \"seed\"}]}'
+  where user_id = '00000000-0000-4000-8000-000000000002'"
+before="$("${psql[@]}" -At -c "select revision from public.operator_workspaces where site_id = 'site-x'")"
+"${psql[@]}" -f "$root/supabase/migrations/20261013090000_operator_events.sql"
+"${psql[@]}" -At -c "select to_regclass('public.operator_events') is not null
+  and to_regprocedure('operator_private.append_events(uuid, jsonb, uuid, text, uuid)') is not null" | grep -qx t
+"${psql[@]}" -At -c "select (state -> 'events')::text || ':' || (revision - $before) from public.operator_workspaces where site_id = 'site-x'" | grep -qx '\[\]:1'
+# Chronological order (the document stored newest first); history without a recorder is kept.
+"${psql[@]}" -At -c "select string_agg(detail || '/' || command || '/' || coalesce(recorder ->> 'userId', '-'), ',' order by seq) from public.operator_events" \
+  | grep -qx 'oldest/backfill/-,newest/backfill/00000000-0000-4000-8000-000000000002'
+"${psql[@]}" -At -c "select state ? 'events' from public.ui_draft_workspaces where user_id = '00000000-0000-4000-8000-000000000002'" | grep -qx t
+echo "order records: additive, every site stays in document mode"
+before="$("${psql[@]}" -At -c "select md5(string_agg(state::text || revision, ',' order by id)) from public.operator_workspaces")"
+"${psql[@]}" -f "$root/supabase/migrations/20261014090000_operator_order_records.sql"
+"${psql[@]}" -At -c "select md5(string_agg(state::text || revision, ',' order by id)) from public.operator_workspaces" | grep -qx "$before"
+"${psql[@]}" -At -c "select count(*) filter (where order_store <> 'document') || ':' || (select count(*) from public.operator_record_rules)
+  from public.operator_workspaces" | grep -qx '0:19'
+# The backfill refuses the legacy orders above (non-UUID identifiers) and names them; nothing moves.
+if "${psql[@]}" -c "select operator_private.move_orders_to_tables(id) from public.operator_workspaces where site_id = 'site-x'" 2>"$dir/move.err"; then
+  echo "move of malformed legacy orders was accepted"; exit 1
+fi
+grep -q 'AWB NVMYBF1: identifier is not a UUID' "$dir/move.err"
+"${psql[@]}" -At -c "select order_store || ':' || jsonb_array_length(state -> 'orders') from public.operator_workspaces where site_id = 'site-x'" | grep -qx 'document:3'
 echo "ok"

@@ -138,9 +138,13 @@ export function commitSecret(): Buffer | null {
     ? Buffer.from(hex, "hex")
     : null;
 }
+const sha256 = (text: string) =>
+  createHash("sha256").update(text, "utf8").digest("hex");
 /**
- * Signs a validated transition for one user, workspace revision, command and operation.
- * Must match the message built in public.operator_commit_workspace.
+ * Signs a validated transition for one user, workspace revision, command and operation,
+ * with the exact upload effects text sent alongside (p_import_effects; null when none).
+ * Must match the 'operator-commit-v2' message built in public.operator_commit_workspace
+ * (20261012090000_operator_imports.sql).
  */
 export function attest(
   secret: Buffer,
@@ -152,18 +156,50 @@ export function attest(
     command: string;
     fingerprint: string;
     stateText: string;
+    effectsText?: string | null;
   },
 ) {
-  const stateHash = createHash("sha256").update(t.stateText, "utf8").digest("hex");
   const message = [
-    "operator-commit-v1",
+    "operator-commit-v2",
     t.workspaceId,
     String(t.revision),
     t.userId,
     t.operationId,
     t.command,
     t.fingerprint,
-    stateHash,
+    sha256(t.stateText),
+    sha256(t.effectsText ?? ""),
+  ].join("\n");
+  return createHmac("sha256", secret).update(message, "utf8").digest("hex");
+}
+/**
+ * Signs a validated set of order rows for one user, command and operation (order records,
+ * 20261014090000_operator_order_records.sql): the exact change-set text sent as p_changes
+ * and the sealed packer session sent as p_packer_session (pack-own only; "" otherwise).
+ * Must match the 'operator-records-v1' message built in public.operator_commit_records.
+ * The expected row versions inside the change set replace the document revision.
+ */
+export function attestRecords(
+  secret: Buffer,
+  t: {
+    workspaceId: string;
+    userId: string;
+    operationId: string;
+    command: string;
+    fingerprint: string;
+    changesText: string;
+    packerSession?: string | null;
+  },
+) {
+  const message = [
+    "operator-records-v1",
+    t.workspaceId,
+    t.userId,
+    t.operationId,
+    t.command,
+    t.fingerprint,
+    sha256(t.changesText),
+    sha256(t.packerSession ?? ""),
   ].join("\n");
   return createHmac("sha256", secret).update(message, "utf8").digest("hex");
 }

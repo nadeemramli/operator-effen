@@ -1,6 +1,6 @@
 // Role capabilities and command rules. Mirrors the reference tables seeded by
-// supabase/migrations/20261005090000_operator_trusted_commands.sql; tests/capabilities
-// checks that both stay identical. The database copy is authoritative for writes.
+// supabase/migrations/20261005090000_operator_trusted_commands.sql and changed by later
+// migrations; tests/capabilities checks that both stay identical. The database copy is authoritative for writes.
 export type Capability =
   | "production.plan"
   | "stage.record"
@@ -110,23 +110,12 @@ export const commandRules: Record<
   "edit-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
   "review-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
   "split-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
-  "remove-order": {
-    capability: "orders.enter",
-    stateKeys: ["orders", "awbImports", "events"],
-  },
-  "import-save": { capability: "orders.import", stateKeys: ["awbImports", "events"] },
-  "import-release": {
-    capability: "orders.import",
-    stateKeys: ["awbImports", "orders", "events"],
-  },
-  "import-receive": {
-    capability: "outbound.fulfil",
-    stateKeys: ["awbImports", "orders", "events"],
-  },
-  "import-delete": {
-    capability: "orders.import",
-    stateKeys: ["awbImports", "orders", "events"],
-  },
+  // PDF uploads live in operator_imports since 20261012090000: saving and receiving use
+  // their own functions (/api/imports); these three carry their upload effects in the
+  // signed commit and change only orders and audit entries in the document.
+  "remove-order": { capability: "orders.enter", stateKeys: ["orders", "events"] },
+  "import-release": { capability: "orders.import", stateKeys: ["orders", "events"] },
+  "import-delete": { capability: "orders.import", stateKeys: ["orders", "events"] },
   "sort-count": { capability: "outbound.fulfil", stateKeys: ["sortCounts", "events"] },
   "assign-package": { capability: "outbound.fulfil", stateKeys: ["orders", "events"] },
   "assign-orders": { capability: "outbound.fulfil", stateKeys: ["orders", "events"] },
@@ -154,6 +143,116 @@ export const commandRules: Record<
     stateKeys: ["staffProfiles", "events"],
   },
 };
+/**
+ * Order commands on a site whose orders are table rows (operator_workspaces.order_store =
+ * 'tables', since migration 20261014090000_operator_order_records): what each command may
+ * change through operator_commit_records. Mirrors the operator_record_rules seed;
+ * tests/capabilities.test.mjs checks they stay identical. Column names are the
+ * operator_orders columns (snake_case). The database copy is authoritative for writes.
+ */
+export type RecordRule = {
+  capability: Capability;
+  /** May insert AWB rows. */
+  orderInsert: boolean;
+  /** May delete AWB rows. */
+  orderDelete: boolean;
+  /** Columns an update may set (server-time columns in this list are stamped by the database). */
+  orderColumns: string[];
+  /** May insert stock issues. */
+  issues: boolean;
+  /** May insert supervisor sort counts. */
+  sortCounts: boolean;
+  /** The upload effect the command carries (operator_private.apply_import_effects). */
+  importEffects: "release" | "delete" | "rows" | null;
+};
+const rule = (
+  capability: Capability,
+  scope: Partial<Omit<RecordRule, "capability">> = {},
+): RecordRule => ({
+  capability,
+  orderInsert: false,
+  orderDelete: false,
+  orderColumns: [],
+  issues: false,
+  sortCounts: false,
+  importEffects: null,
+  ...scope,
+});
+const assignColumns = ["assigned_packer", "assigned_at"];
+const packColumns = [
+  "actual",
+  "lines",
+  "packer",
+  "label_pic",
+  "packed_at",
+  "pack_recorded_at",
+  "pack_recorded_by",
+];
+export const recordRules: Record<string, RecordRule> = {
+  order: rule("orders.enter", { orderInsert: true }),
+  "edit-order": rule("orders.enter", {
+    orderColumns: [
+      "awb",
+      "product",
+      "channel",
+      "package",
+      "expected",
+      "original_expected",
+      "lines",
+      "fulfil_date",
+    ],
+  }),
+  "review-order": rule("orders.enter", { orderColumns: ["review_state", "reviewed_by"] }),
+  "remove-order": rule("orders.enter", { orderDelete: true, importEffects: "rows" }),
+  "split-order": rule("orders.enter", {
+    orderInsert: true,
+    orderColumns: [
+      "awb",
+      "product",
+      "package",
+      "expected",
+      "original_expected",
+      "lines",
+      "review_state",
+      "reviewed_by",
+      "assigned_packer",
+      "assigned_at",
+      "printed",
+      "packer",
+      "label_pic",
+      "note",
+    ],
+  }),
+  "assign-package": rule("outbound.fulfil", { orderColumns: assignColumns }),
+  "assign-orders": rule("outbound.fulfil", { orderColumns: assignColumns }),
+  print: rule("outbound.fulfil", { orderColumns: ["printed"] }),
+  "print-orders": rule("outbound.fulfil", { orderColumns: ["printed"] }),
+  "move-orders": rule("outbound.fulfil", { orderColumns: ["fulfil_date"] }),
+  issue: rule("outbound.fulfil", { issues: true }),
+  "issue-orders": rule("outbound.fulfil", { issues: true }),
+  pack: rule("outbound.fulfil", { orderColumns: packColumns }),
+  "pack-own": rule("packing.record", { orderColumns: packColumns }),
+  correct: rule("outbound.correct", { orderColumns: ["expected", "actual", "lines"] }),
+  dispatch: rule("outbound.fulfil", { orderColumns: ["dispatched", "handover_ref"] }),
+  "sort-count": rule("outbound.fulfil", { sortCounts: true }),
+  "import-release": rule("orders.import", { orderInsert: true, importEffects: "release" }),
+  "import-delete": rule("orders.import", { orderDelete: true, importEffects: "delete" }),
+};
+/**
+ * Capabilities that read a site's AWB rows, issues and supervisor counts on a tables-mode
+ * site (operator_private.order_reader_workspaces; owner decision 2026-10-12: office admin
+ * and stock-out). Packers read only the AWBs assigned to the profile their PIN unlocked;
+ * management, production, stock-in, drivers and HR read none. tests/order-reads checks the
+ * list against the migration. The API checks it before a read; the policies decide.
+ */
+export const orderReaderCapabilities: Capability[] = [
+  "orders.enter",
+  "orders.import",
+  "outbound.fulfil",
+  "outbound.correct",
+];
+export const readsOrders = (capabilities: readonly string[]) =>
+  capabilities.some((c) => (orderReaderCapabilities as string[]).includes(c));
 export const grantableRoles: Partial<Record<MemberRole, MemberRole[]>> = {
   hr: [...memberRoles],
   production: ["packer", "driver"],
