@@ -451,7 +451,7 @@ export function OrderWorkspace({
                                 "Masukkan kiraan sendiri. Perbezaan kekal kelihatan untuk semakan.",
                               ),
                             },
-                            { ...pic(), type: "select" },
+                            { ...pic(), compact: true },
                             {
                               name: "note",
                               type: "textarea",
@@ -617,7 +617,7 @@ export function OrderWorkspace({
                                             ).length,
                                           }),
                                         ),
-                                        { ...pic(), type: "select" },
+                                        { ...pic(), compact: true },
                                         {
                                           name: "reason",
                                           type: "textarea",
@@ -703,7 +703,7 @@ export function OrderWorkspace({
                               ),
                               value: remaining,
                             },
-                            { ...pic(), type: "select" },
+                            { ...pic(), compact: true },
                           ],
                         })
                       }

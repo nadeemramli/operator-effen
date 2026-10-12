@@ -1,3 +1,7 @@
+"use client";
+
+import { useState } from "react";
+import { Input } from "@/components/ui/input";
 import { people, tr, type Lang } from "@/lib/draft";
 
 const colors = [
@@ -8,11 +12,19 @@ const colors = [
   "#d38291",
   "#66aeb9",
 ];
+/** A stable colour per name, so the same teammate keeps the same avatar everywhere. */
+const colorIndex = (name: string) => {
+  const sample = people.indexOf(name);
+  if (sample >= 0) return sample;
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)!) % 1000003;
+  return hash;
+};
 
-/** Illustrative avatars for the existing fictional identities, never staff photos. */
+/** Illustrative avatars (initial and colour), never staff photos. */
 export function PersonAvatar({ name }: { name: string }) {
-  const index = people.indexOf(name);
-  const color = colors[Math.max(index, 0) % colors.length];
+  const index = colorIndex(name);
+  const color = colors[index % colors.length];
   return (
     <span
       className="pic-avatar"
@@ -84,6 +96,47 @@ export function PersonBadge({
   );
 }
 
+/**
+ * The person field's value when the supervisor types a name that is not a preset yet. The
+ * typed name travels in the companion `<name>_new` input; the app turns it into a team
+ * profile before saving the record, so it is a preset from then on.
+ */
+export const NEW_PERSON = "__new__";
+export const newPersonField = (name: string) => name + "_new";
+
+function NewPersonInput({
+  name,
+  lang,
+  autoFocus,
+}: {
+  name: string;
+  lang: Lang;
+  autoFocus?: boolean;
+}) {
+  return (
+    <Input
+      id={"field-" + newPersonField(name)}
+      name={newPersonField(name)}
+      className="mt-2"
+      aria-label={tr(lang, "Name of the person", "Nama orang itu")}
+      placeholder={tr(
+        lang,
+        "Full name or name and initial",
+        "Nama penuh atau nama dan inisial",
+      )}
+      maxLength={60}
+      required
+      autoFocus={autoFocus}
+      autoComplete="off"
+    />
+  );
+}
+
+/**
+ * Tap-to-select cards for the person responsible. With `newOption`, a last card lets the
+ * supervisor type someone who is not in the list yet; it is selected by default when the
+ * list is empty, so a new site can record its first entry straight away.
+ */
 export function PersonPicker({
   name,
   label,
@@ -91,6 +144,7 @@ export function PersonPicker({
   value,
   required = true,
   lang,
+  newOption,
 }: {
   name: string;
   label: string;
@@ -98,7 +152,15 @@ export function PersonPicker({
   value?: string | number;
   required?: boolean;
   lang: Lang;
+  newOption?: string;
 }) {
+  const initial =
+    value !== undefined && options.some((o) => o.value === value)
+      ? String(value)
+      : newOption && !options.length
+        ? NEW_PERSON
+        : "";
+  const [chosen, setChosen] = useState(initial);
   return (
     <div className="pic-picker" role="radiogroup" aria-label={label}>
       {options.map((person, index) => (
@@ -108,7 +170,8 @@ export function PersonPicker({
             id={index === 0 ? "field-" + name : undefined}
             name={name}
             value={person.value}
-            defaultChecked={person.value === value}
+            checked={chosen === person.value}
+            onChange={() => setChosen(person.value)}
             required={required}
           />
           <PersonBadge
@@ -118,6 +181,93 @@ export function PersonPicker({
           />
         </label>
       ))}
+      {newOption && (
+        <label className="pic-option pic-option-new">
+          <input
+            type="radio"
+            id={options.length ? undefined : "field-" + name}
+            name={name}
+            value={NEW_PERSON}
+            checked={chosen === NEW_PERSON}
+            onChange={() => setChosen(NEW_PERSON)}
+            required={required}
+          />
+          <span className="pic-identity">
+            <strong>{newOption}</strong>
+            <small>
+              {tr(
+                lang,
+                "Added to this list for everyone at the site",
+                "Ditambah ke senarai ini untuk semua di tapak",
+              )}
+            </small>
+          </span>
+          {chosen === NEW_PERSON && (
+            <span className="pic-option-input">
+              <NewPersonInput
+                name={name}
+                lang={lang}
+                autoFocus={!!options.length}
+              />
+            </span>
+          )}
+        </label>
+      )}
     </div>
+  );
+}
+
+/** Compact person field for dense forms: a select, plus a name input when "someone else" is chosen. */
+export function PersonSelect({
+  name,
+  options,
+  value,
+  required = true,
+  lang,
+  newOption,
+  invalid,
+}: {
+  name: string;
+  options: { value: string; label: string }[];
+  value?: string | number;
+  required?: boolean;
+  lang: Lang;
+  newOption?: string;
+  invalid?: boolean;
+}) {
+  const initial =
+    value !== undefined && options.some((o) => o.value === value)
+      ? String(value)
+      : newOption && !options.length
+        ? NEW_PERSON
+        : "";
+  const [chosen, setChosen] = useState(initial);
+  return (
+    <>
+      <select
+        id={"field-" + name}
+        aria-invalid={invalid}
+        name={name}
+        className="form-select"
+        value={chosen}
+        onChange={(e) => setChosen(e.target.value)}
+        required={required}
+      >
+        <option value="" disabled={required}>
+          {required
+            ? tr(lang, "Select…", "Pilih…")
+            : tr(lang, "Not specified", "Tidak dinyatakan")}
+        </option>
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+        {newOption && <option value={NEW_PERSON}>{newOption}</option>}
+      </select>
+      {chosen === NEW_PERSON && (
+        <NewPersonInput name={name} lang={lang} autoFocus />
+      )}
+    </>
   );
 }

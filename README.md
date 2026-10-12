@@ -109,7 +109,8 @@ AWBs, stock issue, packer declarations, supervisor quantity corrections, separat
 courier handover, trace lookup, management review notes, CSV export and shared feedback.
 The test reset is destructive only to this sandbox and requires UI confirmation.
 
-Known boundaries: sample packages and staff; one product per AWB and one batch per
+Known boundaries: sample packages (the fictional preview also keeps sample staff names
+until a profile is added); one product per AWB and one batch per
 carton; aggregate workspace reports; embedded PDF text extraction and browser-local OCR;
 no external order integrations. Process-record correction and real approval permissions
 need the remaining operational decisions before live use. A recorded QC grouping
@@ -252,6 +253,20 @@ sending to fulfilment. Older batches whose machine steps carry an output keep an
 
 Previous batches → View record → Open production log selects that batch's work
 date. A prominent date banner and date picker control the daily production list.
+
+### Team profiles for PICs (12 October 2026)
+
+Operational workspaces no longer offer the fictional "Sample PIC" names. Every person
+responsible (PIC) field offers the signed-in supervisor's **team profiles**: the preset
+names of the production, stock-in or stock-out team at that site. A supervisor adds a
+teammate once, from the **Team** button in the page heading or by choosing **Someone else**
+in a record and typing the name; the name is then a preset for everyone at the site. HR can
+manage every team's list. Records store the name itself, so renaming or deactivating a
+profile never rewrites history; an inactive teammate is simply no longer offered. Packer
+profiles (PIN sign-in, referenced by ID) stay a separate list on the packing station. The
+fictional preview keeps its sample names only until a profile is added there. Commands:
+`staff-profile-create` and `staff-profile-update` with a `role` (no database change; the
+same `members.manage` capability and `{staffProfiles,events}` scope).
 
 ### Batch and carton reference
 

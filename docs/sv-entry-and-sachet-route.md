@@ -243,6 +243,19 @@ packed. The supervisor still corrects saved counts and reviews the daily tally. 
   takes the packer only from the unlocked session, never from the request. It allows a first
   count only, only for an AWB assigned to that profile; the packer is recorded as packer and AWB
   attacher, the shared account as recorder. Corrections stay `correct` (stock-out supervisor).
+
+## Team profiles as PIC presets (2026-10-12)
+
+The same `staff-profile-create` / `staff-profile-update` commands take a `role`: `packer`
+(default, as above) or a team, `production`, `intake` or `outbound`. Team profiles are the
+preset names offered wherever a PIC is recorded; operational workspaces offer nothing else
+(the fictional preview keeps its sample names only until a profile is added). Each team's
+supervisor manages their own list (the stock-out supervisor also manages packers); HR manages
+all. Active team names are unique across the three teams, case-insensitively; packer names
+remain a separate list. Records keep the **name**, not the profile ID, so renames and
+deactivation never rewrite history. In a record, **Someone else** lets the supervisor type a
+name; the app saves it as a team profile first, then the record. No database change: the
+capability stays `members.manage` and the scope `{staffProfiles,events}`.
   The supervisor's own `pack` entry is unchanged.
 - **Who keyed it** (since 2026-10-09): the daily tally's "Tally by assigned packer" has an
   **Entered by** column (counts keyed by the packer with their PIN vs by a supervisor, from the
