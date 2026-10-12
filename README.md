@@ -6,6 +6,8 @@ Operator EFFEN is an authenticated operations test workspace. The workflow previ
 
 The [production readiness plan](docs/production-readiness-plan.md) and [execution backlog / continuation guide](docs/production-readiness-backlog.md) cover speed, concurrent staff, transactional inventory, security, uptime, recovery and three-hour offline operation. Track implementation in [epic #7](https://github.com/nadeemramli/operator-effen/issues/7) and its seven workstream issues.
 
+The [order volume plan](docs/order-volume-plan-2026-10.md) (2026-10-12) proposes moving uploads, orders, stock issues and audit entries out of the per-site workspace document into tables, in four work packages, so that days of 2,000 AWBs and PDFs of 1,000 labels can be handled. It lists the owner decisions it waits on.
+
 Confirmed sizing: 7–10 packers on phones, up to 2 production users and 2 supervisors on laptops (11–14 concurrent users). Architecture and release targets are proposals; publishing this plan does not establish live factory readiness. See the dated baseline and decision register before continuing on another computer.
 
 ## Floor improvements (October 2026)
