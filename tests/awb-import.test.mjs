@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import {
   OCR_NOTE,
   detectReferences,
+  importLimit,
   isLabelPage,
+  pageLimit,
   needsOcr,
   parseImport,
   parsePages,
@@ -261,4 +263,23 @@ test("an OCR-read label with no other issue is ready without a check or a note",
   let s = run(createDraft(), "import-save", { batch: b });
   s = run(s, "import-release", { id: b.id });
   assert.ok(s.orders.some((o) => o.awb === "NVMYTEST000001"));
+});
+test("upload limits: 300 labels and 600 pages per upload, enforced by the validator", () => {
+  assert.equal(importLimit, 300);
+  assert.equal(pageLimit, 600);
+  const big = batch(
+    Array.from({ length: importLimit + 1 }, (_, i) =>
+      page(ninja(`NVMYBIG${String(i).padStart(7, "0")}`, `BIG-${i}`), i + 1),
+    ),
+  );
+  big.files = [{ ...file, pages: importLimit + 1 }];
+  assert.equal(big.rows.length, importLimit + 1);
+  assert.throws(() => validateImport(big), /Use up to 10 PDFs and 300 labels/);
+  big.rows.pop();
+  validateImport(big);
+  const wide = batch([page(ninja())]);
+  wide.files = [{ ...file, pages: pageLimit + 1 }];
+  assert.throws(() => validateImport(wide), /Invalid source file/);
+  wide.files = [{ ...file, pages: pageLimit }];
+  validateImport(wide);
 });

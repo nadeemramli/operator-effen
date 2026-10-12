@@ -27,6 +27,7 @@ const section = (table, source = sql) => {
 const later = [
   "20261009090002_operator_stock_returns",
   "20261009090003_operator_trip_dropoffs",
+  "20261011090000_operator_remove_awbs",
 ].map(migration);
 const merged = (table) =>
   section(table) +
@@ -153,6 +154,8 @@ test("every operational command stays inside its database scope", () => {
   }
   run("outbound", "correct", { id: o, field: "actual", qty: 1, reason: "Recount" });
   run("outbound", "dispatch", { id: o, reference: "M-1", pic: "D" });
+  run("admin", "order", { awb: "COV-AWB-3", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });
+  run("outbound", "remove-order", { id: s.orders[0].id, reason: "Cancelled by the customer" });
   run("management", "review", { text: "Check" });
   run("packer", "feedback", { text: "Note" });
   run("production", "close", { date: "2026-10-01", note: "Done" });
@@ -172,6 +175,7 @@ test("every operational command stays inside its database scope", () => {
   const untested = Object.keys(commandRules).filter((c) => !seen.has(c));
   assert.deepEqual(untested.sort(), [
     "assign-package",
+    "import-delete",
     "import-receive",
     "import-release",
     "import-save",

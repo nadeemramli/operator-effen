@@ -22,6 +22,7 @@ import {
   packageGroups,
   singleProductOrder,
   orderIssued,
+  orderHasActivity,
   orderLines,
   orderReady,
   packerProfiles,
@@ -1016,6 +1017,31 @@ export function OrderWorkspace({
                         ) : (
                           <Status order={o} lang={lang} />
                         )}{" "}
+                        {(role === "admin" || supervisor) &&
+                          !orderHasActivity(state, o) && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={busy}
+                              onClick={() =>
+                                show({
+                                  type: "remove-order",
+                                  title: t("Remove AWB", "Buang AWB"),
+                                  description:
+                                    `${o.awb} · ${o.package} · ` +
+                                    t(
+                                      "Nothing has been issued, packed or handed over for this AWB. It is taken off the list and its PDF label is marked excluded; the audit log keeps the reason.",
+                                      "Tiada stok dikeluarkan, dibungkus atau diserahkan untuk AWB ini. Ia dibuang dari senarai dan label PDF-nya ditanda dikecualikan; log audit menyimpan sebab.",
+                                    ),
+                                  hidden: { id: o.id },
+                                  fields: [{ ...reason, required: true }],
+                                  submit: t("Remove AWB", "Buang AWB"),
+                                })
+                              }
+                            >
+                              {t("Remove", "Buang")}
+                            </Button>
+                          )}
                         {supervisor && orderReady(o) && (
                           <Button
                             size="sm"

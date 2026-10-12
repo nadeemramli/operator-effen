@@ -2,7 +2,10 @@ import type { Draft, Order } from "./draft";
 
 export const channels = ["Luxana", "Shopee", "TikTok", "Lazada"];
 export const couriers = ["Ninja Van", "SPX", "J&T", "LEX", "Other"];
-export const importLimit = 200;
+/** Label records one upload may hold (released AWBs are counted in the workspace ceiling). */
+export const importLimit = 300;
+/** PDF pages one upload may hold across its files, read in the browser before review. */
+export const pageLimit = 600;
 export type PackageDefault = {
   sku: string;
   product: string;
@@ -546,7 +549,7 @@ export function validateImport(value: unknown): AwbImport {
     !Array.isArray(b.rows) ||
     b.rows.length > importLimit
   )
-    throw new Error("Use up to 10 PDFs and 200 labels per batch.");
+    throw new Error(`Use up to 10 PDFs and ${importLimit} labels per batch.`);
   if (
     new Set(b.files.map((f) => f.id)).size !== b.files.length ||
     new Set(b.rows.map((r) => r.id)).size !== b.rows.length
@@ -558,12 +561,12 @@ export function validateImport(value: unknown): AwbImport {
       !text(f.name) ||
       !text(f.path, 200) ||
       !whole(f.pages) ||
-      f.pages > 200 ||
+      f.pages > pageLimit ||
       !whole(f.size) ||
       f.size > 20 * 1024 * 1024 ||
       (f.skippedPages !== undefined &&
         (!Array.isArray(f.skippedPages) ||
-          f.skippedPages.length > 200 ||
+          f.skippedPages.length > pageLimit ||
           f.skippedPages.some((n) => !whole(n) || n > f.pages)))
     )
       throw new Error("Invalid source file.");

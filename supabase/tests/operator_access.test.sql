@@ -870,4 +870,63 @@ do $$ begin
     raise exception 'FAIL: expected two drop-offs on the trip'; end if;
 end $$;
 
+-- 12. Removing AWBs and uploads (20261011090000). Admin or the stock-out SV removes an
+--     order under the remove-order rule; only admin deletes an upload (import-delete).
+--     Whatever the signature says, a removal can never take recorded stock issues or audit
+--     entries along, and stays inside its state scope.
+\set ADM '''00000000-0000-4000-8000-000000000007'''
+create function pg_temp.ord(p_id text, p_import text default null) returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'awb', 'NVMY' || p_id, 'channel', 'Luxana', 'product', 'cav',
+    'package', 'P', 'expected', 4, 'originalExpected', 4, 'actual', null, 'packer', '', 'labelPic', '',
+    'printed', false, 'dispatched', false, 'handoverRef', '', 'date', '2026-10-06', 'note', '',
+    'reviewState', 'confirmed')
+    || case when p_import is null then '{}'::jsonb else jsonb_build_object('importId', p_import) end $$;
+create function pg_temp.orders(p jsonb) returns jsonb language sql as $$ select jsonb_set(pg_temp.state(), '{orders}', p) $$;
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-save',
+  jsonb_set(pg_temp.state(), '{awbImports}', '[{"id":"imp1","name":"Synthetic upload","date":"2026-10-06","files":[],"rows":[],"createdAt":"t","updatedAt":"t"}]')),
+  'ok', 'admin saves an upload');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-release',
+  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1')))),
+  'ok', 'admin releases two AWBs from the upload');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'order',
+  pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o3')))),
+  'ok', 'admin enters a manual AWB');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'remove-order',
+  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1')))),
+  '42501', 'production SV removes an AWB');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000004', :A, 'remove-order',
+  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1')))),
+  '42501', 'management removes an AWB');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'remove-order',
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1'))),
+    '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(pg_temp.ev('e-rm3', '00000000-0000-4000-8000-000000000007')))),
+  'ok', 'admin removes the manual AWB with an audit entry');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{batches,0,code}', '"X"')),
+  '42501', 'remove-order used to edit batches');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{events}', '[]')),
+  '23514', 'remove-order dropping audit entries');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
+  jsonb_set(pg_temp.state(), '{issues}', (pg_temp.state() -> 'issues')
+    || '[{"id":"i-o2","cartonId":"c1","orderId":"o2","qty":1,"pic":"SO","at":"t"}]')),
+  'ok', 'stock issued to the second AWB');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'))), '{issues}',
+    (select coalesce(jsonb_agg(i), '[]') from jsonb_array_elements(pg_temp.state() -> 'issues') i where i ->> 'orderId' <> 'o2'))),
+  '42501', 'remove-order taking the stock issue with it (issues are outside its scope)');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'import-delete',
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{awbImports}', '[]')),
+  '42501', 'stock-out SV deletes an upload');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-delete',
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{awbImports}', '[]')),
+  'ok', 'admin deletes the upload and its untouched AWB');
+do $$ begin
+  if (select jsonb_array_length(state -> 'awbImports') from public.operator_workspaces where site_id = 'site-a') <> 0
+    or (select state -> 'orders' from public.operator_workspaces where site_id = 'site-a') <> jsonb_build_array(pg_temp.ord('o2', 'imp1'))
+    or not exists (select 1 from public.operator_workspaces w, jsonb_array_elements(w.state -> 'issues') i
+      where w.site_id = 'site-a' and i ->> 'id' = 'i-o2') then
+    raise exception 'FAIL: expected the upload gone, only the issued AWB left and its stock issue kept'; end if;
+end $$;
+
 select 'operator access tests passed' as result;

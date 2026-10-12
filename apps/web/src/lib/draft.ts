@@ -655,6 +655,15 @@ export const variance = (o: Order) => {
 export const singleProductOrder = (o: Order) =>
   new Set(orderLines(o).map((l) => l.product)).size === 1;
 export const orderReady = (o: Order) => o.reviewState !== "pending";
+/**
+ * Stock, packing or handover has been recorded against this AWB. Such records stay for
+ * traceability: the AWB can no longer be removed, only corrected by a supervisor.
+ */
+export const orderHasActivity = (s: Pick<Draft, "issues">, o: Order) =>
+  o.actual !== null ||
+  o.dispatched ||
+  !!o.packedAt ||
+  s.issues.some((i) => i.orderId === o.id);
 export const dailyOrders = (s: Draft, date: string) =>
   s.orders.filter((o) => o.date === date && orderReady(o));
 export function packageGroups(orders: Order[]) {
@@ -2040,6 +2049,70 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       log(o.id, "Order reviewed", o.awb + " · " + o.reviewedBy);
       break;
     }
+    case "remove-order": {
+      // Takes a mistaken or cancelled AWB out of the list. Only while nothing has moved
+      // for it; the audit entry keeps what was removed and why.
+      allow("admin", "outbound");
+      const o = find(s.orders),
+        reason = str("reason");
+      if (orderHasActivity(s, o))
+        throw new Error(
+          "This AWB has stock, packing or handover records. It stays for traceability; ask the stock-out supervisor for a correction instead.",
+        );
+      s.orders.splice(s.orders.indexOf(o), 1);
+      // The PDF label it came from is marked excluded, so the same upload no longer counts
+      // it and a later upload of the same label is not treated as a duplicate.
+      const batch = o.importId
+        ? s.awbImports?.find((b) => b.id === o.importId)
+        : undefined;
+      const row = batch?.rows.find((r) => r.id === o.importRowId);
+      if (batch && row) {
+        delete row.releasedOrderId;
+        row.excluded = true;
+        row.reviewed = true;
+        row.reviewNote = (row.reviewNote ? row.reviewNote + " · " : "") + "Removed: " + reason;
+        batch.updatedAt = at;
+      }
+      log(
+        o.id,
+        "AWB removed",
+        `${o.awb} · ${o.package} · ${o.expected}` +
+          (batch ? ` · from ${batch.name}` : "") +
+          (o.assignedPacker
+            ? ` · was assigned to ${staffName(s, o.assignedPacker)}`
+            : "") +
+          ` · ${reason}`,
+      );
+      break;
+    }
+    case "import-delete": {
+      // Removes a whole PDF upload and every AWB it released, as long as none of them
+      // has stock, packing or handover records. The source PDFs stay in storage.
+      allow("admin");
+      const batch = find(s.awbImports ?? []),
+        reason = str("reason");
+      const released = s.orders.filter((o) => o.importId === batch.id);
+      const blocked = released.filter((o) => orderHasActivity(s, o));
+      if (blocked.length)
+        throw new Error(
+          `${blocked.length} of the ${released.length} AWBs in this upload already have stock, packing or handover records (${blocked
+            .slice(0, 5)
+            .map((o) => o.awb)
+            .join(", ")}${blocked.length > 5 ? ", …" : ""}). They stay for traceability; remove the other AWBs one by one if needed.`,
+        );
+      s.orders = s.orders.filter((o) => o.importId !== batch.id);
+      s.awbImports = s.awbImports!.filter((b) => b.id !== batch.id);
+      log(
+        batch.id,
+        "Upload batch deleted",
+        `${batch.name} · ${batch.files.length} PDF · ${batch.rows.length} labels · ${released.length} AWBs removed` +
+          (released.length
+            ? ": " + released.map((o) => o.awb).join(", ")
+            : "") +
+          ` · ${reason}`,
+      );
+      break;
+    }
     case "sort-count": {
       allow("outbound");
       const date = str("date"),
@@ -2837,9 +2910,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       e.recorder = recorder;
       e.actor = recorderLabel(recorder);
     }
+  // Ceilings sized to the 2 MB workspace document (about 2 KB per imported AWB with its
+  // label record and audit entries). Raised 2026-10-12 with the 300-label upload limit.
   if (
-    s.events.length > 1500 ||
-    s.orders.length > 500 ||
+    s.events.length > 3000 ||
+    s.orders.length > 1000 ||
     s.batches.length > 200 ||
     s.cartons.length > 500 ||
     (s.adypocideReceipts?.length ?? 0) > 500 ||

@@ -6,6 +6,8 @@ Operator EFFEN is an authenticated operations test workspace. The workflow previ
 
 The [production readiness plan](docs/production-readiness-plan.md) and [execution backlog / continuation guide](docs/production-readiness-backlog.md) cover speed, concurrent staff, transactional inventory, security, uptime, recovery and three-hour offline operation. Track implementation in [epic #7](https://github.com/nadeemramli/operator-effen/issues/7) and its seven workstream issues.
 
+The [order volume plan](docs/order-volume-plan-2026-10.md) (2026-10-12) proposes moving uploads, orders, stock issues and audit entries out of the per-site workspace document into tables, in four work packages, so that days of 2,000 AWBs and PDFs of 1,000 labels can be handled. It lists the owner decisions it waits on.
+
 Confirmed sizing: 7–10 packers on phones, up to 2 production users and 2 supervisors on laptops (11–14 concurrent users). Architecture and release targets are proposals; publishing this plan does not establish live factory readiness. See the dated baseline and decision register before continuing on another computer.
 
 ## Floor improvements (October 2026)
@@ -65,6 +67,10 @@ The new Operator Supabase project is the development backend during the foundati
 Vercel's **Development** and **Preview** environments receive the public Supabase URL and publishable key. Production database variables are deliberately unset. Establish database separation before introducing live operational data.
 
 The committed `supabase/config.toml` is generated local CLI configuration, with seeding disabled until reviewed seed data exists. It has not been pushed to the hosted project's service settings. Do not run a database reset or configuration push against a hosted project as a setup shortcut.
+
+### Clearing keyed-in records
+
+`supabase/maintenance/purge-operational-data.sql` empties every site workspace (batches, cartons, AWBs and imports, trips, counts, receipts, events, closed days) and its commit log while keeping user accounts, memberships, roles, staff PINs, and the staff profile and machine configuration. Run it in the hosted project's SQL editor after confirming the selected project; it cannot be undone without a backup. Uploaded PDFs and trip photos stay in their storage buckets until those are emptied from the dashboard. The preview sandbox rows are a separate, commented-out step.
 
 ## Hosting
 
@@ -140,6 +146,16 @@ are never converted into box inventory. Previously counted boxes remain stock.
   manually enter an AWB, including keyboard-style barcode input, without a PDF.
   Manual entries must be reviewed before joining demand; pending records can be edited.
   Scanning a barcode supplies only the reference, not the parcel contents.
+  Since 11 October 2026 a mistaken AWB can be removed (admin or stock-out, with a reason)
+  while nothing has been issued, packed or handed over for it; its PDF label is marked
+  excluded so a later upload of the same label is not a duplicate. Admin can delete a whole
+  PDF upload the same way, which removes every AWB it released, as long as none of them
+  has stock, packing or handover records. The audit log lists what was removed and why;
+  source PDFs stay in storage.
+  One upload takes up to 10 PDFs, 600 pages and 300 labels (raised from 200 pages and 200
+  labels on 12 October 2026); oversized uploads are refused before any page is read, and a
+  day's labels can go in as several uploads. A site workspace holds up to 1,000 AWBs and
+  3,000 audit entries within its 2 MB document.
   Since 9 October 2026 PDF intake reads text first and runs OCR automatically on any page
   whose text has no AWB and no order reference ("Force OCR on every page" remains as a slow,
   unticked fallback). Pages with no tracking number, order reference or known SKU (cover,
