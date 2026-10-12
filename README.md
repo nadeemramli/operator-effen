@@ -70,7 +70,7 @@ The committed `supabase/config.toml` is generated local CLI configuration, with 
 
 ### Clearing keyed-in records
 
-`supabase/maintenance/purge-operational-data.sql` empties every site workspace (batches, cartons, AWBs and imports, trips, counts, receipts, closed days), the site audit log (`operator_events`) and the commit log while keeping user accounts, memberships, roles, staff PINs, and the staff profile and machine configuration. Run it in the hosted project's SQL editor after confirming the selected project; it cannot be undone without a backup. Uploaded PDFs and trip photos stay in their storage buckets until those are emptied from the dashboard. The preview sandbox rows are a separate, commented-out step.
+`supabase/maintenance/purge-operational-data.sql` empties every site workspace (batches, cartons, AWBs and imports, trips, counts, receipts, closed days), the site audit log (`operator_events`), the order record tables (`operator_orders`, `operator_issues`, `operator_carton_issued`, `operator_sort_counts`, `operator_order_departures`) and the commit log while keeping user accounts, memberships, roles, staff PINs, and the staff profile and machine configuration. Run it in the hosted project's SQL editor after confirming the selected project; it cannot be undone without a backup. Uploaded PDFs and trip photos stay in their storage buckets until those are emptied from the dashboard. The preview sandbox rows are a separate, commented-out step.
 
 ## Hosting
 

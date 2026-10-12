@@ -1335,4 +1335,818 @@ do $$ begin
     raise exception 'FAIL: the document''s entry was not handed over before the review entry'; end if;
 end $$;
 
+-- 15. Orders, stock issues and sort counts as table rows (20261014090000). Site C is seeded
+--     in the document shape, moved to tables with move_orders_to_tables, then every order
+--     command family goes through operator_commit_records with a change set signed like the
+--     API server signs it ('operator-records-v1'). Section 16 moves it back and forth.
+\set C '''10000000-0000-4000-8000-0000000000c2'''
+\set D '''2026-10-20'''
+\set ALI '''20000000-0000-4000-8000-0000000000a1'''
+\set BEA '''20000000-0000-4000-8000-0000000000a2'''
+\set O1 '''40000000-0000-4000-8000-0000000000d1'''
+\set O2 '''40000000-0000-4000-8000-0000000000d2'''
+\set O3 '''40000000-0000-4000-8000-0000000000d3'''
+\set O4 '''40000000-0000-4000-8000-0000000000d4'''
+\set O5 '''40000000-0000-4000-8000-0000000000d5'''
+\set O6 '''40000000-0000-4000-8000-0000000000d6'''
+\set O7 '''40000000-0000-4000-8000-0000000000d7'''
+\set O8 '''40000000-0000-4000-8000-0000000000d8'''
+\set OA '''40000000-0000-4000-8000-0000000000da'''
+\set OB '''40000000-0000-4000-8000-0000000000db'''
+\set UC '''30000000-0000-4000-8000-0000000000c1'''
+\set RC1 '''31000000-0000-4000-8000-0000000000c1'''
+\set RC2 '''31000000-0000-4000-8000-0000000000c2'''
+\set DRV '''00000000-0000-4000-8000-000000000012'''
+\set HR '''00000000-0000-4000-8000-000000000008'''
+insert into public.operator_workspaces (id, site_id, name, state) values (:C, 'site-c', 'Synthetic site C', $${
+  "version":1,
+  "batches":[{"id":"b-c","code":"SYN-C-CAV","product":"cav","date":"2026-10-01","target":15,"actual":15,"sent":15,
+    "transferredAt":"2026-10-01T05:00:00Z","transferPic":"F","steps":[]},
+    {"id":"b-c2","code":"SYN-C-LIP","product":"lip","date":"2026-10-01","target":4,"actual":4,"sent":4,
+    "transferredAt":"2026-10-01T05:00:00Z","transferPic":"F","steps":[]}],
+  "cartons":[
+    {"id":"c-cav1","ref":"SYN-C-CAV","batchId":"b-c","product":"cav","unit":"bottle","qty":10,"rack":"A","pic":"R","at":"2026-10-02T01:00:00.000Z"},
+    {"id":"c-cav2","ref":"SYN-C-CAV","batchId":"b-c","product":"cav","unit":"bottle","qty":5,"rack":"A","pic":"R","at":"2026-10-02T01:00:00.000Z"},
+    {"id":"c-lip","ref":"SYN-C-LIP","batchId":"b-c2","product":"lip","unit":"bottle","qty":4,"rack":"B","pic":"R","at":"2026-10-02T01:00:00.000Z"}],
+  "orders":[
+    {"id":"40000000-0000-4000-8000-0000000000d3","awb":"NVMYC3","channel":"Luxana","product":"cav","package":"Mixed",
+     "expected":3,"originalExpected":3,"actual":null,"packer":"","labelPic":"","printed":false,"dispatched":false,
+     "handoverRef":"","date":"2026-10-20","note":"","reviewState":"pending",
+     "lines":[{"product":"cav","expected":2,"originalExpected":2,"actual":null},{"product":"lip","expected":1,"originalExpected":1,"actual":null}]},
+    {"id":"40000000-0000-4000-8000-0000000000d2","awb":"NVMYC2","channel":"Shopee","product":"cav","package":"P2",
+     "expected":2,"originalExpected":2,"actual":null,"packer":"","labelPic":"","printed":false,"dispatched":false,
+     "handoverRef":"","date":"2026-10-20","note":"","reviewState":"confirmed"},
+    {"id":"40000000-0000-4000-8000-0000000000d1","awb":"NVMYC1","channel":"TikTok","product":"cav","package":"P4",
+     "expected":4,"originalExpected":4,"actual":null,"packer":"","labelPic":"","printed":false,"dispatched":false,
+     "handoverRef":"","date":"2026-10-20","note":"","reviewState":"confirmed",
+     "assignedPacker":"20000000-0000-4000-8000-0000000000a1","assignedAt":"2026-10-20T01:00:00.000Z"}],
+  "issues":[
+    {"id":"50000000-0000-4000-8000-0000000000e2","cartonId":"c-cav1","orderId":"40000000-0000-4000-8000-0000000000d2","qty":2,"pic":"SO","at":"2026-10-20T02:00:00.000Z"},
+    {"id":"50000000-0000-4000-8000-0000000000e1","cartonId":"c-cav1","orderId":"40000000-0000-4000-8000-0000000000d1","qty":3,"pic":"SO","at":"2026-10-20T01:30:00.000Z"}],
+  "sortCounts":[{"id":"60000000-0000-4000-8000-0000000000f1","date":"2026-10-20","product":"cav","expected":6,"counted":6,
+    "fingerprint":"[]","pic":"SO","note":"","at":"2026-10-20T01:10:00.000Z"}],
+  "boxing":[],"counts":[],"adjustments":[],"events":[],"notes":[],"closedDays":[],
+  "staffProfiles":[
+    {"id":"20000000-0000-4000-8000-0000000000a1","name":"Synthetic Ali C","role":"packer","active":true},
+    {"id":"20000000-0000-4000-8000-0000000000a2","name":"Synthetic Bea C","role":"packer","active":true}]}$$::jsonb);
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values
+  (:C, '00000000-0000-4000-8000-000000000001', 'production', 'SV C', 'site'),
+  (:C, '00000000-0000-4000-8000-000000000002', 'packer', 'Packer C', 'site'),
+  (:C, '00000000-0000-4000-8000-000000000006', 'intake', 'SI C', 'site'),
+  (:C, '00000000-0000-4000-8000-000000000009', 'outbound', 'SO C', 'site'),
+  (:C, '00000000-0000-4000-8000-000000000012', 'driver', 'Driver C', 'site');
+
+-- Signs like the API server (operator-records-v1) and calls the RPC as p_uid. p_sent sends a
+-- different text than the one signed; p_packer is the sealed packer session (signed too).
+create function pg_temp.records_as(
+  p_uid uuid, p_ws uuid, p_command text, p_changes jsonb, p_op uuid default gen_random_uuid(),
+  p_sign boolean default true, p_signer uuid default null, p_packer text default null,
+  p_fingerprint text default null, p_sent text default null
+) returns jsonb language plpgsql as $$
+declare
+  v_text text := p_changes::text;
+  v_fp text := coalesce(p_fingerprint, encode(extensions.digest(p_command || v_text, 'sha256'), 'hex'));
+  v_sig text;
+  v_out jsonb;
+  v_detail text;
+begin
+  v_sig := case when p_sign then encode(extensions.hmac(convert_to(concat_ws(E'\n', 'operator-records-v1',
+    p_ws::text, coalesce(p_signer, p_uid)::text, p_op::text, p_command, v_fp,
+    encode(extensions.digest(convert_to(v_text, 'UTF8'), 'sha256'), 'hex'),
+    encode(extensions.digest(convert_to(coalesce(p_packer, ''), 'UTF8'), 'sha256'), 'hex')), 'UTF8'),
+    (select secret from operator_private.server_keys where id = 'commit'), 'sha256'), 'hex')
+    else repeat('0', 64) end;
+  perform set_config('request.jwt.claim.sub', coalesce(p_uid::text, ''), true);
+  execute 'set local role ' || case when p_uid is null then 'anon' else 'authenticated' end;
+  begin
+    v_out := public.operator_commit_records(p_ws, p_command, p_op, v_fp, coalesce(p_sent, v_text), v_sig, p_packer);
+    v_out := jsonb_build_object('ok', true) || v_out;
+  exception when others then
+    get stacked diagnostics v_detail = pg_exception_detail;
+    v_out := jsonb_build_object('ok', false, 'code', sqlstate, 'message', sqlerrm, 'detail', v_detail);
+  end;
+  execute 'reset role';
+  return v_out;
+end $$;
+-- Current row version of an AWB, and change-set builders.
+create function pg_temp.ver(p_id uuid) returns integer language sql as $$
+  select version from public.operator_orders where id = p_id $$;
+create function pg_temp.upd(p_id uuid, p_set jsonb, p_version integer default null) returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'version', coalesce(p_version, pg_temp.ver(p_id)), 'set', p_set) $$;
+create function pg_temp.new_order(p_id uuid, p_awb text, p_extra jsonb default '{}') returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'awb', p_awb, 'channel', 'Luxana', 'product', 'cav', 'package', 'P1',
+    'expected', 1, 'original_expected', 1, 'actual', null, 'fulfil_date', '2026-10-20',
+    'review_state', 'pending', 'note', '') || p_extra $$;
+create function pg_temp.chg(p_insert jsonb default null, p_update jsonb default null, p_delete jsonb default null,
+  p_issues jsonb default null, p_counts jsonb default null, p_effects jsonb default null, p_events jsonb default null)
+returns jsonb language sql as $$
+  select (select coalesce(jsonb_object_agg(k, v), '{}'::jsonb) from (values
+      ('orders', (select jsonb_object_agg(k2, v2) from (values ('insert', p_insert), ('update', p_update),
+        ('delete', p_delete)) y(k2, v2) where v2 is not null)),
+      ('issues', p_issues), ('sortCounts', p_counts), ('importEffects', p_effects), ('events', p_events)) x(k, v)
+    where v is not null) $$;
+-- A sealed packer session (apps/web/src/lib/packer-session.ts) and reads with its header.
+create function pg_temp.seal(p_ws uuid, p_uid uuid, p_profile text, p_exp_ms numeric default null, p_bad boolean default false)
+returns text language sql as $$
+  select b || '.' || case when p_bad then repeat('0', 64) else encode(extensions.hmac(convert_to(b, 'UTF8'),
+    extensions.hmac(convert_to('operator-packer-session-v1', 'UTF8'),
+      (select secret from operator_private.server_keys where id = 'commit'), 'sha256'), 'sha256'), 'hex') end
+  from (select concat_ws('.', 'v1', p_ws::text, p_uid::text, p_profile,
+    coalesce(p_exp_ms, trunc(extract(epoch from now()) * 1000) + 300000)::bigint::text) as b) x $$;
+create function pg_temp.read_as(p_uid uuid, p_seal text, p_sql text) returns jsonb language plpgsql as $$
+declare v jsonb;
+begin
+  perform set_config('request.jwt.claim.sub', coalesce(p_uid::text, ''), true);
+  perform set_config('request.headers', case when p_seal is null then '{}'
+    else jsonb_build_object('x-operator-packer', p_seal)::text end, true);
+  execute 'set local role ' || case when p_uid is null then 'anon' else 'authenticated' end;
+  begin
+    execute p_sql into v;
+    v := jsonb_build_object('ok', true, 'result', v);
+  exception when others then
+    v := jsonb_build_object('ok', false, 'code', sqlstate, 'message', sqlerrm);
+  end;
+  execute 'reset role';
+  perform set_config('request.headers', '', true);
+  return v;
+end $$;
+create function pg_temp.expect_result(p_result jsonb, p_expected jsonb, p_label text) returns void language plpgsql as $$
+begin
+  if (p_result ->> 'ok')::boolean is not true or p_result -> 'result' is distinct from p_expected then
+    raise exception 'FAIL: % expected %, got %', p_label, p_expected, p_result; end if;
+end $$;
+-- Conservation after each step: totals equal the issue rows, no balance below zero.
+create function pg_temp.assert_conservation(p_ws uuid) returns void language plpgsql as $$
+begin
+  if exists (select 1 from public.operator_carton_issued t where t.workspace_id = p_ws
+      and t.issued <> (select coalesce(sum(i.qty), 0) from public.operator_issues i
+        where i.workspace_id = p_ws and i.carton_id = t.carton_id))
+    or exists (select 1 from public.operator_issues i where i.workspace_id = p_ws and not exists (
+      select 1 from public.operator_carton_issued t where t.workspace_id = p_ws and t.carton_id = i.carton_id))
+    or exists (select 1 from jsonb_each(operator_private.table_balances(p_ws)) b where b.value::numeric < 0) then
+    raise exception 'FAIL: conservation at %: totals %, balances %', p_ws,
+      (select jsonb_object_agg(carton_id, issued) from public.operator_carton_issued where workspace_id = p_ws),
+      operator_private.table_balances(p_ws);
+  end if;
+end $$;
+-- A move that must be refused, naming p_expect; the patch and the move roll back together.
+create function pg_temp.move_refused(p_ws uuid, p_patch jsonb, p_expect text) returns void language plpgsql as $$
+begin
+  begin
+    update public.operator_workspaces set state = state || p_patch where id = p_ws;
+    perform operator_private.move_orders_to_tables(p_ws);
+    raise exception 'MOVED';
+  exception when others then
+    if sqlerrm = 'MOVED' then raise exception 'FAIL: move accepted (%)', p_expect; end if;
+    if sqlstate <> '23514' or strpos(sqlerrm, p_expect) = 0 then
+      raise exception 'FAIL: move refusal (%) got % %', p_expect, sqlstate, sqlerrm; end if;
+  end;
+end $$;
+
+-- 15a. Additive: every site starts in document mode; records commits are refused there.
+do $$ begin
+  if exists (select 1 from public.operator_workspaces where order_store <> 'document') then
+    raise exception 'FAIL: a site left document mode on its own'; end if;
+  if (select count(*) from public.operator_record_rules) <> 19 then
+    raise exception 'FAIL: expected 19 record rules'; end if;
+end $$;
+select pg_temp.expect(pg_temp.records_as(:SO, :A, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYA8')))), 'PT428', 'records commit at a document-mode site');
+
+-- 15b. The backfill validates the document and names what it cannot move.
+select pg_temp.move_refused(:C, jsonb_build_object('orders', (pg_temp.state(:C) -> 'orders') || jsonb_build_array(
+  pg_temp.ord('o-legacy') || '{"awb": "NVMYX1"}')), 'AWB NVMYX1: identifier is not a UUID');
+select pg_temp.move_refused(:C, jsonb_build_object('orders', (pg_temp.state(:C) -> 'orders') || jsonb_build_array(
+  pg_temp.ord('40000000-0000-4000-8000-0000000000e9') || '{"awb": "nvmy c1", "date": "2026-10-20"}')),
+  'recorded more than once for 2026-10-20');
+select pg_temp.move_refused(:C, jsonb_build_object('orders', (pg_temp.state(:C) -> 'orders') || jsonb_build_array(
+  pg_temp.ord('40000000-0000-4000-8000-0000000000e9') || '{"awb": "NVMYX2", "date": "20/10/2026"}')),
+  'AWB NVMYX2: fulfilment date is not YYYY-MM-DD');
+select pg_temp.move_refused(:C, jsonb_build_object('orders', (pg_temp.state(:C) -> 'orders') || jsonb_build_array(
+  pg_temp.ord('40000000-0000-4000-8000-0000000000e9') || '{"awb": "NVMYX3", "expected": 2,
+    "lines": [{"product": "cav", "expected": 1, "originalExpected": 1, "actual": null}]}')),
+  'AWB NVMYX3: product lines do not match the AWB totals');
+select pg_temp.move_refused(:C, jsonb_build_object('issues', (pg_temp.state(:C) -> 'issues') || jsonb_build_array(
+  jsonb_build_object('id', '50000000-0000-4000-8000-0000000000e9', 'cartonId', 'no-such-carton',
+    'orderId', :O1, 'qty', 1, 'pic', 'SO', 'at', 't'))), 'its carton does not exist');
+select pg_temp.move_refused(:C, jsonb_build_object('orders', (pg_temp.state(:C) -> 'orders') || jsonb_build_array(
+  pg_temp.ord('40000000-0000-4000-8000-0000000000e9') || '{"awb": "NVMYC1", "date": "2026-11-01"}')),
+  'AWB recorded again within 30 days of its handover: NVMYC1');
+do $$ begin
+  if (select order_store || ':' || revision || ':' || jsonb_array_length(state -> 'orders') from public.operator_workspaces
+      where site_id = 'site-c') <> 'document:0:3' or exists (select 1 from public.operator_orders) then
+    raise exception 'FAIL: a refused move changed something'; end if;
+end $$;
+begin;
+select pg_temp.as_user(:SO);
+select pg_temp.expect_denied(format('select operator_private.move_orders_to_tables(%s)', :'C'), 'stock-out moves a site');
+rollback;
+
+-- 15c. The move: rows, totals, balances; the document loses its order keys; repeated, no-op.
+do $$
+declare r jsonb := operator_private.move_orders_to_tables('10000000-0000-4000-8000-0000000000c2');
+begin
+  if r <> '{"moved": true, "orders": 3, "issues": 2, "cartons": 1, "sortCounts": 1}' then
+    raise exception 'FAIL: move result %', r; end if;
+  if (select order_store || ':' || revision || ':' || (state ?| array['orders', 'issues', 'sortCounts'])
+      from public.operator_workspaces where site_id = 'site-c') <> 'tables:1:false' then
+    raise exception 'FAIL: the site did not switch to tables'; end if;
+  if (select issued from public.operator_carton_issued where carton_id = 'c-cav1') <> 5
+    or operator_private.table_balances('10000000-0000-4000-8000-0000000000c2') <> '{"c-cav1": 5, "c-cav2": 5, "c-lip": 4}'
+    or (select string_agg(awb || '/' || array_to_string(products, '+') || '/' || legacy || '/' || version, ',' order by awb)
+      from public.operator_orders) <> 'NVMYC1/cav/true/1,NVMYC2/cav/true/1,NVMYC3/cav+lip/true/1'
+    or (select demand_hash from public.operator_sort_counts) <> repeat('0', 64) then
+    raise exception 'FAIL: backfilled rows'; end if;
+  if operator_private.move_orders_to_tables('10000000-0000-4000-8000-0000000000c2') <> '{"moved": false, "orderStore": "tables"}' then
+    raise exception 'FAIL: a second move was not a no-op'; end if;
+end $$;
+select pg_temp.assert_conservation(:C);
+
+-- 15d. order: one new pending AWB, attributed, version 1; duplicates and malformed rows refused.
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O4, 'NVMYC4', '{"version": 9, "created_by": "00000000-0000-4000-8000-000000000001"}')),
+  p_events => jsonb_build_array(pg_temp.ev('c-o4', :SO, :O4)))), 'ok', 'stock-out records an AWB');
+do $$ begin
+  if (select version || ':' || created_by || ':' || review_state from public.operator_orders
+      where id = '40000000-0000-4000-8000-0000000000d4')
+    <> '1:00000000-0000-4000-8000-000000000009:pending' then
+    raise exception 'FAIL: the new AWB was not stamped by the database'; end if;
+end $$;
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYC4')), p_events => jsonb_build_array(pg_temp.ev('c-o8a', :SO, :O8)))),
+  '23505', 'same AWB on the same day');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYC4', '{"fulfil_date": "2026-11-05"}')), p_events => jsonb_build_array(pg_temp.ev('c-o8b', :SO, :O8)))),
+  '23505', 'same AWB on another day while the first is not handed over');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'nvmyc8')), p_events => jsonb_build_array(pg_temp.ev('c-o8c', :SO, :O8)))),
+  '23514', 'AWB not normalized');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYC8')))), '23514', 'AWB without its audit entry');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYC8', '{"review_state": "confirmed"}')), p_events => jsonb_build_array(pg_temp.ev('c-o8d', :SO, :O8)))),
+  '23514', 'a new AWB that skips review');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYC8', '{"fulfil_date": "2026-10-20T05:00"}')), p_events => jsonb_build_array(pg_temp.ev('c-o8e', :SO, :O8)))),
+  '22023', 'fulfilment date with a time');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYC8', '{"approved": true}')), p_events => jsonb_build_array(pg_temp.ev('c-o8f', :SO, :O8)))),
+  '22023', 'unknown column');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', '{"orders": {"insert": "x"}}'), '22023', 'malformed change set');
+
+-- 15e. Signature, capability and scope refusals change nothing.
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYC8')), p_events => jsonb_build_array(pg_temp.ev('c-o8g', :SO, :O8))), p_sign => false),
+  '42501', 'unsigned change set');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYC8')), p_events => jsonb_build_array(pg_temp.ev('c-o8h', :SO, :O8))),
+  p_signer => '00000000-0000-4000-8000-000000000007'), '42501', 'signature issued for another user');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYC8')), p_events => jsonb_build_array(pg_temp.ev('c-o8i', :SO, :O8))),
+  p_sent => pg_temp.chg(p_insert => jsonb_build_array(pg_temp.new_order(:O8, 'NVMYC9')),
+    p_events => jsonb_build_array(pg_temp.ev('c-o8i', :SO, :O8)))::text), '42501', 'forged: text differs from what was signed');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'reset', '{}'), '42501', 'unknown command');
+select pg_temp.expect(pg_temp.records_as('00000000-0000-4000-8000-000000000011', :C, 'order', '{}'), '42501', 'outsider');
+select pg_temp.expect(pg_temp.records_as(null, :C, 'order', '{}'), '42501', 'anonymous');
+do $$
+declare
+  cmd text;
+  caller uuid;
+  r jsonb;
+begin
+  -- Production, management, stock-in, drivers and HR hold no order capability at site C.
+  foreach caller in array array['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000004',
+    '00000000-0000-4000-8000-000000000006', '00000000-0000-4000-8000-000000000012',
+    '00000000-0000-4000-8000-000000000008']::uuid[] loop
+    for cmd in select command from public.operator_record_rules loop
+      r := pg_temp.records_as(caller, '10000000-0000-4000-8000-0000000000c2', cmd, '{}');
+      if r ->> 'code' is distinct from '42501' then
+        raise exception 'FAIL: % running % got %', caller, cmd, r; end if;
+    end loop;
+  end loop;
+end $$;
+select pg_temp.expect(pg_temp.records_as(:PK, :C, 'pack', '{}'), '42501', 'packer records a supervisor pack');
+select pg_temp.expect(pg_temp.records_as(:ADM, :C, 'assign-orders', '{}'), '42501', 'office admin assigns packers');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'import-release', '{}'), '42501', 'stock-out releases an upload');
+select pg_temp.expect(pg_temp.records_as(:ADM, :C, 'correct', '{}'), '42501', 'office admin corrects a count');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'review-order', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, '{"printed": true}')))), '42501', 'review-order changing a column outside its scope');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_delete => jsonb_build_array(
+  jsonb_build_object('id', :O4, 'version', 1)))), '42501', 'order deleting an AWB');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'print', pg_temp.chg(p_issues => jsonb_build_array(jsonb_build_object(
+  'id', '50000000-0000-4000-8000-0000000000e8', 'order_id', :O2, 'carton_id', 'c-cav1', 'qty', 1, 'pic', 'SO')))),
+  '42501', 'print recording a stock issue');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'issue', pg_temp.chg(p_counts => '[{}]')), '42501', 'issue recording a sort count');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_effects => jsonb_build_object('release', :UC))),
+  '42501', 'order carrying upload effects');
+do $$ begin
+  if (select count(*) from public.operator_orders) <> 4
+    or (select count(*) from public.operator_commits where result is not null) <> 1 then
+    raise exception 'FAIL: refused records commits left rows'; end if;
+end $$;
+
+-- 15f. edit-order and stale versions (PT412 names the stale AWB, nothing applied).
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'edit-order', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, '{"awb": "NVMYC4B", "expected": 2, "original_expected": 2}')),
+  p_events => jsonb_build_array(pg_temp.ev('c-o4-edit', :SO, :O4)))), 'ok', 'edit a pending AWB');
+do $$
+declare r jsonb := pg_temp.records_as('00000000-0000-4000-8000-000000000009', '10000000-0000-4000-8000-0000000000c2',
+  'edit-order', pg_temp.chg(p_update => jsonb_build_array(pg_temp.upd('40000000-0000-4000-8000-0000000000d4',
+    '{"expected": 3, "original_expected": 3}', 1)),
+  p_events => jsonb_build_array(pg_temp.ev('c-o4-stale', '00000000-0000-4000-8000-000000000009', '40000000-0000-4000-8000-0000000000d4'))));
+begin
+  if r ->> 'code' is distinct from 'PT412' or (r ->> 'detail')::jsonb <> '{"stale": ["40000000-0000-4000-8000-0000000000d4"]}' then
+    raise exception 'FAIL: stale edit %', r; end if;
+  if (select awb || ':' || expected || ':' || version from public.operator_orders where id = '40000000-0000-4000-8000-0000000000d4')
+    <> 'NVMYC4B:2:2' or exists (select 1 from public.operator_events where id = pg_temp.ev_id('c-o4-stale')) then
+    raise exception 'FAIL: a stale edit was applied'; end if;
+end $$;
+
+-- 15g. review-order.
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'review-order', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, '{"review_state": "confirmed", "reviewed_by": "SO C"}')),
+  p_events => jsonb_build_array(pg_temp.ev('c-o4-review', :SO, :O4)))), 'ok', 'review the AWB');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'review-order', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, '{"reviewed_by": "Again"}')), p_events => jsonb_build_array(pg_temp.ev('c-o4-review2', :SO, :O4)))),
+  '23514', 'review an already reviewed AWB');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'edit-order', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, '{"package": "P9"}')), p_events => jsonb_build_array(pg_temp.ev('c-o4-edit2', :SO, :O4)))),
+  '23514', 'edit a reviewed AWB');
+
+-- 15h. split-order: one parcel per product, demand conserved.
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'split-order', pg_temp.chg(
+  p_update => jsonb_build_array(pg_temp.upd(:O3, '{"awb": "NVMYC3A", "product": "cav", "package": "P cav", "expected": 2,
+    "original_expected": 2, "lines": null, "review_state": "confirmed", "reviewed_by": "SO C"}')),
+  p_insert => jsonb_build_array(pg_temp.new_order(:O5, 'NVMYC3B', '{"product": "lip", "package": "P lip", "expected": 2,
+    "original_expected": 2, "review_state": "confirmed", "reviewed_by": "SO C"}')),
+  p_events => jsonb_build_array(pg_temp.ev('c-split-3', :SO, :O3), pg_temp.ev('c-split-5', :SO, :O5)))),
+  '23514', 'split that changes the units');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'split-order', pg_temp.chg(
+  p_update => jsonb_build_array(pg_temp.upd(:O3, '{"awb": "NVMYC3A", "product": "cav", "package": "P cav", "expected": 2,
+    "original_expected": 2, "lines": null, "review_state": "confirmed", "reviewed_by": "SO C"}')),
+  p_insert => jsonb_build_array(pg_temp.new_order(:O5, 'NVMYC3B', '{"product": "lip", "package": "P lip", "expected": 1,
+    "original_expected": 1, "review_state": "confirmed", "reviewed_by": "SO C"}')),
+  p_events => jsonb_build_array(pg_temp.ev('c-split-3', :SO, :O3), pg_temp.ev('c-split-5', :SO, :O5)))),
+  'ok', 'split a two-brand AWB into two parcels');
+
+-- 15i. Sort count gate, then a current count computed by the database.
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'assign-orders', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O2, jsonb_build_object('assigned_packer', :BEA))), p_events => jsonb_build_array(pg_temp.ev('c-o2-gate', :SO, :O2)))),
+  '23514', 'assign while the backfilled count is not current');
+select awbs as dd_awbs, expected as dd_expected, hash as dd_hash from operator_private.day_demand(:C, :D, 'cav') \gset
+select pg_temp.expect_text(:'dd_awbs' || ':' || :'dd_expected', '4:10', 'cav demand of the day');
+create function pg_temp.count_of(p_id text, p_product text, p_expected integer, p_awbs integer, p_hash text) returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'fulfil_date', '2026-10-20', 'product', p_product, 'counted', p_expected,
+    'pic', 'SO C', 'note', '', 'expected', p_expected, 'demand_awbs', p_awbs, 'demand_hash', p_hash) $$;
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'sort-count', pg_temp.chg(p_counts => jsonb_build_array(
+  pg_temp.count_of('60000000-0000-4000-8000-0000000000f2', 'cav', 8, :dd_awbs, :'dd_hash')),
+  p_events => jsonb_build_array(pg_temp.ev('c-count-x', :SO, :D)))), '23514', 'count against a stale demand');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'sort-count', pg_temp.chg(p_counts => jsonb_build_array(
+  pg_temp.count_of('60000000-0000-4000-8000-0000000000f2', 'gly', 0, 0, (select hash from operator_private.day_demand(:C, :D, 'gly')))),
+  p_events => jsonb_build_array(pg_temp.ev('c-count-g', :SO, :D)))), '23514', 'count for a product without demand');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'sort-count', pg_temp.chg(p_counts => jsonb_build_array(
+  pg_temp.count_of('60000000-0000-4000-8000-0000000000f2', 'cav', :dd_expected, :dd_awbs, :'dd_hash')))),
+  '23514', 'count without its audit entry');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'sort-count', pg_temp.chg(p_counts => jsonb_build_array(
+  pg_temp.count_of('60000000-0000-4000-8000-0000000000f2', 'cav', :dd_expected, :dd_awbs, :'dd_hash')),
+  p_events => jsonb_build_array(pg_temp.ev('c-count', :SO, :D)))), 'ok', 'current supervisor count');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'sort-count', pg_temp.chg(p_counts => jsonb_build_array(
+  pg_temp.count_of('60000000-0000-4000-8000-0000000000f3', 'lip', 1, 1,
+    (select hash from operator_private.day_demand(:C, :D, 'lip')))),
+  p_events => jsonb_build_array(pg_temp.ev('c-count-lip', :SO, :D)))), 'ok', 'current lip count');
+
+-- 15j. assign-orders / assign-package; print / print-orders.
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'assign-orders', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O2, jsonb_build_object('assigned_packer', :BEA, 'assigned_at', '2000-01-01T00:00:00Z'))),
+  p_events => jsonb_build_array(pg_temp.ev('c-o2-assign', :SO, :O2)))), 'ok', 'assign a parcel to Bea');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'assign-orders', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, '{"assigned_packer": "20000000-0000-4000-8000-0000000000ff"}')),
+  p_events => jsonb_build_array(pg_temp.ev('c-o4-assign-x', :SO, :O4)))), '23514', 'assign to an unknown profile');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'assign-package', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, jsonb_build_object('assigned_packer', :ALI))),
+  p_events => jsonb_build_array(pg_temp.ev('c-o4-assign', :SO, :O4)))), 'ok', 'assign a package parcel to Ali');
+do $$ begin
+  if (select assigned_at > now() - interval '1 minute' from public.operator_orders where id = '40000000-0000-4000-8000-0000000000d2') is not true then
+    raise exception 'FAIL: assigned_at was not stamped by the database'; end if;
+end $$;
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'print', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O2, '{"printed": true}')), p_events => jsonb_build_array(pg_temp.ev('c-o2-print', :SO, :O2)))),
+  'ok', 'record a print');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'print', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O2, '{"printed": true}')), p_events => jsonb_build_array(pg_temp.ev('c-o2-print2', :SO, :O2)))),
+  '23514', 'record the same print twice');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'print-orders', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, '{"printed": true}')), p_events => jsonb_build_array(pg_temp.ev('c-o4-print', :SO, :O4)))),
+  'ok', 'record prints in bulk');
+
+-- 15k. Stock issues: carton lock, balance across the document and the totals, demand cap.
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'issue', pg_temp.chg(p_issues => jsonb_build_array(jsonb_build_object(
+  'id', '50000000-0000-4000-8000-0000000000e3', 'order_id', :O4, 'carton_id', 'c-cav2', 'qty', 2, 'pic', 'SO C',
+  'at', '2000-01-01T00:00:00Z')), p_events => jsonb_build_array(pg_temp.ev('c-o4-issue', :SO, :O4))),
+  p_op => '20000000-0000-4000-8000-0000000000c1'), 'ok', 'issue 2 of 5 from a carton');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'issue', pg_temp.chg(p_issues => jsonb_build_array(jsonb_build_object(
+  'id', '50000000-0000-4000-8000-0000000000e4', 'order_id', :O4, 'carton_id', 'c-cav2', 'qty', 4, 'pic', 'SO C')),
+  p_events => jsonb_build_array(pg_temp.ev('c-o4-issue2', :SO, :O4)))), '23514', 'second issue beyond the carton balance');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'issue', pg_temp.chg(p_issues => jsonb_build_array(jsonb_build_object(
+  'id', '50000000-0000-4000-8000-0000000000e4', 'order_id', :O4, 'carton_id', 'c-lip', 'qty', 1, 'pic', 'SO C')),
+  p_events => jsonb_build_array(pg_temp.ev('c-o4-issue3', :SO, :O4)))), '23514', 'issue from another product''s carton');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'issue', pg_temp.chg(p_issues => jsonb_build_array(jsonb_build_object(
+  'id', '50000000-0000-4000-8000-0000000000e4', 'order_id', :O4, 'carton_id', 'c-cav2', 'qty', 1.5, 'pic', 'SO C')),
+  p_events => jsonb_build_array(pg_temp.ev('c-o4-issue4', :SO, :O4)))), '23514', 'fractional issue');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'issue', pg_temp.chg(p_issues => jsonb_build_array(jsonb_build_object(
+  'id', '50000000-0000-4000-8000-0000000000e4', 'order_id', :O4, 'carton_id', 'c-cav2', 'qty', 1, 'pic', 'SO C')))),
+  '23514', 'issue without its audit entry');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'issue-orders', pg_temp.chg(p_issues => jsonb_build_array(jsonb_build_object(
+  'id', '50000000-0000-4000-8000-0000000000e4', 'order_id', :O2, 'carton_id', 'c-cav2', 'qty', 1, 'pic', 'SO C')),
+  p_events => jsonb_build_array(pg_temp.ev('c-o2-issue', :SO, :O2)))), '23514', 'bulk issue beyond the remaining demand');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'issue-orders', pg_temp.chg(p_issues => jsonb_build_array(jsonb_build_object(
+  'id', '50000000-0000-4000-8000-0000000000e5', 'order_id', :O3, 'carton_id', 'c-cav1', 'qty', 2, 'pic', 'SO C')),
+  p_events => jsonb_build_array(pg_temp.ev('c-o3-issue', :SO, :O3)))), 'ok', 'bulk issue within the demand');
+do $$ begin
+  if (select string_agg(carton_id || '=' || issued, ',' order by carton_id) from public.operator_carton_issued
+      where workspace_id = '10000000-0000-4000-8000-0000000000c2') <> 'c-cav1=7,c-cav2=2'
+    or (select recorded_by || ':' || product || ':' || unit || ':' || (at > now() - interval '1 minute') from public.operator_issues
+      where id = '50000000-0000-4000-8000-0000000000e3') <> '00000000-0000-4000-8000-000000000009:cav:bottle:true' then
+    raise exception 'FAIL: issued totals or the issue row'; end if;
+end $$;
+select pg_temp.assert_conservation(:C);
+-- Replay: same operation and input returns the stored result and records nothing again.
+do $$
+declare
+  r jsonb := pg_temp.records_as('00000000-0000-4000-8000-000000000009', '10000000-0000-4000-8000-0000000000c2', 'issue',
+    pg_temp.chg(p_issues => jsonb_build_array(jsonb_build_object('id', '50000000-0000-4000-8000-0000000000e3',
+      'order_id', '40000000-0000-4000-8000-0000000000d4', 'carton_id', 'c-cav2', 'qty', 2, 'pic', 'SO C',
+      'at', '2000-01-01T00:00:00Z')),
+    p_events => jsonb_build_array(pg_temp.ev('c-o4-issue', '00000000-0000-4000-8000-000000000009', '40000000-0000-4000-8000-0000000000d4'))),
+    p_op => '20000000-0000-4000-8000-0000000000c1');
+begin
+  if (r ->> 'replayed')::boolean is not true or r -> 'result' is distinct from (select result from public.operator_commits
+      where operation_id = '20000000-0000-4000-8000-0000000000c1')
+    or r -> 'result' <> '{"days": ["2026-10-20"], "issues": ["50000000-0000-4000-8000-0000000000e3"], "orders": [], "sortCounts": []}' then
+    raise exception 'FAIL: replay %', r; end if;
+  if (select issued from public.operator_carton_issued where carton_id = 'c-cav2') <> 2
+    or (select count(*) from public.operator_issues where order_id = '40000000-0000-4000-8000-0000000000d4') <> 1 then
+    raise exception 'FAIL: a replay repeated the issue'; end if;
+end $$;
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'issue', '{}', p_op => '20000000-0000-4000-8000-0000000000c1'),
+  'PT409', 'operation ID reused with other input');
+select pg_temp.expect(pg_temp.records_as(:ADM, :C, 'issue', '{}', p_op => '20000000-0000-4000-8000-0000000000c1',
+  p_fingerprint => (select fingerprint from public.operator_commits where operation_id = '20000000-0000-4000-8000-0000000000c1')),
+  'PT409', 'operation ID reused by another user');
+
+-- 15l. pack (supervisor) and pack-own (the packer's verified session).
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'pack', pg_temp.chg(p_update => jsonb_build_array(pg_temp.upd(:O1,
+  jsonb_build_object('actual', 4, 'packer', :ALI, 'label_pic', :ALI, 'packed_at', '2020-01-02T03:00:00.000Z',
+    'pack_recorded_by', jsonb_build_object('userId', :SI)))),
+  p_events => jsonb_build_array(pg_temp.ev('c-o1-pack-x', :SO, :O1)))), '23514', 'pack recorded under another user');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'pack', pg_temp.chg(p_update => jsonb_build_array(pg_temp.upd(:O1,
+  jsonb_build_object('actual', 4, 'packer', :ALI, 'label_pic', :ALI, 'packed_at', '2020-01-02T03:00:00.000Z',
+    'pack_recorded_by', jsonb_build_object('userId', :SO, 'role', 'outbound')))),
+  p_events => jsonb_build_array(pg_temp.ev('c-o1-pack', :SO, :O1)))), 'ok', 'supervisor records a packed count');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'pack', pg_temp.chg(p_update => jsonb_build_array(pg_temp.upd(:O1,
+  jsonb_build_object('actual', 3, 'pack_recorded_by', jsonb_build_object('userId', :SO)))),
+  p_events => jsonb_build_array(pg_temp.ev('c-o1-pack2', :SO, :O1)))), '23514', 'a second first count');
+create function pg_temp.pack_own(p_seal text, p_label text) returns jsonb language sql as $$
+  select pg_temp.records_as('00000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-0000000000c2', 'pack-own',
+    pg_temp.chg(p_update => jsonb_build_array(pg_temp.upd('40000000-0000-4000-8000-0000000000d2',
+      '{"actual": 2, "packer": "20000000-0000-4000-8000-0000000000a2", "label_pic": "20000000-0000-4000-8000-0000000000a2",
+        "packed_at": "2000-01-01T00:00:00Z", "pack_recorded_by": {"userId": "00000000-0000-4000-8000-000000000002", "role": "packer"}}')),
+      p_events => jsonb_build_array(pg_temp.ev(p_label, '00000000-0000-4000-8000-000000000002', '40000000-0000-4000-8000-0000000000d2'))),
+    p_packer => p_seal) $$;
+select pg_temp.expect(pg_temp.pack_own(null, 'c-own-1'), '42501', 'pack-own without a packer session');
+select pg_temp.expect(pg_temp.pack_own(pg_temp.seal(:C, :PK, :BEA, trunc(extract(epoch from now()) * 1000) - 1000), 'c-own-2'),
+  '42501', 'pack-own with an expired session');
+select pg_temp.expect(pg_temp.pack_own(pg_temp.seal(:C, :PK, :BEA, p_bad => true), 'c-own-3'), '42501', 'pack-own with a forged session');
+select pg_temp.expect(pg_temp.pack_own(pg_temp.seal(:C, :SO, :BEA), 'c-own-4'), '42501', 'pack-own with another user''s session');
+select pg_temp.expect(pg_temp.pack_own(pg_temp.seal(:C, :PK, :ALI), 'c-own-5'), '23514', 'Ali records Bea''s parcel');
+select pg_temp.expect(pg_temp.pack_own(pg_temp.seal(:C, :PK, :BEA), 'c-own-6'), 'ok', 'Bea records her own parcel');
+do $$ begin
+  if (select (packed_at = pack_recorded_at and packed_at > now() - interval '1 minute' and actual = 2)::text
+      from public.operator_orders where id = '40000000-0000-4000-8000-0000000000d2') <> 'true' then
+    raise exception 'FAIL: pack-own times are not the database time'; end if;
+end $$;
+
+-- 15m. correct, dispatch (dispatched_at stamped), move-orders (departure), remove-order.
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'correct', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O1, '{"actual": null}')), p_events => jsonb_build_array(pg_temp.ev('c-o1-correct-x', :SO, :O1)))),
+  '23514', 'correct a count back to nothing');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'correct', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O1, '{"actual": 3}')), p_events => jsonb_build_array(pg_temp.ev('c-o1-correct', :SO, :O1)))),
+  'ok', 'supervisor correction');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'correct', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, '{"actual": 1}')), p_events => jsonb_build_array(pg_temp.ev('c-o4-correct', :SO, :O4)))),
+  '23514', 'correct a count that was never recorded');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'dispatch', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O1, '{"dispatched": true, "handover_ref": ""}')), p_events => jsonb_build_array(pg_temp.ev('c-o1-ho-x', :SO, :O1)))),
+  '23514', 'handover without a reference');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'dispatch', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, '{"dispatched": true, "handover_ref": "M-0"}')), p_events => jsonb_build_array(pg_temp.ev('c-o4-ho', :SO, :O4)))),
+  '23514', 'handover before packing');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'dispatch', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O1, '{"dispatched": true, "handover_ref": "M-1"}')), p_events => jsonb_build_array(pg_temp.ev('c-o1-ho', :SO, :O1)))),
+  'ok', 'courier handover');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'move-orders', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O4, '{"fulfil_date": "2026-10-21"}')), p_events => jsonb_build_array(pg_temp.ev('c-o4-move', :SO, :O4)))),
+  'ok', 'carry an unpacked AWB to the next day');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'move-orders', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O1, '{"fulfil_date": "2026-10-21"}')), p_events => jsonb_build_array(pg_temp.ev('c-o1-move', :SO, :O1)))),
+  '23514', 'move a handed-over AWB');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O6, 'NVMYC6')), p_events => jsonb_build_array(pg_temp.ev('c-o6', :SO, :O6)))), 'ok', 'record a mistaken AWB');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'remove-order', pg_temp.chg(p_delete => jsonb_build_array(
+  jsonb_build_object('id', :O2, 'version', pg_temp.ver(:O2))), p_events => jsonb_build_array(pg_temp.ev('c-o2-rm', :SO, :O2)))),
+  '23514', 'remove an AWB with stock issued');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'remove-order', pg_temp.chg(p_delete => jsonb_build_array(
+  jsonb_build_object('id', :O6, 'version', 1)))), '23514', 'remove without its audit entry');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'remove-order', pg_temp.chg(p_delete => jsonb_build_array(
+  jsonb_build_object('id', :O6, 'version', 1)), p_events => jsonb_build_array(pg_temp.ev('c-o6-rm', :SO, :O6)))),
+  'ok', 'remove the mistaken AWB');
+do $$ begin
+  if (select string_agg(order_id || ':' || fulfil_date || ':' || reason, ',' order by reason) from public.operator_order_departures)
+    <> '40000000-0000-4000-8000-0000000000d4:2026-10-20:moved,40000000-0000-4000-8000-0000000000d6:2026-10-20:removed'
+    or (select dispatched_at > now() - interval '1 minute' from public.operator_orders where id = '40000000-0000-4000-8000-0000000000d1') is not true then
+    raise exception 'FAIL: departures or handover time'; end if;
+end $$;
+
+-- 15n. AWB reuse (owner decision 2026-10-12): NVMYC1 was handed over today, so the number
+--      may return more than 30 days later, not sooner.
+select to_char((now() at time zone 'Asia/Kuala_Lumpur')::date + 10, 'YYYY-MM-DD') as soon,
+  to_char((now() at time zone 'Asia/Kuala_Lumpur')::date + 40, 'YYYY-MM-DD') as later \gset
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O7, 'NVMYC1', jsonb_build_object('fulfil_date', :'soon'))), p_events => jsonb_build_array(pg_temp.ev('c-o7a', :SO, :O7)))),
+  '23505', 'AWB reused within 30 days of its handover');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O7, 'NVMYC1', jsonb_build_object('fulfil_date', :'later'))), p_events => jsonb_build_array(pg_temp.ev('c-o7', :SO, :O7)))),
+  'ok', 'AWB reused by the courier after 30 days');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'move-orders', pg_temp.chg(p_update => jsonb_build_array(
+  pg_temp.upd(:O7, jsonb_build_object('fulfil_date', :'soon'))), p_events => jsonb_build_array(pg_temp.ev('c-o7-move', :SO, :O7)))),
+  '23505', 'moving the reused AWB to within 30 days of the handover');
+
+-- 15o. Upload release, removal of a released AWB and upload delete, with WP A's effects.
+select pg_temp.expect(pg_temp.save_as(:ADM, pg_temp.imp(:UC, :C), jsonb_build_array(pg_temp.lbl(:RC1, 'NVMYCU1'),
+  pg_temp.lbl(:RC2, 'NVMYCU2')), null, :C), 'ok', 'admin saves an upload at site C');
+create function pg_temp.released(p_id uuid, p_awb text, p_row uuid) returns jsonb language sql as $$
+  select pg_temp.new_order(p_id, p_awb, jsonb_build_object('import_id', '30000000-0000-4000-8000-0000000000c1',
+    'import_row_id', p_row, 'review_state', 'confirmed', 'expected', 4, 'original_expected', 4, 'store', 'Synthetic store',
+    'order_ref', 'REF-' || p_awb, 'courier', 'Ninja Van',
+    'lines', '[{"product": "cav", "expected": 4, "originalExpected": 4, "actual": null}]'::jsonb)) $$;
+select pg_temp.expect(pg_temp.records_as(:ADM, :C, 'import-release', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.released(:OA, 'NVMYCU1', :RC1), pg_temp.released(:OB, 'NVMYCU2', :RC2)),
+  p_events => jsonb_build_array(pg_temp.ev('c-oa', :ADM, :OA), pg_temp.ev('c-ob', :ADM, :OB)))),
+  '23514', 'release without its upload effect');
+select pg_temp.expect(pg_temp.records_as(:ADM, :C, 'import-release', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.released(:OA, 'NVMYCU1', :RC1), pg_temp.released(:OB, 'NVMYCU2', :RC1)),
+  p_effects => jsonb_build_object('release', :UC),
+  p_events => jsonb_build_array(pg_temp.ev('c-oa', :ADM, :OA), pg_temp.ev('c-ob', :ADM, :OB)))),
+  '23514', 'two AWBs released from one label');
+select pg_temp.expect(pg_temp.records_as(:ADM, :C, 'import-release', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.released(:OA, 'NVMYCU1', :RC1), pg_temp.released(:OB, 'NVMYCU2', :RC2)),
+  p_effects => jsonb_build_object('release', :UC),
+  p_events => jsonb_build_array(pg_temp.ev('c-oa', :ADM, :OA), pg_temp.ev('c-ob', :ADM, :OB)))),
+  'ok', 'admin releases the upload into rows');
+select pg_temp.expect(pg_temp.records_as(:ADM, :C, 'remove-order', pg_temp.chg(p_delete => jsonb_build_array(
+  jsonb_build_object('id', :OA, 'version', 1)), p_events => jsonb_build_array(pg_temp.ev('c-oa-rm', :ADM, :OA)))),
+  '23514', 'remove a released AWB without marking its label');
+select pg_temp.expect(pg_temp.records_as(:ADM, :C, 'remove-order', pg_temp.chg(p_delete => jsonb_build_array(
+  jsonb_build_object('id', :OA, 'version', 1)),
+  p_effects => jsonb_build_object('rows', jsonb_build_array(jsonb_build_object('id', :RC1, 'excluded', true,
+    'reviewNote', 'Removed: cancelled'))),
+  p_events => jsonb_build_array(pg_temp.ev('c-oa-rm', :ADM, :OA)))), 'ok', 'remove a released AWB and mark its label');
+select pg_temp.expect(pg_temp.records_as(:ADM, :C, 'import-delete', pg_temp.chg(p_delete => jsonb_build_array(
+  jsonb_build_object('id', :OB, 'version', 1)), p_effects => jsonb_build_object('delete', :UC, 'reason', 'Wrong day'),
+  p_events => jsonb_build_array(pg_temp.ev('c-uc-del', :ADM, :UC)))), 'ok', 'admin deletes the upload and its AWB');
+do $$ begin
+  if (select string_agg(coalesce(released_order_id, '-') || '/' || excluded, ',' order by position) from public.operator_import_rows
+      where import_id = '30000000-0000-4000-8000-0000000000c1') <> '-/true,40000000-0000-4000-8000-0000000000db/false'
+    or (select (confirmed_at is not null and deleted_at is not null)::text from public.operator_imports
+      where id = '30000000-0000-4000-8000-0000000000c1') <> 'true'
+    or exists (select 1 from public.operator_orders where import_id is not null) then
+    raise exception 'FAIL: upload effects through the records path'; end if;
+end $$;
+
+-- 15p. Document commits at a tables-mode site: order commands and order keys refused; an
+--      adjustment is checked against the table's issued totals (c-cav2: 5 received, 2 issued).
+select pg_temp.expect(pg_temp.commit_as(:SO, :C, 'order', pg_temp.state(:C)), 'PT428', 'document order command at a tables site');
+select pg_temp.expect(pg_temp.commit_as(:SV, :C, 'batch', pg_temp.state(:C) || '{"orders": []}'), '42501',
+  'order list sent back into a tables-mode document');
+select pg_temp.expect(pg_temp.commit_as(:SV, :C, 'batch', pg_temp.state(:C) || '{"cartonIssued": {}}'), '42501',
+  'transient carton totals stored in the document');
+create function pg_temp.adjusted(p_id text, p_delta integer) returns jsonb language sql as $$
+  select jsonb_set(pg_temp.state('10000000-0000-4000-8000-0000000000c2'), '{adjustments}',
+    (pg_temp.state('10000000-0000-4000-8000-0000000000c2') -> 'adjustments') || jsonb_build_array(jsonb_build_object(
+      'id', p_id, 'cartonId', 'c-cav2', 'delta', p_delta, 'reason', 'Broken bottles', 'at', '2026-10-20T05:00:00.000Z'))) $$;
+select pg_temp.expect(pg_temp.commit_as(:SI, :C, 'adjust', pg_temp.adjusted('adj-1', -4)), '23514',
+  'adjustment below the balance left after table issues');
+select pg_temp.expect(pg_temp.commit_as(:SI, :C, 'adjust', pg_temp.adjusted('adj-1', -3)), 'ok',
+  'adjustment down to zero');
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'issue', pg_temp.chg(p_issues => jsonb_build_array(jsonb_build_object(
+  'id', '50000000-0000-4000-8000-0000000000e6', 'order_id', :O4, 'carton_id', 'c-cav2', 'qty', 1, 'pic', 'SO C')),
+  p_events => jsonb_build_array(pg_temp.ev('c-o4-issue5', :SO, :O4)))), '23514', 'issue from a carton adjusted to zero');
+do $$ begin
+  if (select state -> 'events' = '[]' and not state ? 'issues' from public.operator_workspaces where site_id = 'site-c') is not true
+    or (select state -> 'adjustments' -> 0 ->> 'id' from public.operator_workspaces where site_id = 'site-c') <> 'adj-1' then
+    raise exception 'FAIL: the tables-mode document after the adjustment'; end if;
+end $$;
+select pg_temp.assert_conservation(:C);
+
+-- 15q. Reading: office admin and stock-out read every AWB of the site; a packer reads only
+--      the AWBs of the profile their sealed session unlocked; management, production,
+--      stock-in, drivers, HR and other sites read none. Every member reads carton totals.
+do $$
+declare
+  ws constant text := '10000000-0000-4000-8000-0000000000c2';
+  q text := format('select to_jsonb(array[(select count(*) from public.operator_orders where workspace_id = %L),
+    (select count(*) from public.operator_issues where workspace_id = %L),
+    (select count(*) from public.operator_sort_counts where workspace_id = %L),
+    (select count(*) from public.operator_order_departures where workspace_id = %L),
+    (select count(*) from public.operator_carton_issued where workspace_id = %L)])', ws, ws, ws, ws, ws);
+  v_all jsonb := (select to_jsonb(array[(select count(*) from public.operator_orders where workspace_id = ws::uuid),
+    (select count(*) from public.operator_issues where workspace_id = ws::uuid),
+    (select count(*) from public.operator_sort_counts where workspace_id = ws::uuid),
+    (select count(*) from public.operator_order_departures where workspace_id = ws::uuid),
+    (select count(*) from public.operator_carton_issued where workspace_id = ws::uuid)]));
+  c uuid;
+  r jsonb;
+begin
+  foreach c in array array['00000000-0000-4000-8000-000000000009', '00000000-0000-4000-8000-000000000007']::uuid[] loop
+    perform pg_temp.expect_result(pg_temp.read_as(c, null, q), v_all, 'AWB reader ' || c);
+  end loop;
+  foreach c in array array['00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000001',
+    '00000000-0000-4000-8000-000000000006', '00000000-0000-4000-8000-000000000012', '00000000-0000-4000-8000-000000000008',
+    '00000000-0000-4000-8000-000000000002']::uuid[] loop
+    perform pg_temp.expect_result(pg_temp.read_as(c, null, q),
+      '[0, 0, 0, 0, 2]',
+      'no AWB access for ' || c);
+  end loop;
+  perform pg_temp.expect_result(pg_temp.read_as('00000000-0000-4000-8000-000000000003', null, q), '[0, 0, 0, 0, 0]', 'site B supervisor');
+  r := pg_temp.read_as(null, null, q);
+  if r ->> 'code' is distinct from '42501' then raise exception 'FAIL: anonymous read %', r; end if;
+  -- The packer with Bea's session: only Bea's AWB; no issues; any bad seal: nothing.
+  perform pg_temp.expect_result(pg_temp.read_as('00000000-0000-4000-8000-000000000002',
+    pg_temp.seal(ws::uuid, '00000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-0000000000a2'),
+    'select to_jsonb(array_agg(awb || ''/'' || assigned_packer)) from public.operator_orders'),
+    '["NVMYC2/20000000-0000-4000-8000-0000000000a2"]', 'packer reads her own AWB');
+  perform pg_temp.expect_result(pg_temp.read_as('00000000-0000-4000-8000-000000000002',
+    pg_temp.seal(ws::uuid, '00000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-0000000000a2'),
+    'select to_jsonb(count(*)) from public.operator_issues'), '0', 'packer reads no stock issues');
+  foreach r in array array[
+    to_jsonb(pg_temp.seal(ws::uuid, '00000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-0000000000a2', p_bad => true)),
+    to_jsonb(pg_temp.seal(ws::uuid, '00000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-0000000000a2',
+      trunc(extract(epoch from now()) * 1000) - 1)),
+    to_jsonb(pg_temp.seal(ws::uuid, '00000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-0000000000a2',
+      trunc(extract(epoch from now()) * 1000) + 3600000)),
+    to_jsonb(pg_temp.seal(ws::uuid, '00000000-0000-4000-8000-000000000009', '20000000-0000-4000-8000-0000000000a2')),
+    to_jsonb(pg_temp.seal('10000000-0000-4000-8000-00000000000a', '00000000-0000-4000-8000-000000000002',
+      '20000000-0000-4000-8000-0000000000a2'))] loop
+    perform pg_temp.expect_result(pg_temp.read_as('00000000-0000-4000-8000-000000000002', r #>> '{}',
+      'select to_jsonb(count(*)) from public.operator_orders'), '0', 'packer with a bad seal ' || (r #>> '{}'));
+  end loop;
+end $$;
+
+-- 15r. No direct writes, not even by the site's admin; issue and count rows are immutable
+--      even for the table owner.
+begin;
+select pg_temp.as_user(:SO);
+select pg_temp.expect_denied(format($q$insert into public.operator_orders (id, workspace_id, awb, channel, product, expected, original_expected, fulfil_date, created_by) values (gen_random_uuid(), %s, 'NVMYZZ', 'Luxana', 'cav', 1, 1, '2026-10-20', %s)$q$, :'C', :'SO'), 'direct AWB insert');
+select pg_temp.expect_denied($q$update public.operator_orders set printed = true$q$, 'direct AWB update');
+select pg_temp.expect_denied($q$delete from public.operator_orders$q$, 'direct AWB delete');
+select pg_temp.expect_denied($q$insert into public.operator_issues (id, workspace_id, order_id, carton_id, product, unit, qty, pic, legacy) select gen_random_uuid(), workspace_id, id, 'c-cav1', 'cav', 'bottle', 1, 'x', true from public.operator_orders limit 1$q$, 'direct issue insert');
+select pg_temp.expect_denied($q$update public.operator_issues set qty = 1$q$, 'direct issue update');
+select pg_temp.expect_denied($q$delete from public.operator_issues$q$, 'direct issue delete');
+select pg_temp.expect_denied($q$update public.operator_carton_issued set issued = 0$q$, 'direct carton total update');
+select pg_temp.expect_denied($q$delete from public.operator_sort_counts$q$, 'direct sort count delete');
+select pg_temp.expect_denied($q$delete from public.operator_order_departures$q$, 'direct departure delete');
+select pg_temp.expect_denied($q$update public.operator_record_rules set capability = 'feedback.post'$q$, 'rewrite record rules');
+rollback;
+begin;
+select pg_temp.as_user(:ADM);
+select pg_temp.expect_denied($q$delete from public.operator_orders$q$, 'admin deletes AWBs directly');
+rollback;
+do $$
+declare v_code text;
+begin
+  begin
+    update public.operator_issues set qty = qty;
+    v_code := 'allowed';
+  exception when others then v_code := sqlstate;
+  end;
+  if v_code <> '23514' then raise exception 'FAIL: owner issue update -> %', v_code; end if;
+  begin
+    delete from public.operator_issues;
+    v_code := 'allowed';
+  exception when others then v_code := sqlstate;
+  end;
+  if v_code <> '23514' then raise exception 'FAIL: owner issue delete -> %', v_code; end if;
+  begin
+    update public.operator_sort_counts set counted = counted;
+    v_code := 'allowed';
+  exception when others then v_code := sqlstate;
+  end;
+  if v_code <> '23514' then raise exception 'FAIL: owner sort count update -> %', v_code; end if;
+end $$;
+
+-- 15s. Read functions (security invoker; RLS decides).
+do $$
+declare
+  so constant uuid := '00000000-0000-4000-8000-000000000009';
+  r jsonb;
+begin
+  r := pg_temp.call_as(so, 'select public.operator_orders_page(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-20'', p_limit => 2)');
+  if (r -> 'result' ->> 'total')::int <> 4 or jsonb_array_length(r -> 'result' -> 'orders') <> 2
+    or r -> 'result' ->> 'next' <> 'NVMYC2' or r -> 'result' -> 'orders' -> 0 -> 'issued' <> '{"cav": 3}'
+    or r -> 'result' -> 'orders' -> 0 ->> 'version' is null then
+    raise exception 'FAIL: first page %', r; end if;
+  r := pg_temp.call_as(so, 'select public.operator_orders_page(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-20'', p_after => ''NVMYC2'', p_limit => 2)');
+  if (select string_agg(o ->> 'awb', ',') from jsonb_array_elements(r -> 'result' -> 'orders') o) <> 'NVMYC3A,NVMYC3B'
+    or r -> 'result' -> 'next' <> 'null' then
+    raise exception 'FAIL: second page %', r; end if;
+  r := pg_temp.call_as(so, 'select public.operator_orders_page(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-20'', p_status => ''dispatched'')');
+  if (r -> 'result' ->> 'total')::int <> 1 then raise exception 'FAIL: status filter %', r; end if;
+  r := pg_temp.call_as(so, 'select public.operator_orders_day(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-20'')');
+  if jsonb_array_length(r -> 'result' -> 'orders') <> 4 or (r -> 'result' -> 'demand' -> 'lip' ->> 'current')::boolean is not true
+    or (r -> 'result' -> 'cartonIssued' -> 'within' ->> 'c-cav1')::int < 5
+    or (r -> 'result' -> 'cartonIssued' -> 'within' ->> 'c-cav1')::int
+      + (r -> 'result' -> 'cartonIssued' -> 'before' ->> 'c-cav1')::int <> 7 then
+    raise exception 'FAIL: day %', r; end if;
+  r := pg_temp.call_as(so, 'select public.operator_orders_summary(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-20'', true)');
+  if (r -> 'result' ->> 'awbs')::int <> 6 or r -> 'result' ->> 'scope' <> 'all' then raise exception 'FAIL: summary %', r; end if;
+  -- Trace by AWB returns every occurrence (courier reuse), newest first.
+  r := pg_temp.call_as(so, 'select public.operator_orders_trace(''10000000-0000-4000-8000-0000000000c2'', p_q => ''nvmy c1'')');
+  if jsonb_array_length(r -> 'result' -> 'orders') <> 2 or r -> 'result' -> 'orders' -> 1 ->> 'id' <> '40000000-0000-4000-8000-0000000000d1'
+    or jsonb_array_length(r -> 'result' -> 'events') < 4 or jsonb_array_length(r -> 'result' -> 'issues') <> 1 then
+    raise exception 'FAIL: trace by AWB %', r; end if;
+  r := pg_temp.call_as(so, 'select public.operator_orders_trace(''10000000-0000-4000-8000-0000000000c2'', p_batch => ''b-c'')');
+  if jsonb_array_length(r -> 'result' -> 'orders') <> 4 or jsonb_array_length(r -> 'result' -> 'cartons') <> 2 then
+    raise exception 'FAIL: trace by batch %', r; end if;
+  -- Without AWB access: the batch's cartons, no parcels; no AWB lookups.
+  r := pg_temp.call_as('00000000-0000-4000-8000-000000000004', 'select public.operator_orders_trace(''10000000-0000-4000-8000-0000000000c2'', p_batch => ''b-c'')');
+  if (r -> 'result' ->> 'parcels')::boolean or jsonb_array_length(r -> 'result' -> 'cartons') <> 2
+    or r -> 'result' -> 'orders' <> '[]' then raise exception 'FAIL: management batch trace %', r; end if;
+  r := pg_temp.call_as('00000000-0000-4000-8000-000000000004', 'select public.operator_orders_trace(''10000000-0000-4000-8000-0000000000c2'', p_q => ''NVMYC1'')');
+  if r ->> 'code' is distinct from '42501' then raise exception 'FAIL: management AWB trace %', r; end if;
+  r := pg_temp.call_as('00000000-0000-4000-8000-000000000006', 'select public.operator_orders_page(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-20'')');
+  if r ->> 'code' is distinct from '42501' then raise exception 'FAIL: stock-in opens the AWB list %', r; end if;
+  r := pg_temp.call_as(so, 'select public.operator_orders_export(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-01'', ''2026-10-31'')');
+  if jsonb_array_length(r -> 'result' -> 'orders') <> 5 then raise exception 'FAIL: export %', r; end if;
+  r := pg_temp.call_as(so, 'select public.operator_orders_export(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-01'', ''2026-11-01'')');
+  if r ->> 'code' is distinct from '22023' then raise exception 'FAIL: 32-day export %', r; end if;
+  r := pg_temp.call_as('00000000-0000-4000-8000-000000000002', 'select public.operator_packer_counts(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-20'')');
+  if r -> 'result' <> '[]' then raise exception 'FAIL: packer counts %', r; end if;
+  r := pg_temp.read_as('00000000-0000-4000-8000-000000000002',
+    pg_temp.seal('10000000-0000-4000-8000-0000000000c2', '00000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-0000000000a2'),
+    'select public.operator_packer_page(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-20'')');
+  if jsonb_array_length(r -> 'result' -> 'orders') <> 1 or r -> 'result' -> 'orders' -> 0 ->> 'awb' <> 'NVMYC2' then
+    raise exception 'FAIL: packer page %', r; end if;
+  r := pg_temp.read_as('00000000-0000-4000-8000-000000000002', null,
+    'select public.operator_packer_page(''10000000-0000-4000-8000-0000000000c2'', ''2026-10-20'')');
+  if r ->> 'code' is distinct from '42501' then raise exception 'FAIL: packer page without a session %', r; end if;
+end $$;
+select pg_temp.assert_conservation(:C);
+
+-- 16. Moving back to the document and to tables again keeps every AWB, issue, count and
+--     carton balance; then one more AWB goes in through the RPC (the rollback rehearsal in
+--     scripts/verify-migrations-local.sh moves site C back with the down file).
+create temp table c_before as
+  select (select jsonb_agg(id order by id) from public.operator_orders where workspace_id = '10000000-0000-4000-8000-0000000000c2') as orders,
+    (select jsonb_agg(id order by id) from public.operator_issues where workspace_id = '10000000-0000-4000-8000-0000000000c2') as issues,
+    (select jsonb_agg(id order by id) from public.operator_sort_counts where workspace_id = '10000000-0000-4000-8000-0000000000c2') as counts,
+    (select jsonb_agg(operator_private.order_json(o) order by o.id) from public.operator_orders o
+      where workspace_id = '10000000-0000-4000-8000-0000000000c2') as rows,
+    operator_private.table_balances('10000000-0000-4000-8000-0000000000c2') as balances;
+do $$
+declare
+  ws constant uuid := '10000000-0000-4000-8000-0000000000c2';
+  r jsonb := operator_private.move_orders_to_document(ws);
+  s jsonb := pg_temp.state(ws);
+begin
+  if r <> '{"moved": true, "orders": 6, "issues": 4, "sortCounts": 3}'
+    or (select order_store from public.operator_workspaces where id = ws) <> 'document' then
+    raise exception 'FAIL: move to document %', r; end if;
+  if (select jsonb_agg((o ->> 'id')::uuid order by (o ->> 'id')::uuid) from jsonb_array_elements(s -> 'orders') o) <> (select orders from c_before)
+    or (select jsonb_agg((i ->> 'id')::uuid order by (i ->> 'id')::uuid) from jsonb_array_elements(s -> 'issues') i) <> (select issues from c_before)
+    or (select jsonb_agg((x ->> 'id')::uuid order by (x ->> 'id')::uuid) from jsonb_array_elements(s -> 'sortCounts') x) <> (select counts from c_before)
+    or (select jsonb_agg(o order by o ->> 'id') from jsonb_array_elements(s -> 'orders') o) <> (select rows from c_before)
+    or operator_private.document_balances(s) <> (select balances from c_before) then
+    raise exception 'FAIL: the document does not hold the same records'; end if;
+  -- The latest lip count is still current in the document's own terms.
+  if (select x ->> 'fingerprint' from jsonb_array_elements(s -> 'sortCounts') x where x ->> 'product' = 'lip')
+    <> '[["40000000-0000-4000-8000-0000000000d5",1]]' then
+    raise exception 'FAIL: current count fingerprint %', s -> 'sortCounts'; end if;
+  if exists (select 1 from public.operator_orders where workspace_id = ws)
+    or exists (select 1 from public.operator_issues where workspace_id = ws)
+    or exists (select 1 from public.operator_carton_issued where workspace_id = ws)
+    or exists (select 1 from public.operator_order_departures where workspace_id = ws) then
+    raise exception 'FAIL: rows left behind'; end if;
+  r := operator_private.move_orders_to_tables(ws);
+  if r <> '{"moved": true, "orders": 6, "issues": 4, "cartons": 2, "sortCounts": 3}'
+    or (select jsonb_agg(operator_private.order_json(o) order by o.id) from public.operator_orders o where workspace_id = ws)
+      <> (select rows from c_before)
+    or operator_private.table_balances(ws) <> (select balances from c_before) then
+    raise exception 'FAIL: move back to tables %', r; end if;
+end $$;
+select pg_temp.assert_conservation(:C);
+select pg_temp.expect(pg_temp.records_as(:SO, :C, 'order', pg_temp.chg(p_insert => jsonb_build_array(
+  pg_temp.new_order(:O8, 'NVMYC8')), p_events => jsonb_build_array(pg_temp.ev('c-o8', :SO, :O8)))), 'ok',
+  'records commit after the round trip');
+
 select 'operator access tests passed' as result;

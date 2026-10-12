@@ -814,3 +814,135 @@ PR runs `pnpm lint`, `pnpm typecheck`, `pnpm build`, `pnpm test`,
    longer range needed for month-end?
 4. **Recycled AWB numbers.** Can a courier reuse an AWB number months later? If yes, WP D must
    allow the same AWB in the archive and the hot table. If no, uniqueness should span both.
+
+## Implementation notes (C1)
+
+C1 (`supabase/migrations/20261014090000_operator_order_records.sql`, rollback
+`supabase/rollback/20261014090000_operator_order_records.down.sql`) implements sections 2, 3,
+the read functions of section 5 and the move functions of section 7. Every site stays in
+`document` mode. These notes record what C1 decided or changed; the sections above are
+left as designed.
+
+### Owner decisions (2026-10-12) on section 10
+
+1. **AWB readers.** Office admin and stock-out read every AWB row of their site, checked by
+   capability (`orders.enter`, `orders.import`, `outbound.fulfil`, `outbound.correct`).
+   Packers read only the AWBs assigned to the profile their PIN unlocked. Management,
+   production, stock-in, drivers and HR read no AWB rows, issues, sort counts or
+   departures. This replaces the wider list in 2.3. Carton totals stay readable by every
+   active member (inventory). `operator_orders_trace` gives members without AWB access a
+   batch's cartons and issued totals with `parcels: false` and refuses AWB lookups.
+2. **Overview figures.** Per chosen day by default. `operator_orders_summary(ws, date, p_all)`
+   counts across the whole hot table when `p_all` is true. WP D adds the archive there.
+   C3 builds the screen.
+3. **Export.** At most 31 days per export (`operator_orders_export`, 22023 beyond that).
+4. **AWB reuse.** Couriers reuse tracking numbers after roughly 90 to 365 days, so an AWB
+   is never a key on its own. The primary key stays the surrogate uuid.
+   - Uniqueness in the hot table is `unique (workspace_id, awb, fulfil_date)`.
+   - Across days, `operator_private.assert_awb_reuse` allows the same AWB again only when
+     the earlier AWB was handed over more than 30 days before the later one's fulfilment
+     day. Both sides are Malaysia days; backfilled history without a handover time counts
+     from its fulfilment day. Otherwise the commit fails with 23505 "This AWB is already
+     recorded."
+   - The check runs on every inserted row and on every row whose AWB or day changes. It
+     first takes a per-(site, AWB) advisory lock, so two commits entering the same number
+     on different days cannot both pass.
+   - New column `operator_orders.dispatched_at` is stamped by the database on handover.
+     The Order shape carries it as `dispatchedAt` when set.
+   - WP D's archive should be keyed by the surrogate id with a non-unique index on
+     `(awb, date)`.
+   - Trace by AWB returns every occurrence, newest first.
+
+### Changes to the design and why
+
+- **Idempotency row.** The gate inserts `result = '{}'` (not null) and fills the result
+  at the end of the same transaction. The design's null/null insert would violate its own
+  `operator_commits_result` check. Nobody can read the placeholder: concurrent attempts
+  wait on the primary key.
+- **Stale versions** use `PT412`, as designed, with `detail = {"stale": [ids]}`. The
+  other codes are those of 3.7, plus 23505 for the AWB reuse rule.
+- **Sort-count gate.** The gate applies to `assign-package`, `assign-orders` and
+  `issue-orders`, not to single `issue`, for parity with draft.ts (its `issue` case has no
+  count check, and section 4's `tallyGate` list omits it). If the database alone refused
+  it, the server would sign changes the database rejects. Adding `issue` is one line in
+  step 12 if the owner wants it.
+- **Audit completeness.**
+  - `import-delete` writes one entry for the upload (draft.ts). That entry, whose entity
+    is the upload id, covers the AWBs it removes.
+  - Sort counts need an entry whose entity is the day, matching the TypeScript `log(date, …)`.
+- **Extra invariants**, all parity with draft.ts:
+  - `edit-order` keeps `original_expected = expected`.
+  - `pack` and `pack-own` may change only `actual` inside `lines`.
+  - Split parcels keep the original's channel, store, order reference, courier, upload,
+    label and day.
+  - Each family's row counts (one AWB, n AWBs) are enforced with 23514.
+- **Server-stamped columns.** The database stamps these and ignores any values sent for
+  them:
+  - `assigned_at` whenever `assigned_packer` is in the set (null when unassigning);
+  - `pack_recorded_at` on `pack` and `pack-own`;
+  - `packed_at` on `pack-own`;
+  - `dispatched_at` on handover;
+  - `version`, `created_*` and `updated_*`;
+  - issue and count `at` and `recorded_by`.
+- **Upload references** use a composite foreign key `(import_id, workspace_id)` to
+  `operator_imports`, so an AWB can only point at an upload of its own site.
+- **WP A effects** run through `apply_import_effects` unchanged. The records path builds
+  the document-shaped `orders` lists that the function expects from the touched rows.
+- **Document commit lock.** On a tables-mode site the site row lock is `FOR NO KEY UPDATE`.
+  A document-mode site still takes `FOR UPDATE`: it locks no-key first, then upgrades, so
+  document mode behaves exactly as before.
+- **Packer session.** The design's `x-operator-packer` header works with the PostgREST
+  build used here (16.4). This was checked with curl against the real binary: with a valid
+  seal, `operator_orders` returns only the packer's AWBs; without one it returns none, and
+  `operator_packer_page` answers 403. The helper also requires UUID-shaped site, user and
+  profile parts, as `openPackerSession` does.
+- **Latest sort count.** Counts recorded in tables mode rank above every backfilled count
+  (the backfill always comes first). Among backfilled counts, the recorded time decides.
+  Ordering by time alone would let a backfilled count with a future time hide a new one.
+- **Day marker** also counts the day's sort counts, so a new count refreshes `/day`.
+- **Demand hash** uses the built-in `sha256()` (same output as pgcrypto). The member's
+  read functions then do not need the `extensions` schema.
+- **Rules mirror.** The TypeScript copy of `operator_record_rules` is a separate
+  `recordRules` constant in `capabilities.ts`, not `commandRules[cmd].records`. This keeps
+  the existing `commandRules` parity test unchanged. `tests/capabilities.test.mjs` checks:
+  - `recordRules` equals the seed;
+  - every records command has the same capability as its document command;
+  - every document command touching orders, issues or sort counts has a records rule;
+  - `product_unit` and the channel check match `products` and `channels`.
+- **Moves.**
+  - Both moves are no-ops on a site already in the target store.
+  - `move_orders_to_tables` also refuses duplicate (AWB, day) pairs and pairs that break
+    the reuse rule.
+  - Times it cannot read become the epoch, which the day views treat as "before the day"
+    as before.
+  - Backfilled `created_at` is offset by microseconds so the way back restores the
+    document's newest-first order.
+  - `move_orders_to_document` refuses when issued totals and issue rows differ (archived
+    rows). It gives the latest count per (day, product) a matching `demandFingerprint`
+    when that count is still current.
+- **Read functions** are in C1: `operator_orders_page`, `_day`, `_summary`, `_trace`,
+  `_export`, `operator_packer_page` and `operator_packer_counts`. Section 6's
+  `/api/orders/people` aggregate has no SQL function. C3 can build it from the export
+  pages or add one.
+- **Limits:** 10,000 AWBs, 2,000 issues and 20 sort counts per change; change text up to
+  8 MB (22023 beyond).
+
+### What C2 must do
+
+- **Signing and calling.**
+  - Add `attestRecords` exactly as in 3.6: lines joined by `\n`; sha256 hex of the exact
+    change text and of `packerSession ?? ""`.
+  - Send the session only for `pack-own`.
+  - Treat a replay with `result: null` as a document-commit replay.
+- **Order shape.** `Order` gains `version?` and `dispatchedAt?`. `dispatch` may set
+  `dispatchedAt`; the database stamps its own time either way.
+- **AWB detection rule** for `order`, `edit-order`, `split-order`, upload review and
+  release:
+  - A same-AWB order already in the hot table is a duplicate or conflict, unless it was
+    handed over more than 30 days before the new order's day. Compare Malaysia days: the
+    day of `dispatchedAt`, or the existing order's day when that is missing.
+  - The slice loader for these commands must load every row with the same normalized AWB
+    on any day, including `dispatched_at`, not only the target day.
+  - The database gives 23505 for anything that slips through.
+- **Packer reads.** Packer reads send the sealed cookie value as `x-operator-packer` on
+  the user-scoped client.

@@ -143,6 +143,101 @@ export const commandRules: Record<
     stateKeys: ["staffProfiles", "events"],
   },
 };
+/**
+ * Order commands on a site whose orders are table rows (operator_workspaces.order_store =
+ * 'tables', since migration 20261014090000_operator_order_records): what each command may
+ * change through operator_commit_records. Mirrors the operator_record_rules seed;
+ * tests/capabilities.test.mjs checks they stay identical. Column names are the
+ * operator_orders columns (snake_case). The database copy is authoritative for writes.
+ */
+export type RecordRule = {
+  capability: Capability;
+  /** May insert AWB rows. */
+  orderInsert: boolean;
+  /** May delete AWB rows. */
+  orderDelete: boolean;
+  /** Columns an update may set (server-time columns in this list are stamped by the database). */
+  orderColumns: string[];
+  /** May insert stock issues. */
+  issues: boolean;
+  /** May insert supervisor sort counts. */
+  sortCounts: boolean;
+  /** The upload effect the command carries (operator_private.apply_import_effects). */
+  importEffects: "release" | "delete" | "rows" | null;
+};
+const rule = (
+  capability: Capability,
+  scope: Partial<Omit<RecordRule, "capability">> = {},
+): RecordRule => ({
+  capability,
+  orderInsert: false,
+  orderDelete: false,
+  orderColumns: [],
+  issues: false,
+  sortCounts: false,
+  importEffects: null,
+  ...scope,
+});
+const assignColumns = ["assigned_packer", "assigned_at"];
+const packColumns = [
+  "actual",
+  "lines",
+  "packer",
+  "label_pic",
+  "packed_at",
+  "pack_recorded_at",
+  "pack_recorded_by",
+];
+export const recordRules: Record<string, RecordRule> = {
+  order: rule("orders.enter", { orderInsert: true }),
+  "edit-order": rule("orders.enter", {
+    orderColumns: [
+      "awb",
+      "product",
+      "channel",
+      "package",
+      "expected",
+      "original_expected",
+      "lines",
+      "fulfil_date",
+    ],
+  }),
+  "review-order": rule("orders.enter", { orderColumns: ["review_state", "reviewed_by"] }),
+  "remove-order": rule("orders.enter", { orderDelete: true, importEffects: "rows" }),
+  "split-order": rule("orders.enter", {
+    orderInsert: true,
+    orderColumns: [
+      "awb",
+      "product",
+      "package",
+      "expected",
+      "original_expected",
+      "lines",
+      "review_state",
+      "reviewed_by",
+      "assigned_packer",
+      "assigned_at",
+      "printed",
+      "packer",
+      "label_pic",
+      "note",
+    ],
+  }),
+  "assign-package": rule("outbound.fulfil", { orderColumns: assignColumns }),
+  "assign-orders": rule("outbound.fulfil", { orderColumns: assignColumns }),
+  print: rule("outbound.fulfil", { orderColumns: ["printed"] }),
+  "print-orders": rule("outbound.fulfil", { orderColumns: ["printed"] }),
+  "move-orders": rule("outbound.fulfil", { orderColumns: ["fulfil_date"] }),
+  issue: rule("outbound.fulfil", { issues: true }),
+  "issue-orders": rule("outbound.fulfil", { issues: true }),
+  pack: rule("outbound.fulfil", { orderColumns: packColumns }),
+  "pack-own": rule("packing.record", { orderColumns: packColumns }),
+  correct: rule("outbound.correct", { orderColumns: ["expected", "actual", "lines"] }),
+  dispatch: rule("outbound.fulfil", { orderColumns: ["dispatched", "handover_ref"] }),
+  "sort-count": rule("outbound.fulfil", { sortCounts: true }),
+  "import-release": rule("orders.import", { orderInsert: true, importEffects: "release" }),
+  "import-delete": rule("orders.import", { orderDelete: true, importEffects: "delete" }),
+};
 export const grantableRoles: Partial<Record<MemberRole, MemberRole[]>> = {
   hr: [...memberRoles],
   production: ["packer", "driver"],

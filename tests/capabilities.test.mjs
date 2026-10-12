@@ -10,8 +10,11 @@ import {
   commandRules,
   grantableRoles,
   memberRoles,
+  recordRules,
   roleCapabilities,
 } from "../apps/web/src/lib/capabilities.ts";
+import { products } from "../apps/web/src/lib/draft.ts";
+import { channels } from "../apps/web/src/lib/awb-import.ts";
 
 const migration = (name) =>
   readFileSync(new URL(`../supabase/migrations/${name}.sql`, import.meta.url), "utf8");
@@ -222,4 +225,51 @@ test("every operational command stays inside its database scope", () => {
     "print",
     "split-order",
   ]);
+});
+
+// 20261014: orders, issues and sort counts as table rows; operator_record_rules scopes the
+// records path (operator_commit_records) per command.
+const records = migration("20261014090000_operator_order_records");
+const recordRow =
+  /\('([a-z-]+)', '([a-z.]+)', (true|false), (true|false), '\{([a-z_,]*)\}', (true|false), (true|false), (null|'[a-z]+')\)/g;
+
+test("record rules match the database seed", () => {
+  const block = section("operator_record_rules", records);
+  assert.match(block, /\(command, capability, order_insert, order_delete, order_columns, issues, sort_counts, import_effects\)/);
+  const rows = {};
+  for (const [, cmd, capability, insert, del, columns, issues, counts, effects] of block.matchAll(recordRow))
+    rows[cmd] = {
+      capability,
+      orderInsert: insert === "true",
+      orderDelete: del === "true",
+      orderColumns: columns ? columns.split(",") : [],
+      issues: issues === "true",
+      sortCounts: counts === "true",
+      importEffects: effects === "null" ? null : effects.slice(1, -1),
+    };
+  assert.equal(Object.keys(rows).length, 19);
+  assert.deepEqual(rows, recordRules);
+});
+
+test("every records command is a document command with the same capability", () => {
+  // Until the cutover (C4) both paths exist; a site's order_store decides which one runs.
+  for (const [cmd, r] of Object.entries(recordRules)) {
+    assert.ok(commandRules[cmd], cmd);
+    assert.equal(r.capability, commandRules[cmd].capability, cmd);
+  }
+  // Every document command that changes orders, issues or sort counts has a records rule.
+  for (const [cmd, r] of Object.entries(commandRules))
+    if (r.stateKeys.some((k) => ["orders", "issues", "sortCounts"].includes(k)))
+      assert.ok(recordRules[cmd], "no records rule for " + cmd);
+});
+
+test("the order tables accept exactly the app's products, units and channels", () => {
+  const unit = records.match(/create function operator_private\.product_unit[\s\S]*?\$\$\s*select case (.*?) end\s*\$\$/);
+  assert.ok(unit, "product_unit not found");
+  const mapped = {};
+  for (const [, one, many, u] of unit[1].matchAll(/when p (?:= '([a-z]+)'|in \(([^)]*)\)) then '([a-z]+)'/g))
+    for (const [p] of (one ?? many).matchAll(/[a-z]+/g)) mapped[p] = u;
+  assert.deepEqual(mapped, Object.fromEntries(products.map((p) => [p.id, p.unit])));
+  const channel = records.match(/channel text not null check \(channel in \(([^)]*)\)\)/);
+  assert.deepEqual([...channel[1].matchAll(/'([A-Za-z]+)'/g)].map(([, c]) => c), channels);
 });

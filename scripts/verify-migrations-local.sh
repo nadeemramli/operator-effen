@@ -15,7 +15,27 @@ for file in "$root"/supabase/migrations/*.sql; do
   "${psql[@]}" -f "$file"
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
+bash "$root/supabase/tests/operator_records_concurrency.sh" -h "$dir" -U postgres -d postgres
 echo "rollback rehearsal"
+# Order records go back into the documents (compared as sets) before the tables are dropped.
+site_c="'10000000-0000-4000-8000-0000000000c2'"
+orders="$("${psql[@]}" -At -c "select string_agg(id::text, ',' order by id) from public.operator_orders where workspace_id = $site_c")"
+issues="$("${psql[@]}" -At -c "select string_agg(id::text, ',' order by id) from public.operator_issues where workspace_id = $site_c")"
+[ -n "$orders" ] && [ -n "$issues" ]
+"${psql[@]}" -At -c "select count(*) from public.operator_workspaces where order_store = 'tables'" | grep -qx 2
+"${psql[@]}" -f "$root/supabase/rollback/20261014090000_operator_order_records.down.sql"
+"${psql[@]}" -At -c "select to_regclass('public.operator_orders') is null and to_regclass('public.operator_issues') is null
+  and to_regclass('public.operator_carton_issued') is null and to_regclass('public.operator_record_rules') is null
+  and to_regprocedure('public.operator_commit_records(uuid, text, uuid, text, text, text, text)') is null
+  and to_regprocedure('public.operator_commit_workspace(uuid, integer, text, uuid, text, text, text, text)') is not null
+  and not exists (select 1 from information_schema.columns where table_name = 'operator_workspaces' and column_name = 'order_store')
+  and not exists (select 1 from information_schema.columns where table_name = 'operator_commits' and column_name = 'result')
+  and exists (select 1 from information_schema.columns where table_name = 'operator_commits'
+    and column_name = 'result_revision' and is_nullable = 'NO')" | grep -qx t
+"${psql[@]}" -At -c "select string_agg(o ->> 'id', ',' order by (o ->> 'id')::uuid) from public.operator_workspaces w,
+  jsonb_array_elements(w.state -> 'orders') o where w.id = $site_c" | grep -qx "$orders"
+"${psql[@]}" -At -c "select string_agg(i ->> 'id', ',' order by (i ->> 'id')::uuid) from public.operator_workspaces w,
+  jsonb_array_elements(w.state -> 'issues') i where w.id = $site_c" | grep -qx "$issues"
 # Audit entries go back into the documents, newest first, before the table is dropped.
 entries="$("${psql[@]}" -At -c "select count(*) from public.operator_events where workspace_id = '10000000-0000-4000-8000-00000000000a'")"
 newest="$("${psql[@]}" -At -c "select id from public.operator_events where workspace_id = '10000000-0000-4000-8000-00000000000a' order by seq desc limit 1")"
@@ -130,4 +150,16 @@ before="$("${psql[@]}" -At -c "select revision from public.operator_workspaces w
 "${psql[@]}" -At -c "select string_agg(detail || '/' || command || '/' || coalesce(recorder ->> 'userId', '-'), ',' order by seq) from public.operator_events" \
   | grep -qx 'oldest/backfill/-,newest/backfill/00000000-0000-4000-8000-000000000002'
 "${psql[@]}" -At -c "select state ? 'events' from public.ui_draft_workspaces where user_id = '00000000-0000-4000-8000-000000000002'" | grep -qx t
+echo "order records: additive, every site stays in document mode"
+before="$("${psql[@]}" -At -c "select md5(string_agg(state::text || revision, ',' order by id)) from public.operator_workspaces")"
+"${psql[@]}" -f "$root/supabase/migrations/20261014090000_operator_order_records.sql"
+"${psql[@]}" -At -c "select md5(string_agg(state::text || revision, ',' order by id)) from public.operator_workspaces" | grep -qx "$before"
+"${psql[@]}" -At -c "select count(*) filter (where order_store <> 'document') || ':' || (select count(*) from public.operator_record_rules)
+  from public.operator_workspaces" | grep -qx '0:19'
+# The backfill refuses the legacy orders above (non-UUID identifiers) and names them; nothing moves.
+if "${psql[@]}" -c "select operator_private.move_orders_to_tables(id) from public.operator_workspaces where site_id = 'site-x'" 2>"$dir/move.err"; then
+  echo "move of malformed legacy orders was accepted"; exit 1
+fi
+grep -q 'AWB NVMYBF1: identifier is not a UUID' "$dir/move.err"
+"${psql[@]}" -At -c "select order_store || ':' || jsonb_array_length(state -> 'orders') from public.operator_workspaces where site_id = 'site-x'" | grep -qx 'document:3'
 echo "ok"
