@@ -623,7 +623,9 @@ export function validateImport(value: unknown): AwbImport {
       !text(f.path, 200) ||
       !whole(f.pages) ||
       f.pages > pageLimit ||
-      !whole(f.size) ||
+      // Byte count, not a quantity: whole() stops at 1,000,000, so check the range here.
+      !Number.isSafeInteger(f.size) ||
+      f.size < 1 ||
       f.size > 20 * 1024 * 1024 ||
       (f.skippedPages !== undefined &&
         (!Array.isArray(f.skippedPages) ||
