@@ -712,7 +712,9 @@ await check("C: stock-out SV adds packer profiles with PINs; PINs never reach th
   assert.equal(sql(`select count(*) from operator_private.staff_pins where workspace_id='${W.a}'`), "2");
   // PINs are digits. Hex identifiers (record UUIDs, file hashes) can contain any digit run
   // by chance, so they are stripped before the check; a PIN stored in a field survives it.
-  const text = JSON.stringify(stored(W.a)).replace(/[0-9a-f]{8,}/gi, "");
+  const text = JSON.stringify(stored(W.a))
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "")
+    .replace(/[0-9a-f]{8,}/gi, "");
   assert.ok(!text.includes("2468") && !text.includes("8642"), "PIN in workspace state");
   assert.equal((await pins(outC, "GET", null, "/api/staff-pins?workspace=" + W.a)).body.pins.length, 2);
 });
