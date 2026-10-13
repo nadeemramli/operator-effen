@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Check } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { PersonBadge } from "./person-profile";
@@ -366,112 +367,239 @@ export function OrderWorkspace({
                 ),
               0,
             );
+            const unit = units(lang, p.unit);
+            const assigned = productOrders.filter(
+              (o) => o.assignedPacker,
+            ).length;
+            const packedParcels = productOrders.filter(
+              (o) => o.actual !== null,
+            ).length;
+            // The day's work for a product, in the order it happens on the floor.
+            const done = [
+              !!r.count && !r.stale,
+              assigned === productOrders.length,
+              r.issued >= r.expected,
+              packedParcels === productOrders.length,
+            ];
+            const current = done.indexOf(false);
+            const step = (i: number) =>
+              "fulfilment-step" +
+              (done[i] ? " is-done" : i === current ? " is-current" : "");
+            const mark = (i: number) => (
+              <b className="fulfilment-step-mark" aria-hidden>
+                {done[i] ? <Check size={14} strokeWidth={3} /> : i + 1}
+              </b>
+            );
             return (
               <Panel
                 key={p.id}
                 title={p.name}
-                detail={`${productOrders.length} ${t("parcels", "bungkusan")} · ${productOrders.reduce((n, o) => n + o.expected, 0)} ${units(lang, p.unit)} · ${date}`}
+                detail={`${productOrders.length} ${t("parcels", "bungkusan")} · ${productOrders.reduce((n, o) => n + o.expected, 0)} ${unit} · ${date}`}
               >
-                <div className="product-count-bar">
-                  <div>
+                <ol className="fulfilment-steps">
+                  <li className={step(0)}>
                     <span>
-                      {t("Whole-day requirement", "Keperluan seluruh hari")}
+                      {mark(0)}
+                      {t("Count", "Kira")}
                     </span>
-                    <strong>
-                      {r.expected} <small>{units(lang, p.unit)}</small>
-                    </strong>
-                  </div>
-                  <div>
-                    <span>{t("Supervisor count", "Kiraan penyelia")}</span>
                     <strong>
                       {r.count?.counted ?? "—"}{" "}
-                      <small>{units(lang, p.unit)}</small>
-                    </strong>
-                    {r.count && (
-                      <small
-                        className={
-                          r.stale || r.count.counted !== r.expected
-                            ? "count-warning"
-                            : ""
-                        }
-                      >
-                        {r.stale
-                          ? t(
-                              "Orders changed — recount",
-                              "Pesanan berubah — kira semula",
-                            )
-                          : `${t("Difference", "Perbezaan")}: ${r.count.counted - r.expected}`}{" "}
-                        · {staffName(r.count.pic)}
+                      <small>
+                        / {r.expected} {unit}
                       </small>
-                    )}
-                  </div>
-                  <div>
-                    <span>
-                      {t("Issued / packed", "Dikeluarkan / dibungkus")}
-                    </span>
-                    <strong>
-                      {r.issued} / {r.packed}
                     </strong>
-                    <small>{units(lang, p.unit)}</small>
-                  </div>
-                  {supervisor && (
-                    <Button
-                      variant="outline"
-                      disabled={busy}
-                      onClick={() =>
-                        show({
-                          type: "sort-count",
-                          title: t(
-                            "Record supervisor count",
-                            "Rekod kiraan penyelia",
-                          ),
-                          description: `${p.name} · ${date} · ${t("Count the bottles or boxes needed from all sorted orders for this product today.", "Kira botol atau kotak diperlukan daripada semua pesanan produk yang diasingkan hari ini.")}`,
-                          summary: [
-                            {
-                              label: t(
-                                "System requirement",
-                                "Keperluan sistem",
-                              ),
-                              value: `${r.expected} ${units(lang, p.unit)}`,
-                            },
-                            {
-                              label: t("Parcels today", "Bungkusan hari ini"),
-                              value: String(r.awbs),
-                            },
-                          ],
-                          hidden: { date, product: p.id },
-                          fields: [
-                            {
-                              name: "counted",
-                              type: "number",
-                              min: 0,
-                              label: `${t("Your count", "Kiraan anda")} · ${units(lang, p.unit)}`,
-                              hint: t(
-                                "Enter your independent count. A difference will stay visible for review.",
-                                "Masukkan kiraan sendiri. Perbezaan kekal kelihatan untuk semakan.",
-                              ),
-                            },
-                            { ...pic(), compact: true },
-                            {
-                              name: "note",
-                              type: "textarea",
-                              label: t(
-                                "Reason for a difference or recount",
-                                "Sebab perbezaan atau kiraan semula",
-                              ),
-                              required: !!r.count,
-                            },
-                          ],
-                        })
+                    <small
+                      className={
+                        r.count &&
+                        (r.stale || r.count.counted !== r.expected)
+                          ? "count-warning"
+                          : ""
                       }
                     >
+                      {!r.count
+                        ? t(
+                            "Supervisor counts what today's orders need.",
+                            "Penyelia mengira keperluan pesanan hari ini.",
+                          )
+                        : r.stale
+                          ? t(
+                              "Orders changed — count again.",
+                              "Pesanan berubah — kira semula.",
+                            )
+                          : r.count.counted === r.expected
+                            ? `${t("Matches", "Sepadan")} · ${staffName(r.count.pic)}`
+                            : `${t("Off by", "Beza")} ${r.count.counted > r.expected ? "+" : ""}${r.count.counted - r.expected} · ${staffName(r.count.pic)}`}
+                    </small>
+                    {supervisor && (
+                      <Button
+                        size="sm"
+                        variant={!done[0] ? "default" : "outline"}
+                        disabled={busy}
+                        onClick={() =>
+                          show({
+                            type: "sort-count",
+                            title: t(
+                              "Record supervisor count",
+                              "Rekod kiraan penyelia",
+                            ),
+                            description: `${p.name} · ${date} · ${t("Count the bottles or boxes needed from all sorted orders for this product today.", "Kira botol atau kotak diperlukan daripada semua pesanan produk yang diasingkan hari ini.")}`,
+                            summary: [
+                              {
+                                label: t(
+                                  "System requirement",
+                                  "Keperluan sistem",
+                                ),
+                                value: `${r.expected} ${units(lang, p.unit)}`,
+                              },
+                              {
+                                label: t("Parcels today", "Bungkusan hari ini"),
+                                value: String(r.awbs),
+                              },
+                            ],
+                            hidden: { date, product: p.id },
+                            fields: [
+                              {
+                                name: "counted",
+                                type: "number",
+                                min: 0,
+                                label: `${t("Your count", "Kiraan anda")} · ${units(lang, p.unit)}`,
+                                hint: t(
+                                  "Enter your independent count. A difference will stay visible for review.",
+                                  "Masukkan kiraan sendiri. Perbezaan kekal kelihatan untuk semakan.",
+                                ),
+                              },
+                              { ...pic(), compact: true },
+                              {
+                                name: "note",
+                                type: "textarea",
+                                label: t(
+                                  "Reason for a difference or recount",
+                                  "Sebab perbezaan atau kiraan semula",
+                                ),
+                                required: !!r.count,
+                              },
+                            ],
+                          })
+                        }
+                      >
+                        {t(
+                          r.count ? "Update count" : "Record count",
+                          r.count ? "Kemas kini kiraan" : "Rekod kiraan",
+                        )}
+                      </Button>
+                    )}
+                  </li>
+                  <li className={step(1)}>
+                    <span>
+                      {mark(1)}
+                      {t("Assign packers", "Tugaskan pembungkus")}
+                    </span>
+                    <strong>
+                      {assigned}{" "}
+                      <small>
+                        / {productOrders.length} {t("parcels", "bungkusan")}
+                      </small>
+                    </strong>
+                    <small>
+                      {done[1]
+                        ? t(
+                            "Every parcel has a packer.",
+                            "Setiap bungkusan ada pembungkus.",
+                          )
+                        : t(
+                            "Use Assign packers on each package below.",
+                            "Guna Tugaskan pembungkus pada setiap pakej di bawah.",
+                          )}
+                    </small>
+                  </li>
+                  <li className={step(2)}>
+                    <span>
+                      {mark(2)}
+                      {t("Take from racks", "Ambil dari rak")}
+                    </span>
+                    <strong>
+                      {r.issued}{" "}
+                      <small>
+                        / {r.expected} {unit}
+                      </small>
+                    </strong>
+                    <small>
+                      {done[2]
+                        ? t(
+                            "All taken. Rack stock is updated.",
+                            "Semua diambil. Stok rak dikemas kini.",
+                          )
+                        : t(
+                            "Record what you pull off the rack and which batch it came from.",
+                            "Rekod stok yang diambil dari rak dan kelompoknya.",
+                          )}
+                    </small>
+                    {supervisor && !!remaining && (
+                      <Button
+                        size="sm"
+                        variant={current === 2 ? "default" : "outline"}
+                        disabled={busy}
+                        onClick={() =>
+                          show({
+                            type: "issue-orders",
+                            title: t(
+                              "Take stock from racks",
+                              "Ambil stok dari rak",
+                            ),
+                            description: `${p.name} · ${date} · ${remaining} ${unit} ${t("still to take", "masih perlu diambil")}`,
+                            hidden: { ids: issueOrders.map((o) => o.id) },
+                            fields: [
+                              {
+                                name: "cartonId",
+                                label: t("Batch / rack", "Kelompok / rak"),
+                                type: "select",
+                                options: stockCartons(state)
+                                  .filter(
+                                    (c) =>
+                                      c.product === p.id &&
+                                      available(state, c) > 0,
+                                  )
+                                  .map((c) => ({
+                                    value: c.id,
+                                    label: `${c.ref} · ${c.rack} · ${available(state, c)} ${units(lang, c.unit)}`,
+                                  })),
+                              },
+                              {
+                                name: "qty",
+                                type: "number",
+                                min: 1,
+                                label: `${t("Physically taken", "Sebenar diambil")} · ${unit}`,
+                                value: remaining,
+                              },
+                              { ...pic(), compact: true },
+                            ],
+                          })
+                        }
+                      >
+                        {t("Take stock", "Ambil stok")}
+                      </Button>
+                    )}
+                  </li>
+                  <li className={step(3)}>
+                    <span>
+                      {mark(3)}
+                      {t("Pack", "Bungkus")}
+                    </span>
+                    <strong>
+                      {r.packed}{" "}
+                      <small>
+                        / {r.expected} {unit}
+                      </small>
+                    </strong>
+                    <small>
+                      {packedParcels} / {productOrders.length}{" "}
                       {t(
-                        r.count ? "Update count" : "Record count",
-                        r.count ? "Kemas kini kiraan" : "Rekod kiraan",
+                        "parcels recorded. Packers record each parcel on the Packing page.",
+                        "bungkusan direkod. Pembungkus merekod setiap bungkusan di halaman Pembungkusan.",
                       )}
-                    </Button>
-                  )}
-                </div>
+                    </small>
+                  </li>
+                </ol>
                 <div className="table-scroll">
                   <table className="package-table">
                     <thead>
@@ -656,62 +784,6 @@ export function OrderWorkspace({
                     </tfoot>
                   </table>
                 </div>
-                {supervisor && (
-                  <div className="product-package-footer">
-                    <p>
-                      {remaining} {units(lang, p.unit)}{" "}
-                      {t(
-                        "still to issue for the packages shown",
-                        "masih perlu dikeluarkan untuk pakej dipaparkan",
-                      )}
-                    </p>
-                    <Button
-                      disabled={busy || !remaining}
-                      variant="outline"
-                      onClick={() =>
-                        show({
-                          type: "issue-orders",
-                          title: t(
-                            "Take stock from racks",
-                            "Ambil stok dari rak",
-                          ),
-                          description: `${p.name} · ${date} · ${remaining} ${units(lang, p.unit)} ${t("remaining", "berbaki")}`,
-                          hidden: { ids: issueOrders.map((o) => o.id) },
-                          fields: [
-                            {
-                              name: "cartonId",
-                              label: t("Batch / rack", "Kelompok / rak"),
-                              type: "select",
-                              options: stockCartons(state)
-                                .filter(
-                                  (c) =>
-                                    c.product === p.id &&
-                                    available(state, c) > 0,
-                                )
-                                .map((c) => ({
-                                  value: c.id,
-                                  label: `${c.ref} · ${c.rack} · ${available(state, c)} ${units(lang, c.unit)}`,
-                                })),
-                            },
-                            {
-                              name: "qty",
-                              type: "number",
-                              min: 1,
-                              label: t(
-                                "Units physically taken",
-                                "Unit sebenar diambil",
-                              ),
-                              value: remaining,
-                            },
-                            { ...pic(), compact: true },
-                          ],
-                        })
-                      }
-                    >
-                      {t("Issue stock", "Keluarkan stok")}
-                    </Button>
-                  </div>
-                )}
               </Panel>
             );
           })}
