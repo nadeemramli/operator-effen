@@ -1299,8 +1299,9 @@ td small {
   border-radius: 6px;
   cursor: pointer;
 }
-/* The radio covers its whole card, so a tap anywhere on the visible card selects it. */
-.pic-option input {
+/* The radio covers its whole card, so a tap anywhere on the visible card selects it. The
+   rule names the radio only: the "someone else" card also holds a visible name input. */
+.pic-option input[type="radio"] {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -1354,6 +1355,7 @@ td small {
 }
 .pic-option-input input {
   margin-top: 0;
+  width: 100%;
 }
 @media (max-width: 600px) {
   .production-nav {
