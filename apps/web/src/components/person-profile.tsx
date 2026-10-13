@@ -226,6 +226,7 @@ export function PersonSelect({
   lang,
   newOption,
   invalid,
+  placeholder,
 }: {
   name: string;
   options: { value: string; label: string }[];
@@ -234,11 +235,14 @@ export function PersonSelect({
   lang: Lang;
   newOption?: string;
   invalid?: boolean;
+  /** Text of the empty choice; optional fields keep it selectable. */
+  placeholder?: string;
 }) {
+  // An empty required list opens on "someone else"; an optional field stays unassigned.
   const initial =
     value !== undefined && options.some((o) => o.value === value)
       ? String(value)
-      : newOption && !options.length
+      : newOption && !options.length && required
         ? NEW_PERSON
         : "";
   const [chosen, setChosen] = useState(initial);
@@ -254,9 +258,10 @@ export function PersonSelect({
         required={required}
       >
         <option value="" disabled={required}>
-          {required
-            ? tr(lang, "Select…", "Pilih…")
-            : tr(lang, "Not specified", "Tidak dinyatakan")}
+          {placeholder ??
+            (required
+              ? tr(lang, "Select…", "Pilih…")
+              : tr(lang, "Not specified", "Tidak dinyatakan"))}
         </option>
         {options.map((o) => (
           <option key={o.value} value={o.value}>

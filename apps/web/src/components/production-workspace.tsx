@@ -18,7 +18,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { PersonBadge } from "./person-profile";
+import { PersonBadge, PersonSelect } from "./person-profile";
 import {
   MachineRegistry,
   ProcessPicHistory,
@@ -101,6 +101,7 @@ export function ProductionWorkspace({
   command,
   show,
   pic,
+  resolvePeople,
   number,
   closeDay,
   role,
@@ -119,6 +120,11 @@ export function ProductionWorkspace({
   ) => Promise<Draft | null>;
   show: (spec: FormSpec) => void;
   pic: (name?: string, label?: string) => Field;
+  /** Turns "someone else" person fields into team profiles before a save; null on failure. */
+  resolvePeople: (
+    values: Record<string, unknown>,
+    options: { names: string[]; onError: (message: string) => void },
+  ) => Promise<Record<string, unknown> | null>;
   number: (name: string, label: string, value?: number, min?: number) => Field;
   closeDay: () => void;
 }) {
@@ -561,12 +567,17 @@ export function ProductionWorkspace({
             .map((p) => p.id)}
           backHref={href("log")}
           defaultDate={workDate}
-          peopleOptions={pic().options ?? []}
-          onSave={async (input) => {
+          picField={pic()}
+          onSave={async (planned) => {
             let error = "";
-            const result = await command("batch", input, {
-              onError: (message) => (error = message),
+            const onError = (message: string) => (error = message);
+            // Planned PICs typed as new names become team profiles first.
+            const input = await resolvePeople(planned, {
+              names: Object.keys(planned).filter((k) => /^pic_\d+$/.test(k)),
+              onError,
             });
+            if (!input) return error || "Unable to save the planned PICs.";
+            const result = await command("batch", input, { onError });
             if (result)
               router.push(
                 href(
@@ -908,7 +919,7 @@ function BatchPlanForm({
   defaultProduct,
   productIds,
   defaultDate,
-  peopleOptions,
+  picField,
   backHref,
   onSave,
 }: {
@@ -918,7 +929,8 @@ function BatchPlanForm({
   /** Products this supervisor may plan. */
   productIds: string[];
   defaultDate: string;
-  peopleOptions: { value: string; label: string }[];
+  /** The site's person field: team presets and, for supervisors, "someone else". */
+  picField: Field;
   backHref: string;
   /** Resolves to an error message, or "" once saved. */
   onSave: (input: Record<string, unknown>) => Promise<string>;
@@ -1056,26 +1068,36 @@ function BatchPlanForm({
               <div key={productId + en}>
                 <span className="step-number">{i + 1}</span>
                 <strong>{t(en, ms)}</strong>
-                <label className="plan-pic-field">
-                  {t("Planned PIC", "PIC dirancang")}
-                  <select
-                    name={"pic_" + i}
-                    className="form-select"
-                    defaultValue=""
-                  >
-                    <option value="">
-                      {t(
+                <div className="plan-pic-field">
+                  <Label htmlFor={"field-pic_" + i}>
+                    {t("Planned PIC", "PIC dirancang")}
+                  </Label>
+                  {picField.type === "person" ? (
+                    <PersonSelect
+                      key={productId}
+                      name={"pic_" + i}
+                      options={picField.options ?? []}
+                      required={false}
+                      lang={lang}
+                      newOption={picField.newOption}
+                      placeholder={t(
                         "Assign now or later",
                         "Tetapkan sekarang atau kemudian",
                       )}
-                    </option>
-                    {peopleOptions.map((p) => (
-                      <option key={p.value} value={p.value}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    />
+                  ) : (
+                    <Input
+                      id={"field-pic_" + i}
+                      name={"pic_" + i}
+                      maxLength={60}
+                      autoComplete="off"
+                      placeholder={t(
+                        "Assign now or later",
+                        "Tetapkan sekarang atau kemudian",
+                      )}
+                    />
+                  )}
+                </div>
               </div>
             ))}
           </div>

@@ -699,15 +699,32 @@ export function DraftApp() {
    * the record stores a preset name. A name already on a team list, active or not, is reused
    * as it is spelt there: a deactivated teammate must not come back as a duplicate.
    */
-  async function withNewPeople(values: Record<string, unknown>) {
+  async function withNewPeople(
+    values: Record<string, unknown>,
+    options: {
+      /** Person fields to resolve; by default the open dialog form's. */
+      names?: string[];
+      /** Where to show a problem; by default on the open dialog form. */
+      onError?: (message: string) => void;
+    } = {},
+  ) {
     const next = { ...values };
-    for (const field of form?.fields ?? []) {
-      if (field.type !== "person" || next[field.name] !== NEW_PERSON) continue;
-      const typed = String(next[newPersonField(field.name)] ?? "").trim();
-      delete next[newPersonField(field.name)];
+    const names =
+      options.names ??
+      (form?.fields ?? [])
+        .filter((field) => field.type === "person")
+        .map((field) => field.name);
+    for (const name of names) {
+      if (next[name] !== NEW_PERSON) continue;
+      const typed = String(next[newPersonField(name)] ?? "").trim();
+      delete next[newPersonField(name)];
       if (!typed) {
-        setFormError(t("Type the person's name.", "Taip nama orang itu."));
-        setFormField(newPersonField(field.name));
+        const message = t("Type the person's name.", "Taip nama orang itu.");
+        if (options.onError) options.onError(message);
+        else {
+          setFormError(message);
+          setFormField(newPersonField(name));
+        }
         return null;
       }
       const existing = (state?.staffProfiles ?? []).find(
@@ -715,18 +732,18 @@ export function DraftApp() {
           isTeamRole(p.role) && p.name.toLowerCase() === typed.toLowerCase(),
       );
       if (existing) {
-        next[field.name] = existing.name;
+        next[name] = existing.name;
         continue;
       }
       if (picTeam) {
         const saved = await command(
           "staff-profile-create",
           { profileId: crypto.randomUUID(), name: typed, role: picTeam },
-          { keepForm: true },
+          { keepForm: true, onError: options.onError },
         );
         if (!saved) return null;
       }
-      next[field.name] = typed;
+      next[name] = typed;
     }
     return next;
   }
@@ -1788,6 +1805,7 @@ export function DraftApp() {
           command={command}
           show={show}
           pic={pic}
+          resolvePeople={withNewPeople}
           number={number}
           closeDay={closeDay}
           factoryScope={member ? actor?.factory : undefined}
