@@ -435,8 +435,8 @@ export function AwbIntake({
             </label>
             <p className="field-hint">
               {t(
-                "Text is read first. Any page without an AWB or order reference in its text is read by OCR automatically. Pages with no label (cover, title) are skipped. Keep this page open while processing.",
-                "Teks dibaca dahulu. Halaman tanpa AWB atau rujukan pesanan dalam teksnya dibaca dengan OCR secara automatik. Halaman tanpa label (kulit, tajuk) dilangkau. Biarkan halaman ini terbuka semasa pemprosesan.",
+                "Text is read first. Any page whose AWB is not in its text (an image label) is read by OCR automatically. Pages with no label (cover, title) are skipped. Keep this page open while processing.",
+                "Teks dibaca dahulu. Halaman yang AWB-nya tiada dalam teks (label imej) dibaca dengan OCR secara automatik. Halaman tanpa label (kulit, tajuk) dilangkau. Biarkan halaman ini terbuka semasa pemprosesan.",
               )}
             </p>
             <FormError message={error} />

@@ -219,6 +219,50 @@ export function needsOcr(text: string, force = false) {
   const { tracking, orderRefs } = detectReferences(text);
   return !tracking.length && !orderRefs.length;
 }
+/**
+ * Pages whose text has an order reference but no tracking number anywhere in the file:
+ * the label part is an image (common on Shopee and TikTok prints), so OCR reads it. A
+ * packing list whose order reference has a tracking number on another page is left alone.
+ */
+export function pagesNeedingAwbOcr(
+  pages: { page: number; text: string; method: string; error?: string }[],
+) {
+  const found = pages.map((p) => detectReferences(p.text));
+  const tracked = new Set(
+    found.flatMap((r) => (r.tracking.length ? r.orderRefs : [])),
+  );
+  return pages
+    .filter(
+      (p, i) =>
+        p.method === "text" &&
+        !p.error &&
+        !found[i].tracking.length &&
+        found[i].orderRefs.some((ref) => !tracked.has(ref)),
+    )
+    .map((p) => p.page);
+}
+const markers: [RegExp, string][] = [
+  [/TIKTOK/i, "TikTok"],
+  [/LAZADA/i, "Lazada"],
+  [/SHOPEE/i, "Shopee"],
+  [/NINJA/i, "Ninja Van"],
+  [/J\s*&\s*T/i, "J&T"],
+  [/\bLEX\b/i, "LEX"],
+];
+/**
+ * Adds what OCR found on a page that already had readable text: its tracking numbers and
+ * the courier and source names. The text layer stays the source of the order reference
+ * and products, so an OCR misread cannot add a second order or product.
+ */
+export function mergeOcrText(textLayer: string, ocrText: string) {
+  const added = [
+    ...markers
+      .filter(([re]) => re.test(ocrText) && !re.test(textLayer))
+      .map(([, name]) => name),
+    ...detectReferences(ocrText).tracking.map((t) => `Tracking: ${t}`),
+  ];
+  return added.length ? `${textLayer}\n${added.join("\n")}` : textLayer;
+}
 /** A page with no tracking number, order reference or known SKU produces no label row. */
 export const isLabelPage = (page: ParsedPage) => {
   if (page.error) return true;
@@ -307,6 +351,9 @@ export function parseImport(
             )
             .map((s) => s.toLowerCase());
     [...declared, ...bracketSkus, ...tableSkus].forEach((s) => {
+      // A parent SKU printed beside its variation ("adipocyde" with "adipocyde6") is not a product.
+      if (!defaultFor(s) && skus.some((k) => defaultFor(k) && k.startsWith(s)))
+        return;
       if (!skus.includes(s)) skus.push(s);
     });
     for (const sku of skus) {

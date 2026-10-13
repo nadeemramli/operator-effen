@@ -1,4 +1,10 @@
-import { needsOcr, pageLimit, type ParsedPage } from "./awb-import";
+import {
+  mergeOcrText,
+  needsOcr,
+  pageLimit,
+  pagesNeedingAwbOcr,
+  type ParsedPage,
+} from "./awb-import";
 
 export async function readAwbPdf(
   file: File,
@@ -24,6 +30,37 @@ export async function readAwbPdf(
   };
   signal.addEventListener("abort", abort, { once: true });
   const pages: ParsedPage[] = [];
+  const ocr = async (
+    page: Awaited<ReturnType<typeof doc.getPage>>,
+  ): Promise<string> => {
+    if (!worker) {
+      const { createWorker } = await import("tesseract.js");
+      worker = await createWorker("eng", 1, {
+        workerPath: "/vendor/ocr/worker.min.js",
+        corePath: "/vendor/ocr",
+        langPath: "/vendor/ocr",
+        workerBlobURL: false,
+        cacheMethod: "none",
+      });
+    }
+    signal.throwIfAborted();
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(
+      2.5,
+      Math.sqrt(5000000 / (base.width * base.height)),
+    );
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    try {
+      await page.render({ canvas, viewport }).promise;
+      return (await worker.recognize(canvas)).data.text;
+    } finally {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  };
   try {
     // Checked before any page is read, so an oversized upload fails in seconds, not after OCR.
     if (pagesBefore + doc.numPages > pageLimit)
@@ -66,33 +103,7 @@ export async function readAwbPdf(
         if (needsOcr(text, forceOcr)) {
           method = "ocr";
           progress(i, doc.numPages, true);
-          if (!worker) {
-            const { createWorker } = await import("tesseract.js");
-            worker = await createWorker("eng", 1, {
-              workerPath: "/vendor/ocr/worker.min.js",
-              corePath: "/vendor/ocr",
-              langPath: "/vendor/ocr",
-              workerBlobURL: false,
-              cacheMethod: "none",
-            });
-          }
-          signal.throwIfAborted();
-          const base = page.getViewport({ scale: 1 });
-          const scale = Math.min(
-            2.5,
-            Math.sqrt(5000000 / (base.width * base.height)),
-          );
-          const viewport = page.getViewport({ scale });
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.ceil(viewport.width);
-          canvas.height = Math.ceil(viewport.height);
-          try {
-            await page.render({ canvas, viewport }).promise;
-            text = (await worker.recognize(canvas)).data.text;
-          } finally {
-            canvas.width = 0;
-            canvas.height = 0;
-          }
+          text = await ocr(page);
         }
         pages.push({ file: fileId, page: i, text, method });
         page.cleanup();
@@ -107,6 +118,25 @@ export async function readAwbPdf(
         });
         if (error instanceof Error && /password/i.test(error.message))
           throw error;
+      }
+    }
+    // Second pass: a page with an order reference whose tracking number is nowhere in the
+    // text layer (an image label) is read by OCR, keeping its text for the order and products.
+    for (const n of pagesNeedingAwbOcr(pages)) {
+      signal.throwIfAborted();
+      progress(n, doc.numPages, true);
+      const entry = pages.find((p) => p.page === n)!;
+      try {
+        const page = await doc.getPage(n);
+        const merged = mergeOcrText(entry.text, await ocr(page));
+        page.cleanup();
+        if (merged !== entry.text) {
+          entry.text = merged;
+          entry.method = "ocr";
+        }
+      } catch {
+        // Keep the text-layer reading; the label stays in review without an AWB.
+        signal.throwIfAborted();
       }
     }
     return { pages, pageCount: doc.numPages };

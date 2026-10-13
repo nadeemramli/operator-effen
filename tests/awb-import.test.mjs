@@ -7,6 +7,8 @@ import {
   isLabelPage,
   pageLimit,
   needsOcr,
+  mergeOcrText,
+  pagesNeedingAwbOcr,
   parseImport,
   parsePages,
   rowProblems,
@@ -294,4 +296,57 @@ test("upload limits: 300 labels and 600 pages per upload, enforced by the valida
   assert.throws(() => validateImport(wide), /Invalid source file/);
   wide.files = [{ ...file, pages: pageLimit }];
   validateImport(wide);
+});
+
+// Shopee and TikTok prints often carry the order reference and products as text while the
+// courier label (tracking number) is an image.
+test("a page with an order reference but no tracking number anywhere in the file is read by OCR", () => {
+  const label = page("Shopee\nOrder ID: 2410130ABCDEF1\nadipocyde2 1", 1);
+  const packing = page("Order ID: 2410130ABCDEF1\nadipocyde2 1", 2);
+  const tracked = page("SPX Shopee\nSPXMY04123456789A\nOrder ID: 2410130ABCDEF2", 3);
+  const trackedPacking = page("Order ID: 2410130ABCDEF2\nadipocyde2 1", 4);
+  const cover = page("Daily orders", 5);
+  assert.deepEqual(
+    pagesNeedingAwbOcr([label, packing, tracked, trackedPacking, cover]),
+    [1, 2],
+    "a packing list whose label was read is not OCR'd again",
+  );
+  assert.deepEqual(pagesNeedingAwbOcr([page("", 1, "ocr")]), []);
+});
+
+test("OCR adds the tracking number and courier but keeps the order and products from the text", () => {
+  const text = "Order ID: 581234567890123456\nSeller SKU Qty\nsyn02 1";
+  const ocr = "TikTok Shop J&T EXPRESS\n630012345678\nOrder ID: 58l234567890123456\nsyn03 1";
+  const merged = mergeOcrText(text, ocr);
+  const { rows } = parseImport([page(merged, 1, "ocr")], "Luxana", "");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].awb, "630012345678");
+  assert.equal(rows[0].orderRef, "581234567890123456");
+  assert.equal(rows[0].channel, "TikTok");
+  assert.equal(rows[0].courier, "J&T");
+  assert.deepEqual(rows[0].lines.map((l) => l.sku), ["syn02"]);
+  assert.equal(mergeOcrText(text, "nothing useful"), text);
+  // The label and its packing list now link into one ready row.
+  const both = parseImport(
+    [page(mergeOcrText("Shopee\nOrder ID: 2410130ABCDEF1", "SPXMY04123456789A"), 1, "ocr"),
+      page("Order ID: 2410130ABCDEF1\nadipocyde2 1", 2)],
+    "Shopee",
+    "",
+  );
+  const live = both.rows.filter((r) => !r.excluded);
+  assert.equal(live.length, 1);
+  assert.equal(live[0].awb, "SPXMY04123456789A");
+  assert.deepEqual(rowProblems(live[0]), []);
+});
+
+test("a parent SKU printed beside its variation is not a second product", () => {
+  const rows = parsePages(
+    [page("SPX Shopee\nSPXMY04123456789A\nOrder ID: 000100\nSKU: adipocyde\n[adipocyde6] 1", 1)],
+    "Shopee",
+    "",
+  );
+  assert.deepEqual(rows[0].lines.map((l) => l.sku), ["adipocyde6"]);
+  // An unknown SKU that is not a parent of a known one still needs a decision.
+  const other = parsePages([page("SPX Shopee\nSPXMY04123456789A\nOrder ID: 000100\nSKU: mystery9\nadipocyde6 1", 1)], "Shopee", "");
+  assert.deepEqual(other[0].lines.map((l) => l.sku).sort(), ["adipocyde6", "mystery9"]);
 });
