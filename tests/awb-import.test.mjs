@@ -367,3 +367,29 @@ test("Glycoxil Singapore SKUs map to their box counts", () => {
   const rows = parsePages([page("Ninja Van\nNVMYTEST000009\nOrder ID: 1234567\ngly05sg 1", 1)], "Luxana", "");
   assert.deepEqual(rowProblems(rows[0]), []);
 });
+
+test("SPX tracking printed as MY + digits + letter is read as the AWB", () => {
+  const rows = parsePages(
+    [page("Shopee SPX\nMY263140741048F\nSPX Express Website\nOrder ID: 261012F0E81C4A\nadipocyde2 1", 1)],
+    "Shopee",
+    "",
+  );
+  assert.equal(rows[0].awb, "MY263140741048F");
+  assert.equal(rows[0].courier, "SPX");
+  assert.equal(rows[0].orderRef, "261012F0E81C4A");
+});
+
+test("a TikTok label's bare tracking number is found by its repeats; the courier is Other", () => {
+  const n = "680096552186413";
+  const text = [n, "TT 500-C48-JH345 Z05", n, "Sender Synovil HQ", n, "Phone 601160912301",
+    "Order ID: 581234567890123456", "Product Name SKU Seller SKU Qty",
+    "Synovil Original Pakej 1 Botol syn01 1", n].join("\n");
+  const rows = parsePages([page(text, 1)], "TikTok", "");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].awb, n);
+  assert.equal(rows[0].courier, "Other");
+  assert.equal(rows[0].orderRef, "581234567890123456");
+  assert.deepEqual(rowProblems(rows[0]), []);
+  // A long number printed once (a phone or order number) is not a tracking number.
+  assert.deepEqual(detectReferences("Phone 601160912301\nOrder ID: 581234567890123456").tracking, []);
+});

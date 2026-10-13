@@ -182,7 +182,8 @@ export function detectReferences(raw: string) {
   const tracking = [
     ...new Set(
       upper.match(
-        /\b(?:NVMY[A-Z0-9]{7,30}|SPXMY[A-Z0-9]{7,25}|SG\d{9,18}[A-Z]?|MYMP[A-Z0-9]{7,25})\b/g,
+        // SPX also prints its number as MY + digits + a letter (MY263140741048F).
+        /\b(?:NVMY[A-Z0-9]{7,30}|SPXMY[A-Z0-9]{7,25}|MY\d{10,14}[A-Z]|SG\d{9,18}[A-Z]?|MYMP[A-Z0-9]{7,25})\b/g,
       ) ?? [],
     ),
   ];
@@ -194,6 +195,14 @@ export function detectReferences(raw: string) {
   explicit.forEach((a) => {
     if (!tracking.includes(a)) tracking.push(a);
   });
+  // TikTok labels print a bare tracking number with no courier name, repeated along the
+  // barcode and the label edges; an order reference or phone number appears only once.
+  const counts = new Map<string, number>();
+  for (const n of upper.match(/\b\d{12,18}\b/g) ?? [])
+    counts.set(n, (counts.get(n) ?? 0) + 1);
+  for (const [n, c] of counts)
+    if (c >= 3 && !orderRefs.includes(n) && !tracking.includes(n))
+      tracking.push(n);
   if (/J\s*&\s*T/i.test(text)) {
     const nums = upper.match(/\b\d{12,15}\b/g) ?? [];
     nums
@@ -316,7 +325,10 @@ export function parseImport(
           ? "J&T"
           : /\bLEX\b|MYMP/i.test(text)
             ? "LEX"
-            : "";
+            : // A bare repeated tracking number (TikTok) names no courier.
+              tracking.some((t) => /^\d+$/.test(t))
+              ? "Other"
+              : "";
     const lines: ImportLine[] = [];
     const warnings: string[] = [];
     const rawLines = text
