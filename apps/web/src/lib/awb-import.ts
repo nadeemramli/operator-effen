@@ -58,6 +58,8 @@ export const packageDefaults: PackageDefault[] = [
   })),
   ...[
     ["syn01n", 1],
+    // TikTok prints the 1-pack as syn01; owner confirmed it is the same package as syn01n.
+    ["syn01", 1],
     ["syn02", 2],
     ["syn03", 3],
     ["syn04", 6],
@@ -73,7 +75,7 @@ export const packageDefaults: PackageDefault[] = [
     sku: String(sku),
     product: "syn",
     units: Number(units),
-    canonical: `SYN-${String(sku).endsWith("sg") || sku === "synovil03" ? "SG" : "MY"}-${sku === "syn01n" || sku === "syn1nsg" ? "PK1N" : sku === "syn2nsg" ? "PK2N" : sku === "syn6nsg" ? "PK6N" : sku === "syn04" ? "PK42" : `PK${units}`}`,
+    canonical: `SYN-${String(sku).endsWith("sg") || sku === "synovil03" ? "SG" : "MY"}-${sku === "syn01n" || sku === "syn01" || sku === "syn1nsg" ? "PK1N" : sku === "syn2nsg" ? "PK2N" : sku === "syn6nsg" ? "PK6N" : sku === "syn04" ? "PK42" : `PK${units}`}`,
   })),
   ...[
     ["adipocyde1", 1],

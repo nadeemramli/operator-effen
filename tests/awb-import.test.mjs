@@ -350,3 +350,10 @@ test("a parent SKU printed beside its variation is not a second product", () => 
   const other = parsePages([page("SPX Shopee\nSPXMY04123456789A\nOrder ID: 000100\nSKU: mystery9\nadipocyde6 1", 1)], "Shopee", "");
   assert.deepEqual(other[0].lines.map((l) => l.sku).sort(), ["adipocyde6", "mystery9"]);
 });
+
+test("TikTok's syn01 is the same 1-pack as syn01n", () => {
+  assert.deepEqual(
+    { ...defaultFor("syn01"), sku: "syn01n" },
+    defaultFor("syn01n"),
+  );
+});
