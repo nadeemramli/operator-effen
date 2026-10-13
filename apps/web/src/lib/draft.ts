@@ -515,17 +515,14 @@ export const teamProfiles = (
     )
     .map((p) => ({ id: p.id, name: p.name, role: p.role as TeamRole }));
 /**
- * Packers who can be assigned or record work: the site's active packer profiles, or the
- * sample packers while a workspace has no staff profiles yet.
+ * Packers who can be assigned or record work: the site's active packer profiles. A
+ * workspace without profiles has no packers until the stock-out supervisor adds them; the
+ * fictional preview starts with the two sample packers its sample orders are assigned to.
  */
 export const packerProfiles = (s: Pick<Draft, "staffProfiles">) =>
-  s.staffProfiles
-    ? s.staffProfiles
-        .filter((p) => p.role === "packer" && p.active !== false)
-        .map((p) => ({ id: p.id, name: p.name }))
-    : people
-        .filter((p) => p.includes("Packer"))
-        .map((p) => ({ id: p, name: p }));
+  (s.staffProfiles ?? [])
+    .filter((p) => p.role === "packer" && p.active !== false)
+    .map((p) => ({ id: p.id, name: p.name }));
 /** Display name for a stored performer reference (profile ID or legacy name). */
 export const staffName = (s: Pick<Draft, "staffProfiles">, ref?: string) =>
   (ref && s.staffProfiles?.find((p) => p.id === ref)?.name) || ref || "";
@@ -1070,6 +1067,12 @@ export function createDraft(): Draft {
     boxing: [],
     counts: [],
     adjustments: [],
+    // The sample packers the sample orders are assigned to and packed by (referenced by
+    // ID, which for these fixtures is the name). No sample PIC presets: the preview offers
+    // only the team profiles its testers add, exactly like an operational site.
+    staffProfiles: people
+      .filter((p) => p.includes("Packer"))
+      .map((p) => ({ id: p, name: p, role: "packer" as Role, active: true })),
     events: [
       {
         id: "seed",
@@ -2517,9 +2520,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
             "This AWB is assigned to another packer. Ask your supervisor to reassign it.",
           );
       } else if (
-        s.staffProfiles &&
-        !s.staffProfiles.some((p) => p.id === packer && p.role === "packer")
+        !(s.staffProfiles ?? []).some(
+          (p) => p.id === packer && p.role === "packer",
+        )
       )
+        // Always a packer profile: a site without profiles cannot record packing by name.
         throw new Error("Choose the actual packer's profile.");
       const reason = own ? "" : str("reason", false);
       if (packer !== o.assignedPacker && !reason)

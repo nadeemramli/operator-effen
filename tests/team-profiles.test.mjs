@@ -47,6 +47,14 @@ const site = () => ({ ...createDraft(), staffProfiles: undefined });
 test("an operational workspace offers no sample names: presets come from team profiles", () => {
   let s = site();
   assert.deepEqual(teamProfiles(s), []);
+  // Without profiles there are no packers either: nothing falls back to sample people.
+  assert.deepEqual(packerProfiles(s), []);
+  // The fictional preview seeds only the two sample packers its sample orders need.
+  assert.deepEqual(teamProfiles(createDraft()), []);
+  assert.deepEqual(
+    packerProfiles(createDraft()).map((p) => p.name),
+    ["Sample Packer A", "Sample Packer B"],
+  );
   s = run(s, PROD, "staff-profile-create", {
     profileId: ids[0],
     name: "Synthetic Faris",

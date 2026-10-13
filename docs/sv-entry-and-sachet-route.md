@@ -248,8 +248,9 @@ packed. The supervisor still corrects saved counts and reviews the daily tally. 
 
 The same `staff-profile-create` / `staff-profile-update` commands take a `role`: `packer`
 (default, as above) or a team, `production`, `intake` or `outbound`. Team profiles are the
-preset names offered wherever a PIC is recorded; operational workspaces offer nothing else
-(the fictional preview keeps its sample names only until a profile is added). Each team's
+preset names offered wherever a PIC is recorded; nothing else is offered, in the preview as
+much as in an operational workspace, and a site without packer profiles has no packers
+(the fictional preview seeds the two sample packers its sample orders need). Each team's
 supervisor manages their own list (the stock-out supervisor also manages packers); HR manages
 all. Active team names are unique across the three teams, case-insensitively; packer names
 remain a separate list. Records keep the **name**, not the profile ID, so renames and

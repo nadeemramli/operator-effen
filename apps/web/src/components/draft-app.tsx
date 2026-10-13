@@ -109,7 +109,6 @@ import {
   orderLines,
   packEntrySource,
   packerProfiles,
-  people,
   previewCapabilities,
   teamProfiles,
   product,
@@ -670,12 +669,10 @@ export function DraftApp() {
     label = t("Person responsible (PIC)", "Orang bertanggungjawab (PIC)"),
   ): Field => {
     // Records store the name itself; packer profiles (PIN sign-in, referenced by ID) are
-    // separate and never offered as process PICs. Operational workspaces offer the site's
-    // own people only; the fictional preview keeps its sample names until one is added.
+    // separate and never offered as process PICs. Only the site's own team profiles are
+    // offered, in the preview as much as in an operational workspace: no sample names.
     const presets = teamProfiles(state ?? { staffProfiles: undefined }, picTeam);
-    const names =
-      presets.length || member ? presets.map((p) => p.name) : people;
-    const options = names.map((n) => ({ value: n, label: n }));
+    const options = presets.map((p) => ({ value: p.name, label: p.name }));
     if (!options.length && !canAddPeople)
       return {
         name,
@@ -691,16 +688,10 @@ export function DraftApp() {
       type: "person",
       options,
       newOption: canAddPeople ? t("Someone else", "Orang lain") : undefined,
-      hint:
-        member || presets.length
-          ? t(
-              "Tap who did the work. A name added here is offered to everyone at the site from now on.",
-              "Pilih siapa yang melakukan kerja. Nama yang ditambah di sini ditawarkan kepada semua di tapak mulai sekarang.",
-            )
-          : t(
-              "Sample people for this draft. Add a name and it stays as a preset.",
-              "Nama contoh untuk draf. Tambah nama dan ia kekal sebagai pilihan tetap.",
-            ),
+      hint: t(
+        "Tap who did the work. A name added here is offered to everyone at the site from now on.",
+        "Pilih siapa yang melakukan kerja. Nama yang ditambah di sini ditawarkan kepada semua di tapak mulai sekarang.",
+      ),
     };
   };
   /**
@@ -1278,17 +1269,13 @@ export function DraftApp() {
         },
       ],
     });
-  const packerOptions = (
-    state?.staffProfiles
-      ? state.staffProfiles
-          .filter((p) => p.role === "packer")
-          .map((p) => ({ id: p.id, name: p.name }))
-      : people.map((p) => ({ id: p, name: p }))
+  // Active packers only: a parcel is packed by someone on today's list.
+  const packerOptions = packerProfiles(
+    state ?? { staffProfiles: undefined },
   ).map((p) => ({ value: p.id, label: p.name }));
-  // Everyone with a profile at the site (team names are stored as names, packers by ID);
-  // the fictional preview also lists its sample names.
-  const reportPeople = () => {
-    const profiles = (state?.staffProfiles ?? []).map((p) => ({
+  // Everyone with a profile at the site: team names are stored as names, packers by ID.
+  const reportPeople = () =>
+    (state?.staffProfiles ?? []).map((p) => ({
       id: p.id,
       name: p.name,
       caption:
@@ -1296,18 +1283,6 @@ export function DraftApp() {
         (p.active === false ? t(" · inactive", " · tidak aktif") : ""),
       is: (ref?: string) => !!ref && (ref === p.name || ref === p.id),
     }));
-    const samples = member
-      ? []
-      : people
-          .filter((n) => !profiles.some((p) => p.name === n))
-          .map((n) => ({
-            id: n,
-            name: n,
-            caption: undefined,
-            is: (ref?: string) => ref === n,
-          }));
-    return [...profiles, ...samples];
-  };
   const search = (value: string) =>
     value.toLowerCase().includes(query.toLowerCase());
   const filteredOrders =

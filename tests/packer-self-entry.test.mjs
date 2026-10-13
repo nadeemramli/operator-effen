@@ -38,6 +38,8 @@ const run = (s, actor, type, input, performer) => {
 function day() {
   let s = createDraft();
   s.orders = [];
+  // An operational site: no sample packers.
+  s.staffProfiles = [];
   s = run(s, SV, "staff-profile-create", { profileId: ALI, name: "Sample Ali" });
   s = run(s, SV, "staff-profile-create", { profileId: ABU, name: "Sample Abu" });
   for (const awb of ["SYN-1", "SYN-2"]) {

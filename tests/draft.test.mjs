@@ -399,13 +399,14 @@ test("adjustments require a reason and cannot be applied twice", () => {
 });
 test("packer counts must be explicit and cannot overwrite an existing count", () => {
   const s = createDraft();
-  s.orders.find((o) => o.id === "o-3").assignedPacker = "X";
+  const X = "Sample Packer A";
+  s.orders.find((o) => o.id === "o-3").assignedPacker = X;
   assert.throws(
     () =>
       run(s, "outbound", "pack", {
         id: "o-3",
         actual: "",
-        pic: "X",
+        pic: X,
         labelPic: "Y",
       }),
     /actual/,
@@ -415,15 +416,21 @@ test("packer counts must be explicit and cannot overwrite an existing count", ()
       run(s, "outbound", "pack", {
         id: "o-2",
         actual: 2,
-        pic: "X",
+        pic: X,
         labelPic: "Y",
       }),
     /supervisor correction/,
   );
+  // The packer is always a packer profile, never a free name.
+  assert.throws(
+    () =>
+      run(s, "outbound", "pack", { id: "o-3", actual: 0, pic: "X", labelPic: "Y" }),
+    /actual packer's profile/,
+  );
   const updated = run(s, "outbound", "pack", {
     id: "o-3",
     actual: 0,
-    pic: "X",
+    pic: X,
     labelPic: "Y",
   });
   assert.equal(updated.orders.find((o) => o.id === "o-3").actual, 0);
