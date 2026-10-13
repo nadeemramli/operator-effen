@@ -201,6 +201,37 @@ await check("A: supervisor's direct RPC with a replacement state is refused by t
   assert.equal(stored(W.a).batches.find((b) => b.id === batchId).transferredAt, undefined);
 });
 
+await check("A: PIC presets are team profiles, not sample names", async () => {
+  // An operational site offers no sample people: the person picker is empty until a
+  // supervisor adds a teammate, through the Team sheet or on the spot in a record.
+  const fresh = await load(prod);
+  assert.equal((fresh.state.staffProfiles ?? []).length, 0);
+  const presets = {
+    production: ["Sample PIC A", "Sample PIC B"],
+    intake: ["Sample PIC C", "Sample PIC D"],
+  };
+  for (const [role, names] of Object.entries(presets))
+    for (const name of names) {
+      const r = await post(role === "intake" ? intake : prod, "staff-profile-create", { profileId: randomUUID(), name, role }, { role });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+    }
+  // The stock-in supervisor cannot add to the production team; HR could.
+  const wrong = await post(intake, "staff-profile-create", { profileId: randomUUID(), name: "Sample PIC E", role: "production" }, { role: "intake" });
+  assert.equal(wrong.status, 400, JSON.stringify(wrong.body));
+  assert.match(wrong.body.error, /responsible supervisor/);
+  const profiles = stored(W.a).staffProfiles;
+  assert.deepEqual(profiles.map((p) => p.role + ":" + p.name).sort(), [
+    "intake:Sample PIC C", "intake:Sample PIC D", "production:Sample PIC A", "production:Sample PIC B",
+  ]);
+  // Each supervisor's picker offers their own team's names only.
+  await prod.page.goto("/?view=production&production=log&date=2026-10-03");
+  await prod.page.getByRole("button", { name: /^Team$|Production supervisor team/ }).first().click();
+  const sheet = prod.page.getByRole("dialog");
+  await sheet.getByText("Sample PIC A").waitFor();
+  assert.equal(await sheet.getByText("Sample PIC C").count(), 0);
+  await prod.page.keyboard.press("Escape");
+});
+
 await check("A: machines added by production are shared with stock-in", async () => {
   for (const [stage, name] of [["hologram", "INT Holo Alpha"], ["hologram", "INT Holo Beta"], ["mixing", "INT Mixer"]]) {
     const r = await post(prod, "machine-create", { stage, name });
@@ -257,13 +288,15 @@ await check("A: stock-in records Hologram through the UI person picker (visible 
   const dialog = intake.page.getByRole("dialog");
   await dialog.locator('select[name="machineId"]').selectOption({ label: "INT Holo Alpha" });
   await dialog.locator('input[name="occurredAt"]').fill("2026-10-03T10:30");
-  // A plain click on the visible card, then the accessible radio itself.
-  await dialog.locator("label.pic-option", { hasText: "Sample PIC B" }).click();
-  assert.equal(await dialog.getByRole("radio", { name: /Sample PIC B/ }).isChecked(), true);
+  // The stock-in team's presets only; a plain click on the visible card, then the
+  // accessible radio itself.
+  assert.equal(await dialog.getByRole("radio", { name: /Sample PIC A/ }).count(), 0);
+  await dialog.locator("label.pic-option", { hasText: "Sample PIC D" }).click();
+  assert.equal(await dialog.getByRole("radio", { name: /Sample PIC D/ }).isChecked(), true);
   const person = dialog.getByRole("radio", { name: /Sample PIC C/ });
   await person.check();
   assert.equal(await person.isChecked(), true);
-  assert.equal(await dialog.getByRole("radio", { name: /Sample PIC B/ }).isChecked(), false);
+  assert.equal(await dialog.getByRole("radio", { name: /Sample PIC D/ }).isChecked(), false);
   await dialog.getByRole("button", { name: /Save record/ }).click();
   await dialog.waitFor({ state: "hidden" });
   const holo = stored(W.a).batches.find((b) => b.id === batchId).steps.find((s) => s.sachetStage === "hologram");

@@ -44,6 +44,7 @@ import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { DriverTrips } from "./driver-trips";
 import { PackerProfiles, PackerUnlock } from "./packer-station";
+import { TeamProfiles } from "./team-profiles";
 import { channels } from "@/lib/awb-import";
 import {
   allowedViews,
@@ -51,7 +52,7 @@ import {
   resolveView,
   type View,
 } from "@/lib/landing";
-import { PersonBadge } from "./person-profile";
+import { NEW_PERSON, newPersonField, PersonBadge } from "./person-profile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -98,16 +99,18 @@ import {
   stageDone,
   warehouseStages,
   isQcStep,
+  isTeamRole,
   adypocideReceipts,
   stockCartons,
   type AdypocideReceipt,
+  type TeamRole,
   batchUnit,
   orderIssued,
   orderLines,
   packEntrySource,
   packerProfiles,
-  people,
   previewCapabilities,
+  teamProfiles,
   product,
   products,
   recorderLabel,
@@ -509,9 +512,11 @@ export function DraftApp() {
       retry?: PendingSave;
       /** Show the error next to the caller's own button instead of at page level. */
       onError?: (message: string) => void;
+      /** Leave the open form in place: a preparatory save before the form's own. */
+      keepForm?: boolean;
     } = {},
   ) {
-    const { retry, onError } = options;
+    const { retry, onError, keepForm } = options;
     if (viewingAs) {
       if (onError) onError(viewOnlyMessage());
       else fail(viewOnlyMessage());
@@ -611,7 +616,7 @@ export function DraftApp() {
       setState(data.state);
       setRevision(data.revision);
       revisionRef.current = data.revision;
-      setForm(null);
+      if (!keepForm) setForm(null);
       setReset(false);
       setNotice(
         data.replayed
@@ -656,25 +661,75 @@ export function DraftApp() {
     }
     setForm(spec);
   }
+  // The team whose preset names a person field offers: the signed-in supervisor's own.
+  const picTeam: TeamRole | undefined = isTeamRole(role) ? role : undefined;
+  const canAddPeople = !!picTeam && can("members.manage") && !viewingAs;
   const pic = (
     name = "pic",
     label = t("Person responsible (PIC)", "Orang bertanggungjawab (PIC)"),
-  ): Field => ({
-    name,
-    label,
-    type: "person",
-    // Packer profiles exist only for the shared packer sign-in; they never replace the
-    // people offered as process PICs.
-    options: state?.staffProfiles?.some((p) => p.role !== "packer")
-      ? state.staffProfiles
-          .filter((p) => p.role !== "packer")
-          .map((p) => ({ value: p.id, label: p.name }))
-      : people.map((p) => ({ value: p, label: p })),
-    hint: t(
-      "Sample people for this draft. Real staff will be added later.",
-      "Nama contoh untuk draf. Kakitangan sebenar akan ditambah kemudian.",
-    ),
-  });
+  ): Field => {
+    // Records store the name itself; packer profiles (PIN sign-in, referenced by ID) are
+    // separate and never offered as process PICs. Only the site's own team profiles are
+    // offered, in the preview as much as in an operational workspace: no sample names.
+    const presets = teamProfiles(state ?? { staffProfiles: undefined }, picTeam);
+    const options = presets.map((p) => ({ value: p.name, label: p.name }));
+    if (!options.length && !canAddPeople)
+      return {
+        name,
+        label,
+        hint: t(
+          "Type the person's name. Supervisors add their team's names so they can be tapped instead.",
+          "Taip nama orang itu. Penyelia menambah nama pasukan supaya boleh dipilih.",
+        ),
+      };
+    return {
+      name,
+      label,
+      type: "person",
+      options,
+      newOption: canAddPeople ? t("Someone else", "Orang lain") : undefined,
+      hint: t(
+        "Tap who did the work. A name added here is offered to everyone at the site from now on.",
+        "Pilih siapa yang melakukan kerja. Nama yang ditambah di sini ditawarkan kepada semua di tapak mulai sekarang.",
+      ),
+    };
+  };
+  /**
+   * A person field set to "someone else": save the typed name as a team profile first, so
+   * the record stores a preset name. A name already on a team list, active or not, is reused
+   * as it is spelt there: a deactivated teammate must not come back as a duplicate.
+   */
+  async function withNewPeople(values: Record<string, unknown>) {
+    const next = { ...values };
+    for (const field of form?.fields ?? []) {
+      if (field.type !== "person" || next[field.name] !== NEW_PERSON) continue;
+      const typed = String(next[newPersonField(field.name)] ?? "").trim();
+      delete next[newPersonField(field.name)];
+      if (!typed) {
+        setFormError(t("Type the person's name.", "Taip nama orang itu."));
+        setFormField(newPersonField(field.name));
+        return null;
+      }
+      const existing = (state?.staffProfiles ?? []).find(
+        (p) =>
+          isTeamRole(p.role) && p.name.toLowerCase() === typed.toLowerCase(),
+      );
+      if (existing) {
+        next[field.name] = existing.name;
+        continue;
+      }
+      if (picTeam) {
+        const saved = await command(
+          "staff-profile-create",
+          { profileId: crypto.randomUUID(), name: typed, role: picTeam },
+          { keepForm: true },
+        );
+        if (!saved) return null;
+      }
+      next[field.name] = typed;
+    }
+    return next;
+  }
   const number = (
     name: string,
     label: string,
@@ -997,8 +1052,12 @@ export function DraftApp() {
       fields: [
         {
           ...pic("pic", t("Actual packer", "Pembungkus sebenar")),
+          type: "person",
           options: packerOptions,
           value: o.assignedPacker,
+          // Packers are added with their PIN on the packing station, not here.
+          newOption: undefined,
+          hint: undefined,
         },
         ...orderLines(o).map((l) =>
           number(
@@ -1210,13 +1269,20 @@ export function DraftApp() {
         },
       ],
     });
-  const packerOptions = (
-    state?.staffProfiles
-      ? state.staffProfiles
-          .filter((p) => p.role === "packer")
-          .map((p) => ({ id: p.id, name: p.name }))
-      : people.map((p) => ({ id: p, name: p }))
+  // Active packers only: a parcel is packed by someone on today's list.
+  const packerOptions = packerProfiles(
+    state ?? { staffProfiles: undefined },
   ).map((p) => ({ value: p.id, label: p.name }));
+  // Everyone with a profile at the site: team names are stored as names, packers by ID.
+  const reportPeople = () =>
+    (state?.staffProfiles ?? []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      caption:
+        roleName(p.role) +
+        (p.active === false ? t(" · inactive", " · tidak aktif") : ""),
+      is: (ref?: string) => !!ref && (ref === p.name || ref === p.id),
+    }));
   const search = (value: string) =>
     value.toLowerCase().includes(query.toLowerCase());
   const filteredOrders =
@@ -2563,23 +2629,27 @@ export function DraftApp() {
                   </tr>
                 </thead>
                 <tbody>
-                  {people.map((p) => (
-                    <tr key={p}>
+                  {reportPeople().map((p) => (
+                    <tr key={p.id}>
                       <td>
-                        <PersonBadge name={p} lang={lang} />
+                        <PersonBadge
+                          name={p.name}
+                          lang={lang}
+                          caption={p.caption}
+                        />
                       </td>
                       <td className="num">
                         {
                           state.batches
                             .flatMap((b) => b.steps)
-                            .filter((s) => s.done && s.pic === p).length
+                            .filter((s) => s.done && p.is(s.pic)).length
                         }
                       </td>
                       <td className="num">
-                        {state.orders.filter((o) => o.packer === p).length}
+                        {state.orders.filter((o) => p.is(o.packer)).length}
                       </td>
                       <td className="num">
-                        {state.orders.filter((o) => o.labelPic === p).length}
+                        {state.orders.filter((o) => p.is(o.labelPic)).length}
                       </td>
                     </tr>
                   ))}
@@ -3017,22 +3087,33 @@ export function DraftApp() {
               <h1>{copy[view][lang === "ms" ? 1 : 0]}</h1>
               <p>{copy[view][lang === "ms" ? 3 : 2]}</p>
             </div>
-            <Button
-              variant="outline"
-              className="refresh-button"
-              aria-label={t(
-                "Refresh shared records",
-                "Muat semula rekod bersama",
+            <div className="page-heading-actions">
+              {state && canAddPeople && picTeam && (
+                <TeamProfiles
+                  state={state}
+                  lang={lang}
+                  busy={busy}
+                  team={picTeam}
+                  command={command}
+                />
               )}
-              disabled={busy}
-              onClick={() => {
-                setNotice("");
-                void load(actor?.workspaceId);
-              }}
-            >
-              <RefreshCw size={15} />
-              <span>{t("Refresh", "Muat semula")}</span>
-            </Button>
+              <Button
+                variant="outline"
+                className="refresh-button"
+                aria-label={t(
+                  "Refresh shared records",
+                  "Muat semula rekod bersama",
+                )}
+                disabled={busy}
+                onClick={() => {
+                  setNotice("");
+                  void load(actor?.workspaceId);
+                }}
+              >
+                <RefreshCw size={15} />
+                <span>{t("Refresh", "Muat semula")}</span>
+              </Button>
+            </div>
           </div>
           <FormError
             className="mb-5"
@@ -3136,8 +3217,10 @@ export function DraftApp() {
         }
         onClose={() => setForm(null)}
         onSubmit={async (type, values) => {
-          if (type !== "return-pick") return command(type, values);
-          returnDetails(String(values.batchId ?? ""));
+          const input = await withNewPeople(values);
+          if (!input) return null;
+          if (type !== "return-pick") return command(type, input);
+          returnDetails(String(input.batchId ?? ""));
           return null;
         }}
       />
@@ -3246,7 +3329,7 @@ export function DraftApp() {
                     label={t("Packer", "Pembungkus")}
                     value={
                       <PersonBadge
-                        name={selectedOrder.packer}
+                        name={staffName(state, selectedOrder.packer)}
                         lang={lang}
                         caption={t("Packed by", "Dibungkus oleh")}
                       />
@@ -3270,7 +3353,7 @@ export function DraftApp() {
                     label={t("AWB attached by", "AWB dilekatkan oleh")}
                     value={
                       <PersonBadge
-                        name={selectedOrder.labelPic}
+                        name={staffName(state, selectedOrder.labelPic)}
                         lang={lang}
                         caption={t("AWB attached by", "AWB dilekatkan oleh")}
                       />

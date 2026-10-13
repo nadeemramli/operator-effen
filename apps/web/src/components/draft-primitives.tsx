@@ -1,5 +1,5 @@
 "use client";
-import { PersonPicker, PersonBadge } from "./person-profile";
+import { PersonPicker, PersonBadge, PersonSelect } from "./person-profile";
 import { TripPhotoInput } from "./trip-photo";
 import { FormError } from "./form-error";
 export { FormError } from "./form-error";
@@ -261,6 +261,10 @@ export type Field = {
   /** List fields: the most entries allowed. */
   max?: number;
   hint?: string;
+  /** Person fields: label of the "someone else" choice that adds a new team profile. */
+  newOption?: string;
+  /** Person fields: render as a select instead of tap cards, for dense forms. */
+  compact?: boolean;
   profile?: { name: string; caption?: string };
   /** Photo fields: the operational workspace the photo is stored under. */
   workspace?: string;
@@ -398,6 +402,16 @@ export function ActionForm({
                   />
                 ) : field.type === "list" ? (
                   <ListInput field={field} lang={lang} />
+                ) : field.type === "person" && field.compact ? (
+                  <PersonSelect
+                    name={field.name}
+                    options={field.options ?? []}
+                    value={field.value}
+                    required={field.required !== false}
+                    lang={lang}
+                    newOption={field.newOption}
+                    invalid={invalid(field.name)}
+                  />
                 ) : field.type === "person" ? (
                   <PersonPicker
                     name={field.name}
@@ -406,6 +420,7 @@ export function ActionForm({
                     value={field.value}
                     required={field.required !== false}
                     lang={lang}
+                    newOption={field.newOption}
                   />
                 ) : field.type === "select" ? (
                   <select

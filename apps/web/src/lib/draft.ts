@@ -74,6 +74,10 @@ export const products = [
     color: "var(--chart-5)",
   },
 ];
+/**
+ * Fictional names for the preview sandbox and its sample records only. Operational
+ * workspaces offer the site's own staff profiles (see teamProfiles) and never these.
+ */
 export const people = [
   "Sample PIC A",
   "Sample PIC B",
@@ -482,17 +486,43 @@ export interface StaffProfile {
 export const staffProfileId =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /**
- * Packers who can be assigned or record work: the site's active packer profiles, or the
- * sample packers while a workspace has no staff profiles yet.
+ * Staff profiles come in two kinds. Packer profiles carry a PIN and are referenced by ID.
+ * Team profiles (production, stock-in, stock-out) are the preset names offered wherever a
+ * person responsible (PIC) is recorded; records keep the name itself, so a PIC typed once
+ * becomes a preset for everyone at the site and old records never change when a profile is
+ * renamed or deactivated.
+ */
+export const teamRoles = ["production", "intake", "outbound"] as const;
+export type TeamRole = (typeof teamRoles)[number];
+export type StaffRole = TeamRole | "packer";
+export const isTeamRole = (role: string): role is TeamRole =>
+  (teamRoles as readonly string[]).includes(role);
+/** Who manages profiles of a kind: that team's supervisor (stock-out for packers) and HR. */
+export const profileManagers = (role: StaffRole): Role[] =>
+  role === "packer" ? ["outbound", "hr"] : [role, "hr"];
+/**
+ * Active team profiles offered as PIC presets, optionally for one team. An operational
+ * workspace without profiles offers nothing until a supervisor adds a name.
+ */
+export const teamProfiles = (
+  s: Pick<Draft, "staffProfiles">,
+  team?: TeamRole,
+) =>
+  (s.staffProfiles ?? [])
+    .filter(
+      (p) =>
+        isTeamRole(p.role) && p.active !== false && (!team || p.role === team),
+    )
+    .map((p) => ({ id: p.id, name: p.name, role: p.role as TeamRole }));
+/**
+ * Packers who can be assigned or record work: the site's active packer profiles. A
+ * workspace without profiles has no packers until the stock-out supervisor adds them; the
+ * fictional preview starts with the two sample packers its sample orders are assigned to.
  */
 export const packerProfiles = (s: Pick<Draft, "staffProfiles">) =>
-  s.staffProfiles
-    ? s.staffProfiles
-        .filter((p) => p.role === "packer" && p.active !== false)
-        .map((p) => ({ id: p.id, name: p.name }))
-    : people
-        .filter((p) => p.includes("Packer"))
-        .map((p) => ({ id: p, name: p }));
+  (s.staffProfiles ?? [])
+    .filter((p) => p.role === "packer" && p.active !== false)
+    .map((p) => ({ id: p.id, name: p.name }));
 /** Display name for a stored performer reference (profile ID or legacy name). */
 export const staffName = (s: Pick<Draft, "staffProfiles">, ref?: string) =>
   (ref && s.staffProfiles?.find((p) => p.id === ref)?.name) || ref || "";
@@ -1037,6 +1067,12 @@ export function createDraft(): Draft {
     boxing: [],
     counts: [],
     adjustments: [],
+    // The sample packers the sample orders are assigned to and packed by (referenced by
+    // ID, which for these fixtures is the name). No sample PIC presets: the preview offers
+    // only the team profiles its testers add, exactly like an operational site.
+    staffProfiles: people
+      .filter((p) => p.includes("Packer"))
+      .map((p) => ({ id: p, name: p, role: "packer" as Role, active: true })),
     events: [
       {
         id: "seed",
@@ -1155,6 +1191,20 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         "Switch to the responsible supervisor role for this action.",
       );
   };
+  /**
+   * Another active profile of the same kind with this name (case-insensitive). Packer names
+   * are unique among packers; team names are unique across the three teams, since records
+   * keep the name and the PIC history must point at one person.
+   */
+  const sameName = (
+    draft: Pick<Draft, "staffProfiles">,
+    kind: StaffRole,
+    name: string,
+    except?: string,
+  ) =>
+    (kind === "packer" ? packerProfiles(draft) : teamProfiles(draft)).some(
+      (p) => p.id !== except && p.name.toLowerCase() === name.toLowerCase(),
+    );
   const find = <T extends { id: string }>(list: T[], key = "id"): T => {
     const item = list.find((x) => x.id === str(key));
     if (!item)
@@ -2470,9 +2520,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
             "This AWB is assigned to another packer. Ask your supervisor to reassign it.",
           );
       } else if (
-        s.staffProfiles &&
-        !s.staffProfiles.some((p) => p.id === packer && p.role === "packer")
+        !(s.staffProfiles ?? []).some(
+          (p) => p.id === packer && p.role === "packer",
+        )
       )
+        // Always a packer profile: a site without profiles cannot record packing by name.
         throw new Error("Choose the actual packer's profile.");
       const reason = own ? "" : str("reason", false);
       if (packer !== o.assignedPacker && !reason)
@@ -2514,9 +2566,15 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       break;
     }
     case "staff-profile-create": {
-      // Packer profiles for the shared packer sign-in. The PIN is set separately and is
-      // never part of the workspace state.
-      allow("outbound", "hr");
+      // Packer profiles for the shared packer sign-in (the PIN is set separately and is
+      // never part of the workspace state), or a team profile: a preset PIC name for the
+      // production, stock-in or stock-out team.
+      const profileRole = (str("role", false) || "packer") as StaffRole;
+      if (profileRole !== "packer" && !isTeamRole(profileRole))
+        throw new Error(
+          "Choose a packer, production, stock-in or stock-out profile.",
+        );
+      allow(...profileManagers(profileRole));
       const profileId = str("profileId");
       if (!staffProfileId.test(profileId))
         throw new Error("Invalid profile reference. Refresh and try again.");
@@ -2524,66 +2582,63 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (name.length > 60) throw new Error("Use a shorter name.");
       if ((s.staffProfiles ?? []).some((p) => p.id === profileId))
         throw new Error("This profile already exists. Refresh and try again.");
-      if (
-        packerProfiles({ staffProfiles: s.staffProfiles ?? [] }).some(
-          (p) => p.name.toLowerCase() === name.toLowerCase(),
-        )
-      )
+      if (sameName(s, profileRole, name))
         throw new Error(
-          "An active packer already has this name. Add an initial or surname.",
+          profileRole === "packer"
+            ? "An active packer already has this name. Add an initial or surname."
+            : "An active teammate already has this name. Add an initial or surname.",
         );
       (s.staffProfiles ??= []).push({
         id: profileId,
         name,
-        role: "packer",
+        role: profileRole,
         active: true,
         createdAt: at,
         createdBy: recorder,
       });
-      log("staff:" + profileId, "Packer profile added", name);
+      log(
+        "staff:" + profileId,
+        profileRole === "packer" ? "Packer profile added" : "Team profile added",
+        profileRole === "packer" ? name : name + " · " + roleLabel(profileRole),
+      );
       break;
     }
     case "staff-profile-update": {
-      allow("outbound", "hr");
       const profile = find(s.staffProfiles ?? []);
-      if (profile.role !== "packer")
-        throw new Error("Only packer profiles are managed here.");
+      if (profile.role !== "packer" && !isTeamRole(profile.role))
+        throw new Error("This profile cannot be managed here.");
+      allow(...profileManagers(profile.role as StaffRole));
       const name = str("name", false),
         active = v.active;
       if (name.length > 60) throw new Error("Use a shorter name.");
       if (active !== undefined && typeof active !== "boolean")
         throw new Error("Choose whether the profile is active.");
+      const taken =
+        profile.role === "packer"
+          ? "An active packer already has this name."
+          : "An active teammate already has this name.";
       const changes: string[] = [];
       if (name && name !== profile.name) {
-        if (
-          packerProfiles(s).some(
-            (p) =>
-              p.id !== profile.id && p.name.toLowerCase() === name.toLowerCase(),
-          )
-        )
-          throw new Error(
-            "An active packer already has this name. Add an initial or surname.",
-          );
+        if (sameName(s, profile.role as StaffRole, name, profile.id))
+          throw new Error(taken + " Add an initial or surname.");
         changes.push(`${profile.name} → ${name}`);
         profile.name = name;
       }
       if (typeof active === "boolean" && active !== (profile.active !== false)) {
         if (
           active &&
-          packerProfiles(s).some(
-            (p) => p.name.toLowerCase() === profile.name.toLowerCase(),
-          )
+          sameName(s, profile.role as StaffRole, profile.name, profile.id)
         )
-          throw new Error(
-            "An active packer already has this name. Rename one of them first.",
-          );
+          throw new Error(taken + " Rename one of them first.");
         changes.push(active ? "reactivated" : "deactivated");
         profile.active = active;
       }
       if (!changes.length) throw new Error("Nothing to change.");
       log(
         "staff:" + profile.id,
-        "Packer profile updated",
+        profile.role === "packer"
+          ? "Packer profile updated"
+          : "Team profile updated",
         profile.name + " · " + changes.join(" · "),
       );
       break;
