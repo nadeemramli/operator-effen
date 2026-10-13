@@ -33,11 +33,15 @@ export const packageDefaults: PackageDefault[] = [
     ["glycoxil01", 1, "PK1"],
     ["glycoxil02", 2, "PK2"],
     ["glycoxil05", 5, "PK32"],
+    // Singapore (Luxana website) packages; owner confirmed the box counts.
+    ["gly01sg", 1, "PK1"],
+    ["gly02sg", 2, "PK2"],
+    ["gly05sg", 5, "PK32"],
   ].map(([sku, units, key]) => ({
     sku: String(sku),
     product: "gly",
     units: Number(units),
-    canonical: `GLY-MY-${key}`,
+    canonical: `GLY-${String(sku).endsWith("sg") ? "SG" : "MY"}-${key}`,
   })),
   ...[
     ["lip01", 1],

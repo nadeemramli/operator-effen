@@ -357,3 +357,13 @@ test("TikTok's syn01 is the same 1-pack as syn01n", () => {
     defaultFor("syn01n"),
   );
 });
+
+test("Glycoxil Singapore SKUs map to their box counts", () => {
+  assert.deepEqual(
+    ["gly01sg", "gly02sg", "gly05sg"].map((s) => [defaultFor(s)?.product, defaultFor(s)?.units, defaultFor(s)?.canonical]),
+    [["gly", 1, "GLY-SG-PK1"], ["gly", 2, "GLY-SG-PK2"], ["gly", 5, "GLY-SG-PK32"]],
+  );
+  assert.equal(defaultFor("glycoxil05").canonical, "GLY-MY-PK32");
+  const rows = parsePages([page("Ninja Van\nNVMYTEST000009\nOrder ID: 1234567\ngly05sg 1", 1)], "Luxana", "");
+  assert.deepEqual(rowProblems(rows[0]), []);
+});
