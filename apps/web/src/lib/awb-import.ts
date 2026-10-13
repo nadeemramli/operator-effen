@@ -439,8 +439,8 @@ export function rowProblems(row: ImportRow): string[] {
   if (!/^[A-Z0-9-]{6,40}$/.test(normalizeAwb(row.awb)))
     problems.push("AWB required");
   if (!row.orderRef.trim()) problems.push("Order reference required");
-  if (!channels.includes(row.channel) || !row.store.trim())
-    problems.push("Source and store required");
+  // Store is optional: only needed where one source has several shops (TikTok).
+  if (!channels.includes(row.channel)) problems.push("Source required");
   if (!couriers.includes(row.courier)) problems.push("Courier required");
   if (!row.lines.length) problems.push("Product details missing");
   if (new Set(row.lines.map((l) => l.product)).size > 1)
@@ -562,7 +562,9 @@ export function validateImport(value: unknown): AwbImport {
       !text(f.path, 200) ||
       !whole(f.pages) ||
       f.pages > pageLimit ||
-      !whole(f.size) ||
+      // Byte count, not a quantity: whole() stops at 1,000,000, so check the range here.
+      !Number.isSafeInteger(f.size) ||
+      f.size < 1 ||
       f.size > 20 * 1024 * 1024 ||
       (f.skippedPages !== undefined &&
         (!Array.isArray(f.skippedPages) ||

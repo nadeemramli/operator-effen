@@ -248,6 +248,18 @@ test("a cover or title page without references produces no row and is listed as 
   assert.throws(() => validateImport(b), /Invalid source file/);
 });
 
+test("a source PDF over 1 MB and up to 20 MB is accepted on save", () => {
+  const b = batch([page(ninja(), 1)]);
+  b.files = [{ ...file, size: 1_500_000 }];
+  validateImport(b);
+  b.files[0].size = 20 * 1024 * 1024;
+  validateImport(b);
+  b.files[0].size = 20 * 1024 * 1024 + 1;
+  assert.throws(() => validateImport(b), /Invalid source file/);
+  b.files[0].size = 0;
+  assert.throws(() => validateImport(b), /Invalid source file/);
+});
+
 test("OCR runs when the text has no AWB and no order reference, even if it has some text", () => {
   const storeHeader = "Nuvital HQ MY ".repeat(10); // plenty of text, no references
   assert.equal(needsOcr(storeHeader), true);
