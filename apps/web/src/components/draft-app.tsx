@@ -3283,7 +3283,7 @@ export function DraftApp() {
           if (!open) setTrace(null);
         }}
       >
-        <SheetContent className="trace-sheet w-full sm:max-w-xl overflow-y-auto">
+        <SheetContent className="trace-sheet overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
           <SheetHeader>
             <div className="eyebrow">{t("RECORD DETAIL", "BUTIRAN REKOD")}</div>
             <SheetTitle className="mono mt-2">

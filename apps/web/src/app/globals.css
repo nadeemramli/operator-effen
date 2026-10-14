@@ -715,6 +715,9 @@ option {
   flex-shrink: 0;
 }
 .table-scroll {
+  /* Positioned so absolutely placed helpers inside wide tables (sr-only header
+     text) stay within the scroller instead of widening the page on phones. */
+  position: relative;
   overflow-x: auto;
   width: 100%;
 }
@@ -1360,6 +1363,7 @@ td small {
 }
 @media (max-width: 600px) {
   .production-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
   }
   .production-nav a {
@@ -2741,6 +2745,10 @@ td.actions {
   display: flex;
   justify-content: flex-end;
 }
+/* Forms placed directly in a panel share the panel heading's inset. */
+.panel-form {
+  padding: 16px 23px 20px;
+}
 .panel-search {
   position: relative;
   padding: 14px 23px;
@@ -2968,6 +2976,148 @@ td.actions {
   .page-actions > button {
     width: 100%;
     min-height: 44px;
+  }
+  .panel-form {
+    padding: 14px 17px 18px;
+  }
+  .panel-form > button {
+    width: 100%;
+    min-height: 44px;
+  }
+  /* Bottle batch PIC tools sit under each process row without a stage-actions
+     wrapper; give them the same thumb-sized grid. */
+  .process-row > .process-pic-tools {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px 0 14px;
+  }
+  .process-row > .process-pic-tools > button {
+    min-height: 44px;
+    height: auto;
+    padding: 8px 12px;
+    font-size: 13px;
+    white-space: normal;
+  }
+  .process-row > .process-pic-tools > button[data-variant="ghost"] {
+    border-color: var(--border);
+  }
+  .process-row > .process-pic-tools > .pic-more,
+  .process-row > .process-pic-tools > .pic-history {
+    grid-column: 1 / -1;
+    font-size: 13px;
+  }
+  .process-row > .process-pic-tools .pic-more > summary,
+  .process-row > .process-pic-tools .pic-history > summary {
+    padding: 12px 0;
+    line-height: 20px;
+  }
+  .process-row > .process-pic-tools .pic-more > button {
+    width: 100%;
+    min-height: 44px;
+  }
+  /* Record dialogs: Cancel / Save become two equal thumb-sized buttons. */
+  .form-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .form-actions > button {
+    width: 100%;
+    min-height: 46px;
+  }
+  /* Page toolbars: actions share the row as thumb-sized buttons. */
+  .toolbar > button,
+  .toolbar > a,
+  .toolbar > .flex > button {
+    flex: 1 1 auto;
+    min-height: 44px;
+    margin-left: 0;
+  }
+  /* Tables that still scroll sideways: readable text and a hint that there is
+     more to the right (the shadow fades out once scrolled to the end). */
+  table {
+    font-size: 12px;
+  }
+  th {
+    font-size: 10px;
+  }
+  td small {
+    font-size: 10px;
+  }
+  .table-scroll {
+    background:
+      linear-gradient(to right, var(--card) 40%, transparent) left / 32px 100% no-repeat local,
+      linear-gradient(to left, var(--card) 40%, transparent) right / 32px 100% no-repeat local,
+      linear-gradient(to right, color-mix(in srgb, var(--foreground) 18%, transparent), transparent) left / 14px 100% no-repeat scroll,
+      linear-gradient(to left, color-mix(in srgb, var(--foreground) 18%, transparent), transparent) right / 14px 100% no-repeat scroll;
+  }
+  /* Daily tally: one card per product instead of a six-column table. */
+  .daily-tally {
+    display: block;
+    white-space: normal;
+    background: transparent;
+  }
+  .daily-tally thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .daily-tally tbody {
+    display: block;
+  }
+  .daily-tally tbody tr {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px 10px;
+    padding: 18px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .daily-tally td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    order: 1;
+  }
+  .daily-tally td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 10px;
+    color: var(--muted-foreground);
+    margin-bottom: 6px;
+  }
+  .daily-tally td:first-child {
+    grid-column: 1 / -1;
+    order: 0;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .daily-tally td:first-child::before {
+    display: none;
+  }
+  .daily-tally td:first-child small {
+    font-weight: 400;
+  }
+  .daily-tally td:nth-child(3) {
+    grid-column: 1 / -1;
+    order: 2;
+  }
+  .daily-tally td:nth-child(6) {
+    grid-column: 1 / -1;
+    order: 3;
+  }
+  .daily-tally td small {
+    max-width: none;
+    margin: 4px 0 0;
+  }
+  .daily-tally td > button {
+    width: 100%;
+    min-height: 44px;
+    margin-top: 10px;
   }
 }
 .machine-sheet-toolbar {

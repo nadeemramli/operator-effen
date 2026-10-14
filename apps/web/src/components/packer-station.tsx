@@ -254,7 +254,7 @@ export function PackerProfiles({
       )}
     >
       <form
-        className="grid gap-3 sm:grid-cols-[1fr_10rem_auto] items-end"
+        className="panel-form grid gap-3 sm:grid-cols-[1fr_10rem_auto] items-end"
         onSubmit={(e) => {
           e.preventDefault();
           void add();

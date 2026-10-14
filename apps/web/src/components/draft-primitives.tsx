@@ -497,7 +497,7 @@ export function ActionForm({
               </div>
             ))}
             <FormError id={errorId} message={error} action={errorAction} />
-            <div className="flex justify-end gap-2 pt-3">
+            <div className="form-actions flex justify-end gap-2 pt-3">
               <Button
                 type="button"
                 variant="outline"

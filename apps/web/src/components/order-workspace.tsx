@@ -234,14 +234,14 @@ export function OrderWorkspace({
                       const p = products.find((p) => p.id === r.product)!;
                       return (
                         <tr key={r.product}>
-                          <td>
+                          <td data-label={t("Product", "Produk")}>
                             {p.name}
                             <small>
                               {r.awbs} AWBs · {units(lang, p.unit)}
                             </small>
                           </td>
-                          <td>{r.expected}</td>
-                          <td>
+                          <td data-label={t("Required", "Diperlukan")}>{r.expected}</td>
+                          <td data-label={t("Supervisor count", "Kiraan penyelia")}>
                             {r.count?.counted ?? "—"}
                             {r.count && (
                               <small>
@@ -303,15 +303,15 @@ export function OrderWorkspace({
                               </Button>
                             )}
                           </td>
-                          <td>
+                          <td data-label={t("Issued", "Dikeluarkan")}>
                             {r.issued}
                             <small>Δ {r.issued - r.expected}</small>
                           </td>
-                          <td>
+                          <td data-label={t("Packed so far", "Dibungkus setakat ini")}>
                             {r.packed}
                             <small>Δ {r.packed - r.expected}</small>
                           </td>
-                          <td>
+                          <td data-label={t("Review", "Semakan")}>
                             {r.missing} {t("unrecorded", "belum direkod")}
                             <br />
                             {r.mismatched}{" "}
