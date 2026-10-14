@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261014090000_operator_workspace_capacity.down.sql"
+"${psql[@]}" -At -c "select pg_get_constraintdef(oid) like '%<= 2000000%' from pg_constraint where conname = 'operator_workspaces_state_check'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261011090000_operator_remove_awbs.down.sql"
 "${psql[@]}" -At -c "select count(*) from public.operator_command_rules where command in ('remove-order', 'import-delete')" | grep -qx 0
 "${psql[@]}" -f "$root/supabase/rollback/20261009090003_operator_trip_dropoffs.down.sql"
@@ -60,4 +62,13 @@ echo "assistant memberships become driver memberships"
 "${psql[@]}" -At -c "select capability from public.operator_command_rules where command = 'trip-dropoff'" | grep -qx trips.log
 "${psql[@]}" -f "$root/supabase/migrations/20261011090000_operator_remove_awbs.sql"
 "${psql[@]}" -At -c "select string_agg(command || ':' || capability, ',' order by command) from public.operator_command_rules where command in ('import-delete', 'remove-order')" | grep -qx 'import-delete:orders.import,remove-order:orders.enter'
+echo "released uploads drop their raw extraction text"
+"${psql[@]}" -c "update public.operator_workspaces set state = state || '{\"awbImports\": [
+  {\"id\": \"imp-r\", \"confirmedAt\": \"2026-10-13T00:00:00Z\", \"rows\": [{\"id\": \"r1\", \"original\": \"raw text\"}]},
+  {\"id\": \"imp-o\", \"rows\": [{\"id\": \"r2\", \"original\": \"raw text\"}]}]}'::jsonb where site_id = 'site-x'"
+"${psql[@]}" -f "$root/supabase/migrations/20261014090000_operator_workspace_capacity.sql"
+"${psql[@]}" -At -c "select string_agg(i ->> 'id' || ':' || (r ->> 'original'), ',' order by i ->> 'id')
+  from public.operator_workspaces w, jsonb_array_elements(w.state -> 'awbImports') i, jsonb_array_elements(i -> 'rows') r
+  where w.site_id = 'site-x'" | grep -qx 'imp-o:raw text,imp-r:'
+"${psql[@]}" -At -c "select pg_get_constraintdef(oid) like '%<= 4000000%' from pg_constraint where conname = 'ui_draft_workspaces_state_check'" | grep -qx t
 echo "ok"

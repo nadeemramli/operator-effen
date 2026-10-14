@@ -2965,11 +2965,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       e.recorder = recorder;
       e.actor = recorderLabel(recorder);
     }
-  // Ceilings sized to the 2 MB workspace document (about 2 KB per imported AWB with its
-  // label record and audit entries). Raised 2026-10-12 with the 300-label upload limit.
+  // Ceilings sized to the 4 MB workspace document (about 2 KB per imported AWB with its
+  // label record and audit entries). Raised 2026-10-14 with the document cap; the byte
+  // limit (WORKSPACE_BYTES) is what a busy site reaches first.
   if (
-    s.events.length > 3000 ||
-    s.orders.length > 1000 ||
+    s.events.length > 9000 ||
+    s.orders.length > 3000 ||
     s.batches.length > 200 ||
     s.cartons.length > 500 ||
     (s.adypocideReceipts?.length ?? 0) > 500 ||
@@ -2979,11 +2980,19 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     (s.returns?.length ?? 0) > 2000 ||
     (s.machines?.length ?? 0) > 300
   )
-    throw new Error(
-      "The test workspace is full. Export your review and reset the sample data.",
-    );
+    throw new Error(WORKSPACE_FULL);
   return s;
 }
+
+/**
+ * Largest workspace document the API saves, as compact JSON. The database checks the
+ * jsonb text (about 7% larger: it adds a space after every colon and comma) against
+ * 4,000,000 bytes, and every load returns the whole document, which must stay under the
+ * hosting platform's 4.5 MB function response limit.
+ */
+export const WORKSPACE_BYTES = 3_600_000;
+export const WORKSPACE_FULL =
+  "This site's records are full. This change has not been saved. Tell the office admin.";
 
 // Idempotency records commit atomically with the workspace state they describe.
 export const OPERATION_LIMIT = 500;

@@ -929,4 +929,25 @@ do $$ begin
     raise exception 'FAIL: expected the upload gone, only the issued AWB left and its stock issue kept'; end if;
 end $$;
 
+-- 13. Workspace capacity (20261014090000). A document up to 4,000,000 bytes of jsonb text
+--     is stored; a larger one is refused by the table's check.
+do $$
+declare stored boolean := false;
+begin
+  begin
+    update public.operator_workspaces
+      set state = state || jsonb_build_object('pad', repeat('x', 3500000)) where site_id = 'site-a';
+    stored := true;
+    raise exception 'undo' using errcode = 'U0001';
+  exception when sqlstate 'U0001' then null;
+  end;
+  if not stored then raise exception 'FAIL: a 3.5 MB document was refused'; end if;
+  begin
+    update public.operator_workspaces
+      set state = state || jsonb_build_object('pad', repeat('x', 4100000)) where site_id = 'site-a';
+    raise exception 'FAIL: a 4.1 MB document was accepted';
+  exception when check_violation then null;
+  end;
+end $$;
+
 select 'operator access tests passed' as result;
