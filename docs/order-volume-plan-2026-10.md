@@ -11,6 +11,24 @@ Update 2026-10-14: the live site hit the cap (1.92 MB: uploads 779 KB, audit ent
 extraction text from released uploads. That is about a week of headroom at 400 AWBs a day,
 not a fix; WP A and B start now.
 
+Update 2026-10-14, WP A and B built together in
+`20261015090000_operator_imports_and_events.sql`, with two differences from the table below:
+
+- One `operator_imports` row per upload, its label rows inside, instead of a separate
+  `operator_import_rows`. Every upload command reads or changes exactly one upload, and the
+  list reads stored counts (generated columns). A per-label table can follow in WP C if
+  trace lookup by AWB needs it.
+- `operator_commit_workspace` keeps its signature and signed message. The API signs one
+  logical state: the document, only the new audit entries, and the one touched upload (or a
+  removal marker). The function runs every existing check, then writes the upload and the
+  audit entries to their tables and the document without them, in one transaction. Each load
+  carries the latest 300 audit entries and 100 upload summaries. The trace view and an opened
+  upload fetch the rest.
+
+After it, the live document is about 0.5 MB, almost all orders (about 620 B each, about
+250 KB a day at current volume). The 3.6 MB limit and the 5,000-order ceiling then give
+roughly ten days, so WP C (orders) is still needed.
+
 ## Why now
 
 The owner reports days with 2,000 AWBs to fulfil and PDFs of 1,000 labels. The current

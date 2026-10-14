@@ -16,6 +16,9 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261015090000_operator_imports_and_events.down.sql"
+"${psql[@]}" -At -c "select to_regclass('public.operator_events') is null and to_regclass('public.operator_imports') is null" | grep -qx t
+"${psql[@]}" -At -c "select jsonb_array_length(state -> 'events') > 0 from public.operator_workspaces where site_id = 'site-a'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261014090000_operator_workspace_capacity.down.sql"
 "${psql[@]}" -At -c "select pg_get_constraintdef(oid) like '%<= 2000000%' from pg_constraint where conname = 'operator_workspaces_state_check'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261011090000_operator_remove_awbs.down.sql"
@@ -71,4 +74,15 @@ echo "released uploads drop their raw extraction text"
   from public.operator_workspaces w, jsonb_array_elements(w.state -> 'awbImports') i, jsonb_array_elements(i -> 'rows') r
   where w.site_id = 'site-x'" | grep -qx 'imp-o:raw text,imp-r:'
 "${psql[@]}" -At -c "select pg_get_constraintdef(oid) like '%<= 4000000%' from pg_constraint where conname = 'ui_draft_workspaces_state_check'" | grep -qx t
+echo "uploads and audit entries move to their tables"
+"${psql[@]}" -c "update public.operator_workspaces set state = state || '{\"events\": [
+  {\"id\": \"e-new\", \"entity\": \"b1\", \"action\": \"later\", \"at\": \"2026-10-14T02:00:00Z\"},
+  {\"id\": \"e-old\", \"entity\": \"b1\", \"action\": \"earlier\", \"at\": \"2026-10-14T01:00:00Z\"}]}'::jsonb
+  where site_id = 'site-x'"
+"${psql[@]}" -f "$root/supabase/migrations/20261015090000_operator_imports_and_events.sql"
+"${psql[@]}" -At -c "select string_agg(e.id, ',' order by e.seq) from public.operator_events e
+  join public.operator_workspaces w on w.id = e.workspace_id where w.site_id = 'site-x'" | grep -qx 'e-old,e-new'
+"${psql[@]}" -At -c "select string_agg(i.id, ',' order by i.id) from public.operator_imports i
+  join public.operator_workspaces w on w.id = i.workspace_id where w.site_id = 'site-x'" | grep -qx 'imp-o,imp-r'
+"${psql[@]}" -At -c "select bool_and(not state ? 'awbImports' and state -> 'events' = '[]') from public.operator_workspaces" | grep -qx t
 echo "ok"

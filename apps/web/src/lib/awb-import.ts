@@ -150,6 +150,12 @@ export type AwbImport = {
   confirmedAt?: string;
   receivedAt?: string;
   receivedBy?: string;
+  /**
+   * Set on upload-list entries sent without their label rows (operational sites keep
+   * uploads in their own table); the screen fetches the rows when the upload is opened.
+   */
+  rowCount?: number;
+  releasedCount?: number;
 };
 export type ParsedPage = {
   file: string;
@@ -709,6 +715,8 @@ export function applyImportCommand(
       throw new Error(
         "A teammate updated this PDF review. Reopen the batch before saving.",
       );
+    delete batch.rowCount;
+    delete batch.releasedCount;
     batch.createdAt = old?.createdAt ?? at;
     batch.updatedAt = at;
     delete batch.confirmedAt;

@@ -97,7 +97,29 @@ export function AwbIntake({
     return () => window.removeEventListener("beforeunload", prevent);
   }, [processing, dirty]);
   useEffect(() => () => abort.current?.abort(), []);
-  function open(b: AwbImport) {
+  async function open(b: AwbImport) {
+    // A list entry without its label rows: fetch the whole upload first.
+    if (b.rowCount !== undefined) {
+      setError("");
+      const res = await fetch(
+        "/api/draft?import=" +
+          encodeURIComponent(b.id) +
+          (workspaceId ? "&workspace=" + encodeURIComponent(workspaceId) : ""),
+        { cache: "no-store" },
+      ).catch(() => null);
+      const data = await res?.json().catch(() => ({}));
+      if (!res?.ok || !data?.import) {
+        setError(
+          data?.error ??
+            t(
+              "Unable to open this upload. Check the connection and try again.",
+              "Tidak dapat membuka muat naik ini. Semak sambungan dan cuba lagi.",
+            ),
+        );
+        return;
+      }
+      b = data.import as AwbImport;
+    }
     setWorking(structuredClone(b));
     setScreen("review");
     setSelected(b.rows[0]?.id ?? "");
@@ -238,7 +260,7 @@ export function AwbIntake({
       setSelected(b.rows[0]?.id ?? "");
       setDirty(true);
       const saved = await onCommand("import-save", { batch: b }, { onError: setError });
-      if (saved) open(saved.awbImports!.find((x) => x.id === b.id)!);
+      if (saved) void open(saved.awbImports!.find((x) => x.id === b.id)!);
     } catch (e) {
       setError(
         e instanceof Error && e.name !== "AbortError"
@@ -266,14 +288,14 @@ export function AwbIntake({
     setError("");
     const saved = await onCommand("import-save", { batch }, { onError: setError });
     if (!saved) return;
-    open(saved.awbImports!.find((b) => b.id === batch.id)!);
+    void open(saved.awbImports!.find((b) => b.id === batch.id)!);
     if (release) {
       const released = await onCommand(
         "import-release",
         { id: batch.id },
         { onError: setError },
       );
-      if (released) open(released.awbImports!.find((b) => b.id === batch.id)!);
+      if (released) void open(released.awbImports!.find((b) => b.id === batch.id)!);
     }
   }
   const ready = statuses.filter((x) => x.status === "ready").length,
@@ -484,14 +506,15 @@ export function AwbIntake({
               <button
                 key={b.id}
                 className="awb-batch-link"
-                onClick={() => open(b)}
+                onClick={() => void open(b)}
               >
                 <FileText size={18} />
                 <span>
                   <strong>{b.name}</strong>
                   <small>
                     {b.files.length} PDF ·{" "}
-                    {b.rows.filter((r) => r.releasedOrderId).length}{" "}
+                    {b.releasedCount ??
+                      b.rows.filter((r) => r.releasedOrderId).length}{" "}
                     {t("released AWBs", "AWB diserahkan")}
                   </small>
                 </span>
@@ -714,7 +737,7 @@ export function AwbIntake({
                   { onError: setReceiveError },
                 );
                 if (saved)
-                  open(saved.awbImports!.find((b) => b.id === batch.id)!);
+                  void open(saved.awbImports!.find((b) => b.id === batch.id)!);
               }}
             >
               <label>
