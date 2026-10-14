@@ -569,6 +569,7 @@ export function StageRecords({
                     <Button
                       size="sm"
                       variant="outline"
+                      className="stage-primary"
                       onClick={() => record(stage, step)}
                     >
                       {step?.pic
@@ -582,7 +583,7 @@ export function StageRecords({
                     </span>
                   )}
                   {editable && step?.done && (
-                    <span className="flex flex-wrap gap-1">
+                    <span className="stage-corrections flex flex-wrap gap-1">
                       <Button
                         size="sm"
                         variant="ghost"
@@ -983,6 +984,7 @@ export function SachetProductionRecords({
                   <Button
                     size="sm"
                     variant="outline"
+                    className="sachet-record-trace"
                     onClick={() => onTrace(b.id)}
                   >
                     {t("Open trace", "Buka jejak")} · {product(b.product).name}

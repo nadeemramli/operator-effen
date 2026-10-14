@@ -498,10 +498,12 @@ export function ProductionWorkspace({
           "Hantar ke pemenuhan merekod serahan kilang. Kuantiti Adypocide dimuktamadkan oleh stok masuk selepas pengkotakan di gudang.",
         )}
       </p>
-      <Button variant="outline" onClick={closeDay}>
-        <ClipboardList size={16} />
-        {t("End-of-day review", "Semakan akhir hari")}
-      </Button>
+      <div className="page-actions">
+        <Button variant="outline" onClick={closeDay}>
+          <ClipboardList size={16} />
+          {t("End-of-day review", "Semakan akhir hari")}
+        </Button>
+      </div>
     </>
   );
 

@@ -59,7 +59,9 @@ export function PersonAvatar({ name }: { name: string }) {
           strokeLinecap="round"
         />
       </svg>
-      <span className="pic-avatar-mark">{name.split(" ").at(-1) || "?"}</span>
+      <span className="pic-avatar-mark">
+        {(name.split(" ").at(-1)?.[0] || "?").toUpperCase()}
+      </span>
     </span>
   );
 }
