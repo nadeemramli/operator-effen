@@ -15,6 +15,8 @@ import {
   type Draft,
   type Recorder,
   type Role,
+  WORKSPACE_BYTES,
+  WORKSPACE_FULL,
 } from "@/lib/draft";
 import {
   AccessDenied,
@@ -233,10 +235,8 @@ export async function POST(request: NextRequest) {
             userId: user.id,
             at: new Date().toISOString(),
           });
-        if (new TextEncoder().encode(JSON.stringify(state)).length > 1800000)
-          throw new Error(
-            "The shared test workspace is full. This change has not been saved.",
-          );
+        if (new TextEncoder().encode(JSON.stringify(state)).length > WORKSPACE_BYTES)
+          throw new Error(WORKSPACE_FULL);
       } catch (e) {
         return { done: domainError(e) };
       }
@@ -384,10 +384,8 @@ export async function POST(request: NextRequest) {
           `Your access covers the ${membership.factory} factory only. This change has not been saved.`,
         );
       stateText = JSON.stringify(state);
-      if (new TextEncoder().encode(stateText).length > 1800000)
-        throw new Error(
-          "The shared workspace is full. This change has not been saved.",
-        );
+      if (new TextEncoder().encode(stateText).length > WORKSPACE_BYTES)
+        throw new Error(WORKSPACE_FULL);
     } catch (e) {
       return { done: domainError(e) };
     }

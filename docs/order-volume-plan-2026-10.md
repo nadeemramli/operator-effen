@@ -5,6 +5,12 @@ workstream [#10](https://github.com/nadeemramli/operator-effen/issues/10) for or
 uploads, stock issues and audit entries. Nothing here is live until each work package below
 has merged behind green CI and the owner has applied its migration.
 
+Update 2026-10-14: the live site hit the cap (1.92 MB: uploads 779 KB, audit entries
+568 KB, orders 515 KB for 830 open AWBs over four days) and refused every save.
+`20261014090000_operator_workspace_capacity.sql` raises the cap to 4 MB and drops raw
+extraction text from released uploads. That is about a week of headroom at 400 AWBs a day,
+not a fix; WP A and B start now.
+
 ## Why now
 
 The owner reports days with 2,000 AWBs to fulfil and PDFs of 1,000 labels. The current

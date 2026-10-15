@@ -1223,12 +1223,14 @@ export function AwbIntake({
                         lang={lang}
                       />
                     )}
-                    <details className="field-hint">
-                      <summary>
-                        {t("Original extraction", "Hasil asal")}
-                      </summary>
-                      <pre className="awb-original">{row.original}</pre>
-                    </details>
+                    {row.original && (
+                      <details className="field-hint">
+                        <summary>
+                          {t("Original extraction", "Hasil asal")}
+                        </summary>
+                        <pre className="awb-original">{row.original}</pre>
+                      </details>
+                    )}
                   </div>
                 </>
               ) : (

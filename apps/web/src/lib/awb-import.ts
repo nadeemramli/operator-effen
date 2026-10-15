@@ -802,6 +802,9 @@ export function applyImportCommand(
       at,
     });
   }
+  // A released batch is read-only; its raw extraction text (about a fifth of the upload's
+  // bytes) is no longer reviewed. The source PDF pages stay in storage for checking.
+  for (const row of batch.rows) row.original = "";
   batch.confirmedAt = at;
   batch.updatedAt = at;
   return `Handoff confirmed · ${ready.length} new AWBs · no print, packing or stock movement inferred`;

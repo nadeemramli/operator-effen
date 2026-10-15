@@ -150,6 +150,9 @@ test("save, release and retry create one parcel and no stock, print or packing s
   assert.deepEqual(s.issues, initial.issues);
   assert.deepEqual(s.cartons, initial.cartons);
   assert.throws(() => run(s, "import-release", { id: b.id }), /already/);
+  // A released upload keeps its rows but no longer carries the raw extraction text.
+  assert.ok(s.awbImports.find((x) => x.id === b.id).rows.every((r) => r.original === ""));
+  assert.ok(run(initial, "import-save", { batch: b }).awbImports[0].rows.every((r) => r.original));
   const again = batch([page(ninja())]);
   assert.equal(rowStatus(again.rows[0], again, s), "duplicate");
   const conflict = batch([page(ninja())]);
