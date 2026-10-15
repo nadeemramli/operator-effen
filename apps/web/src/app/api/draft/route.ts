@@ -40,6 +40,16 @@ import {
   sealPackerSession,
   type PackerSession,
 } from "@/lib/packer-session";
+import {
+  clientState,
+  commitPayload,
+  entityEvents,
+  legacyDocument,
+  loadImport,
+  StoreError,
+  touchedImport,
+} from "@/lib/workspace-store";
+import type { AwbImport } from "@/lib/awb-import";
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, {
     status,
@@ -74,8 +84,13 @@ export async function GET(request: NextRequest) {
   if (access.status !== 200)
     return json({ error: access.error }, access.status);
   const { db, user, memberships } = access;
+  const params = request.nextUrl.searchParams;
+  const importId = params.get("import"),
+    entities = params.get("events")?.split(",").filter(Boolean);
+  if (entities && (entities.length > 50 || entities.some((e) => e.length > 200)))
+    return json({ error: "Invalid request." }, 400);
   if (memberships.length) {
-    const m = pick(memberships, request.nextUrl.searchParams.get("workspace"));
+    const m = pick(memberships, params.get("workspace"));
     if (!m) return json({ error: "You do not have access to that site." }, 403);
     const { data, error } = await db
       .from("operator_workspaces")
@@ -84,8 +99,31 @@ export async function GET(request: NextRequest) {
       .maybeSingle();
     if (error || !data)
       return json({ error: "Unable to load your site workspace." }, 503);
+    const doc = data.state as Draft;
+    let state: Draft;
+    try {
+      // One upload with its label rows, or the audit entries about some records.
+      if (importId) {
+        const found = legacyDocument(doc)
+          ? doc.awbImports!.find((b) => b.id === importId)
+          : await loadImport(db, m.workspaceId, importId);
+        return found
+          ? json({ import: found })
+          : json({ error: "Upload batch not found." }, 404);
+      }
+      if (entities)
+        return json({
+          events: legacyDocument(doc)
+            ? doc.events.filter((e) => entities.includes(e.entity))
+            : await entityEvents(db, m.workspaceId, entities),
+        });
+      state = await clientState(db, m.workspaceId, doc);
+    } catch (e) {
+      if (e instanceof StoreError) return json({ error: e.message }, 503);
+      throw e;
+    }
     return json({
-      state: withBatchReferences(data.state as Draft),
+      state: withBatchReferences(state),
       revision: data.revision,
       actor: actorView(user.id, m),
       workspaces: memberships.map((w) => ({
@@ -122,6 +160,15 @@ export async function GET(request: NextRequest) {
   }
   if (error || !data)
     return json({ error: "Unable to prepare the test workspace." }, 503);
+  const sandbox = data.state as Draft;
+  if (importId) {
+    const found = sandbox.awbImports?.find((b) => b.id === importId);
+    return found
+      ? json({ import: found })
+      : json({ error: "Upload batch not found." }, 404);
+  }
+  if (entities)
+    return json({ events: sandbox.events.filter((e) => entities.includes(e.entity)) });
   return json({
     ...data,
     state: withBatchReferences(data.state as Draft),
@@ -342,7 +389,11 @@ export async function POST(request: NextRequest) {
         done:
           prior.data.fingerprint === print && prior.data.command === type
             ? json({
-                state: withBatchReferences(loaded.data.state as Draft),
+                state: withBatchReferences(
+                  await clientState(db, membership.workspaceId, loaded.data.state as Draft).catch(
+                    () => loaded.data.state as Draft,
+                  ),
+                ),
                 revision: loaded.data.revision,
                 replayed: true,
                 resultRevision: prior.data.result_revision,
@@ -357,11 +408,25 @@ export async function POST(request: NextRequest) {
               ),
       };
     const current = loaded.data.state as Draft;
+    // The upload this command reads or changes comes from its table (WP A).
+    const legacy = legacyDocument(current),
+      importId = legacy ? undefined : touchedImport(type, input, current);
+    let existed = false;
+    if (importId) {
+      let found: AwbImport | undefined;
+      try {
+        found = await loadImport(db, membership.workspaceId, importId);
+      } catch {
+        return { done: json({ error: "Unable to load your site workspace." }, 503) };
+      }
+      existed = !!found;
+      current.awbImports = found ? [found] : [];
+    }
     // A production supervisor limited to one factory never changes the other factory's
     // batches; the database re-checks the signed state (operator_private.assert_factory_scope).
     const outside = factoryDenial(membership.factory, type, input, current.batches ?? []);
     if (outside) return { done: json({ error: outside }, 403) };
-    let stateText: string;
+    let stateText: string, touched: AwbImport | undefined;
     try {
       const state = applyCommand(current, {
         type,
@@ -383,7 +448,8 @@ export async function POST(request: NextRequest) {
         throw new AccessDenied(
           `Your access covers the ${membership.factory} factory only. This change has not been saved.`,
         );
-      stateText = JSON.stringify(state);
+      touched = importId ? state.awbImports?.find((b) => b.id === importId) : undefined;
+      stateText = JSON.stringify(legacy ? state : commitPayload(state, importId, existed));
       if (new TextEncoder().encode(stateText).length > WORKSPACE_BYTES)
         throw new Error(WORKSPACE_FULL);
     } catch (e) {
@@ -431,7 +497,11 @@ export async function POST(request: NextRequest) {
     )?.[0];
     if (!saved) return { stale: true };
     const response = json({
-      state: withBatchReferences(saved.new_state),
+      state: withBatchReferences(
+        await clientState(db, membership.workspaceId, saved.new_state, touched).catch(
+          () => ({ ...saved.new_state, awbImports: touched ? [touched] : [] }),
+        ),
+      ),
       revision: saved.new_revision,
       replayed: saved.replayed,
       ...(packer ? { packerExpiresAt: Date.now() + PACKER_IDLE_MS } : {}),

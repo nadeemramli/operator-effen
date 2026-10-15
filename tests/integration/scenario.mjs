@@ -523,7 +523,20 @@ await check("B: office admin uploads a site source, imports and releases it", as
   assert.equal(released.status, 200, JSON.stringify(released.body));
   const imported = stored(W.a).orders.find((o) => o.awb === "NVMYINT000001");
   assert.ok(imported);
-  assert.equal(stored(W.a).events.find((e) => e.entity === imported.id).recorder.userId, people.admin.id);
+  // Uploads and audit entries live in their own tables (20261015090000), not the document.
+  assert.equal(sql(`select body -> 'recorder' ->> 'userId' from public.operator_events where workspace_id='${W.a}' and entity='${imported.id}'`), people.admin.id);
+  assert.equal(stored(W.a).awbImports, undefined);
+  assert.deepEqual(stored(W.a).events, []);
+  assert.equal(sql(`select jsonb_array_length(doc -> 'rows') from public.operator_imports where workspace_id='${W.a}' and id='${batch.id}'`), "1");
+  const list = (await load(a, W.a)).state;
+  const summary = list.awbImports.find((b) => b.id === batch.id);
+  assert.deepEqual([summary.rowCount, summary.releasedCount, summary.rows.length], [1, 1, 0]);
+  assert.ok(list.events.some((e) => e.entity === imported.id));
+  const opened = await api(a, "GET", null, `?workspace=${W.a}&import=${batch.id}`);
+  assert.equal(opened.status, 200, JSON.stringify(opened.body));
+  assert.equal(opened.body.import.rows[0].releasedOrderId, imported.id);
+  const traced = await api(a, "GET", null, `?workspace=${W.a}&events=${imported.id}`);
+  assert.equal(traced.body.events[0].entity, imported.id);
   const forged = await post(a, "import-save", { batch: { ...batch, id: randomUUID(), files: [{ ...fileRef, path: `${W.b}/${hash}.pdf` }] } }, { ws: W.a, role: "admin" });
   assert.equal(forged.status, 400);
   const notUploaded = "e".repeat(64);
@@ -745,7 +758,7 @@ await check("C: stock-out SV adds packer profiles with PINs; PINs never reach th
   assert.equal(sql(`select count(*) from operator_private.staff_pins where workspace_id='${W.a}'`), "2");
   // PINs are digits. Hex identifiers (record UUIDs, file hashes) can contain any digit run
   // by chance, so they are stripped before the check; a PIN stored in a field survives it.
-  const text = JSON.stringify(stored(W.a))
+  const text = (JSON.stringify(stored(W.a)) + sql(`select coalesce(string_agg(body::text, ''), '') from public.operator_events where workspace_id='${W.a}'`))
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "")
     .replace(/[0-9a-f]{8,}/gi, "");
   assert.ok(!text.includes("2468") && !text.includes("8642"), "PIN in workspace state");

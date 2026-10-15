@@ -122,6 +122,7 @@ import {
   variance,
   type Carton,
   type Draft,
+  type Event as AuditEvent,
   type Lang,
   type Order,
   type Role,
@@ -3584,36 +3585,86 @@ export function DraftApp() {
             <h3 className="section-label">
               {t("ACTIVITY LOG", "LOG AKTIVITI")}
             </h3>
-            {events.length ? (
-              <div className="activity-list compact">
-                {events.map((e) => (
-                  <div key={e.id}>
-                    <span className="activity-dot" />
-                    <div>
-                      <strong>{e.action}</strong>
-                      <p>{e.detail}</p>
-                      <small>
-                        {e.actor} ·{" "}
-                        {new Date(e.at).toLocaleString("en-MY", {
-                          timeZone: "Asia/Kuala_Lumpur",
-                        })}
-                      </small>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                {t(
-                  "This is an initial sample record. New actions will appear here.",
-                  "Ini rekod contoh asal. Tindakan baharu akan muncul di sini.",
-                )}
-              </p>
-            )}
+            <TraceActivity
+              local={events}
+              entities={[...traceIds].filter((id): id is string => !!id)}
+              workspaceId={member ? actor?.workspaceId : undefined}
+              revision={revision}
+              lang={lang}
+            />
           </div>
         </SheetContent>
       </Sheet>
     </div>
+  );
+}
+/**
+ * Activity log of the traced records. On an operational site the audit entries live in
+ * their own table, so the full history is fetched; the sandbox keeps them in its document.
+ */
+function TraceActivity({
+  local,
+  entities,
+  workspaceId,
+  revision,
+  lang,
+}: {
+  local: AuditEvent[];
+  entities: string[];
+  workspaceId?: string;
+  revision: number;
+  lang: Lang;
+}) {
+  const t = (en: string, ms: string) => tr(lang, en, ms);
+  const key = entities.join(",");
+  const [fetched, setFetched] = useState<{ key: string; events: AuditEvent[] } | null>(null);
+  useEffect(() => {
+    if (!workspaceId || !key) return;
+    const controller = new AbortController();
+    fetch(
+      "/api/draft?workspace=" +
+        encodeURIComponent(workspaceId) +
+        "&events=" +
+        encodeURIComponent(key),
+      { cache: "no-store", signal: controller.signal },
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.events) setFetched({ key, events: data.events });
+      })
+      .catch(() => {
+        /* The recent entries below stay shown. */
+      });
+    return () => controller.abort();
+  }, [workspaceId, key, revision]);
+  const events = fetched?.key === key ? fetched.events : local;
+  return (
+    events.length ? (
+    <div className="activity-list compact">
+      {events.map((e) => (
+        <div key={e.id}>
+          <span className="activity-dot" />
+          <div>
+            <strong>{e.action}</strong>
+            <p>{e.detail}</p>
+            <small>
+              {e.actor} ·{" "}
+              {new Date(e.at).toLocaleString("en-MY", {
+                timeZone: "Asia/Kuala_Lumpur",
+              })}
+            </small>
+          </div>
+        </div>
+      ))}
+    </div>
+  ) : (
+    <p className="text-sm text-muted-foreground">
+      {t(
+        "This is an initial sample record. New actions will appear here.",
+        "Ini rekod contoh asal. Tindakan baharu akan muncul di sini.",
+      )}
+    </p>
+  )
   );
 }
 function SearchBox({

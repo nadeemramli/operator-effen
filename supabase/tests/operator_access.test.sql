@@ -904,9 +904,36 @@ select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'remove-order',
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
   jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{batches,0,code}', '"X"')),
   '42501', 'remove-order used to edit batches');
-select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{events}', '[]')),
-  '23514', 'remove-order dropping audit entries');
+-- Audit entries live in public.operator_events (20261015090000): a command cannot drop them
+-- from the document, and nobody can change or delete them in the table.
+do $$ begin
+  if not exists (select 1 from public.operator_events where id = 'e-rm3'
+      and body -> 'recorder' ->> 'userId' = '00000000-0000-4000-8000-000000000007')
+    or (select state -> 'events' from public.operator_workspaces where site_id = 'site-a') <> '[]'::jsonb
+    or not exists (select 1 from public.operator_imports where id = 'imp1') then
+    raise exception 'FAIL: expected the audit entry and the upload in their tables, not the document'; end if;
+end $$;
+begin;
+select pg_temp.as_user(:ADM);
+select pg_temp.expect_denied('delete from public.operator_events', 'deleting audit entries');
+select pg_temp.expect_denied($q$update public.operator_events set body = '{}'$q$, 'rewriting audit entries');
+select pg_temp.expect_denied($q$insert into public.operator_events (workspace_id, id, entity, body)
+  values ('10000000-0000-4000-8000-00000000000a', 'forged', 'b1', '{}')$q$, 'forging audit entries');
+select pg_temp.expect_denied('delete from public.operator_imports', 'deleting uploads directly');
+do $$ begin
+  if not exists (select 1 from public.operator_events where id = 'e-rm3')
+    or not exists (select 1 from public.operator_import_summaries where id = 'imp1' and (summary ->> 'rowCount')::int = 0) then
+    raise exception 'FAIL: a member cannot read the site''s audit entries and uploads'; end if;
+end $$;
+rollback;
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000011');
+do $$ begin
+  if exists (select 1 from public.operator_events) or exists (select 1 from public.operator_imports)
+    or exists (select 1 from public.operator_import_summaries) then
+    raise exception 'FAIL: a non-member reads audit entries or uploads'; end if;
+end $$;
+rollback;
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
   jsonb_set(pg_temp.state(), '{issues}', (pg_temp.state() -> 'issues')
     || '[{"id":"i-o2","cartonId":"c1","orderId":"o2","qty":1,"pic":"SO","at":"t"}]')),
@@ -916,13 +943,22 @@ select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
     (select coalesce(jsonb_agg(i), '[]') from jsonb_array_elements(pg_temp.state() -> 'issues') i where i ->> 'orderId' <> 'o2'))),
   '42501', 'remove-order taking the stock issue with it (issues are outside its scope)');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'import-delete',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{awbImports}', '[]')),
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{awbImports}', '[{"id":"imp1","deleted":true}]')),
   '42501', 'stock-out SV deletes an upload');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
+  jsonb_set(pg_temp.state(), '{awbImports}', '[{"id":"imp1","deleted":true}]')),
+  '42501', 'a stock issue deleting an upload (uploads are outside its scope)');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-save',
+  jsonb_set(pg_temp.state(), '{awbImports}', '[{"id":"imp2","rows":[]},{"id":"imp2","rows":[]}]')),
+  '22023', 'two records for one upload');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-save',
+  jsonb_set(pg_temp.state(), '{awbImports}', '[{"id":"imp2"}]')),
+  '22023', 'an upload without label rows');
 select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-delete',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{awbImports}', '[]')),
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{awbImports}', '[{"id":"imp1","deleted":true}]')),
   'ok', 'admin deletes the upload and its untouched AWB');
 do $$ begin
-  if (select jsonb_array_length(state -> 'awbImports') from public.operator_workspaces where site_id = 'site-a') <> 0
+  if exists (select 1 from public.operator_imports where id = 'imp1')
     or (select state -> 'orders' from public.operator_workspaces where site_id = 'site-a') <> jsonb_build_array(pg_temp.ord('o2', 'imp1'))
     or not exists (select 1 from public.operator_workspaces w, jsonb_array_elements(w.state -> 'issues') i
       where w.site_id = 'site-a' and i ->> 'id' = 'i-o2') then

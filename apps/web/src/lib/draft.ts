@@ -2965,12 +2965,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       e.recorder = recorder;
       e.actor = recorderLabel(recorder);
     }
-  // Ceilings sized to the 4 MB workspace document (about 2 KB per imported AWB with its
-  // label record and audit entries). Raised 2026-10-14 with the document cap; the byte
-  // limit (WORKSPACE_BYTES) is what a busy site reaches first.
+  // Ceilings sized to the 4 MB workspace document. On operational sites uploads and audit
+  // entries live in their own tables (20261015090000), so orders (about 620 B each) are
+  // what grows; the sandbox still keeps everything in its document.
   if (
     s.events.length > 9000 ||
-    s.orders.length > 3000 ||
+    s.orders.length > 5000 ||
     s.batches.length > 200 ||
     s.cartons.length > 500 ||
     (s.adypocideReceipts?.length ?? 0) > 500 ||
