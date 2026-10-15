@@ -20,6 +20,10 @@
 -- transaction, stores the upload, appends the audit entries and saves the document without
 -- them. Audit entries already in the table are kept as they are (`on conflict do nothing`).
 --
+-- The function assigns variables with `v := (select ...)` rather than `select ... into v`:
+-- the Supabase SQL editor reads `select ... into` as creating a table and inserts RLS
+-- statements into the function body, so this form keeps the migration pasteable there.
+--
 -- Data: each site's current uploads and audit entries move to the tables, in order, and
 -- leave the document. Reads of the full history go through the API (recent entries and
 -- upload summaries come with each load; trace and upload screens fetch the rest).
@@ -130,6 +134,7 @@ declare
   v_uid uuid := (select auth.uid());
   v_role text;
   v_factory text; -- factory scope
+  v_access text[]; -- tables (assignments below avoid SELECT ... INTO, see header)
   v_rule public.operator_command_rules%rowtype;
   v_current public.operator_workspaces%rowtype;
   v_prior public.operator_commits%rowtype;
@@ -141,17 +146,20 @@ begin
   if v_uid is null then
     raise exception 'Sign in again before saving.' using errcode = '28000';
   end if;
-  select * into v_current from public.operator_workspaces w where w.id = p_workspace for update;
+  perform 1 from public.operator_workspaces w where w.id = p_workspace for update;
+  v_current := (select w from public.operator_workspaces w where w.id = p_workspace);
   -- factory scope: role and factory are read in one statement, so from the same snapshot.
-  select public.operator_active_role(p_workspace), operator_private.active_factory(p_workspace)
-  into v_role, v_factory;
+  v_access := (select array[public.operator_active_role(p_workspace),
+    operator_private.active_factory(p_workspace)]);
+  v_role := v_access[1];
+  v_factory := v_access[2];
   if v_current.id is null or v_role is null then
     raise exception 'No active membership for this site.' using errcode = '42501';
   end if;
   -- A retried operation returns its established result without repeating effects.
-  select * into v_prior from public.operator_commits c
-  where c.workspace_id = p_workspace and c.operation_id = p_operation;
-  if found then
+  v_prior := (select c from public.operator_commits c
+    where c.workspace_id = p_workspace and c.operation_id = p_operation);
+  if v_prior.operation_id is not null then
     if v_prior.user_id is distinct from v_uid or v_prior.command is distinct from p_command
       or v_prior.fingerprint is distinct from p_fingerprint then
       raise exception 'This save ID was already used for a different change.' using errcode = 'PT409';
@@ -159,14 +167,14 @@ begin
     return query select v_current.state, v_current.revision, true;
     return;
   end if;
-  select * into v_rule from public.operator_command_rules r where r.command = p_command;
-  if not found then
+  v_rule := (select r from public.operator_command_rules r where r.command = p_command);
+  if v_rule.command is null then
     raise exception 'Unknown operational command.' using errcode = '42501';
   end if;
   if public.operator_has_capability(p_workspace, v_rule.capability) is not true then
     raise exception 'Your role at this site does not permit %.', v_rule.capability using errcode = '42501';
   end if;
-  select k.secret into v_secret from operator_private.server_keys k where k.id = 'commit';
+  v_secret := (select k.secret from operator_private.server_keys k where k.id = 'commit');
   if v_secret is null then
     raise exception 'Operational saving is not configured.' using errcode = '55000';
   end if;
