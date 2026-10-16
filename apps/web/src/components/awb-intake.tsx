@@ -13,6 +13,7 @@ import {
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { FormError, Panel, units } from "./draft-primitives";
+import { SkuAliasPanel } from "./sku-aliases";
 import {
   orderHasActivity,
   products,
@@ -33,7 +34,9 @@ import {
   parseImport,
   rowProblems,
   rowStatus,
+  skuAliasProblem,
   type AwbImport,
+  type ImportLine,
   type ImportRow,
   type ParsedPage,
   type ImportFile,
@@ -51,6 +54,8 @@ type Props = {
     input: Record<string, unknown>,
     options?: { onError?: (message: string) => void },
   ) => Promise<Draft | null>;
+  /** Display only: whether the signed-in role may map package SKUs (orders.import). */
+  canMapSkus?: boolean;
   children: ReactNode;
 };
 export function AwbIntake({
@@ -60,6 +65,7 @@ export function AwbIntake({
   role,
   busy,
   onCommand,
+  canMapSkus = false,
   children,
 }: Props) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
@@ -77,7 +83,12 @@ export function AwbIntake({
     [forceOcr, setForceOcr] = useState(false),
     [receiveError, setReceiveError] = useState(""),
     [deleting, setDeleting] = useState(false),
-    [deleteError, setDeleteError] = useState("");
+    [deleteError, setDeleteError] = useState(""),
+    [skuMessage, setSkuMessage] = useState<{
+      key: string;
+      text: string;
+      error?: boolean;
+    } | null>(null);
   const [filter, setFilter] = useState("all"),
     [preview, setPreview] = useState<{ file: ImportFile; page: number } | null>(
       null,
@@ -234,7 +245,12 @@ export function AwbIntake({
       }
       // Pages with no tracking number, order reference or known SKU (cover, title,
       // separator) become no row; they are listed per file and can still be added by hand.
-      const parsed = parseImport(pages, channel, store.trim());
+      const parsed = parseImport(
+        pages,
+        channel,
+        store.trim(),
+        state.skuAliases,
+      );
       const b: AwbImport = {
         id: crypto.randomUUID(),
         date,
@@ -283,6 +299,62 @@ export function AwbIntake({
       rows: batch.rows.map((r) => (r.id === row.id ? { ...r, ...patch } : r)),
     });
     setDirty(true);
+  }
+  /**
+   * Saves an unknown SKU's product and units as a package SKU mapping, then resolves every
+   * line of this upload with that SKU, so the admin types it once and later imports
+   * recognise it.
+   */
+  async function rememberSku(line: ImportLine, key: string) {
+    setSkuMessage(null);
+    const saved = await onCommand(
+      "sku-alias-save",
+      { sku: line.sku.trim(), product: line.product, units: line.units },
+      { onError: (text) => setSkuMessage({ key, text, error: true }) },
+    );
+    const def = saved && defaultFor(line.sku, saved.skuAliases);
+    if (!def) return;
+    setWorking((current) =>
+      current
+        ? {
+            ...current,
+            rows: current.rows.map((r) => {
+              let changed = false,
+                contents = false;
+              const lines = r.lines.map((l) => {
+                if (
+                  l.sku.trim().toLowerCase() !== def.sku ||
+                  (l.canonical === def.canonical &&
+                    l.product === def.product &&
+                    l.units === def.units)
+                )
+                  return l;
+                changed = true;
+                if (l.product !== def.product || l.units !== def.units)
+                  contents = true;
+                return {
+                  ...l,
+                  product: def.product,
+                  units: def.units,
+                  originalUnits: def.units,
+                  canonical: def.canonical,
+                };
+              });
+              return changed
+                ? { ...r, lines, ...(contents ? { reviewed: false } : {}) }
+                : r;
+            }),
+          }
+        : current,
+    );
+    setDirty(true);
+    setSkuMessage({
+      key,
+      text: t(
+        `${def.sku} remembered. Labels with it in this upload are filled in, and later imports recognise it. Save the review to keep this upload's changes.`,
+        `${def.sku} diingat. Label dengannya dalam muat naik ini telah diisi, dan import selepas ini mengenalinya. Simpan semakan untuk menyimpan perubahan muat naik ini.`,
+      ),
+    });
   }
   async function save(release = false) {
     if (!batch) return;
@@ -339,6 +411,7 @@ export function AwbIntake({
             ? [["upload", t("Upload AWB batch", "Muat naik kelompok AWB")]]
             : []),
           ["batches", t("Import history", "Sejarah import")],
+          ...(canMapSkus ? [["skus", t("Package SKUs", "SKU pakej")]] : []),
         ].map(([key, label]) => (
           <Button
             key={key}
@@ -533,6 +606,14 @@ export function AwbIntake({
       )}
       {screen === "batches" && workspaceId && (
         <ArchiveLookup workspaceId={workspaceId} lang={lang} />
+      )}
+      {screen === "skus" && canMapSkus && (
+        <SkuAliasPanel
+          state={state}
+          lang={lang}
+          busy={busy}
+          command={onCommand}
+        />
       )}
       {screen === "review" && batch && (
         <>
@@ -955,7 +1036,10 @@ export function AwbIntake({
                               value={line.sku}
                               disabled={!canEdit}
                               onChange={(e) => {
-                                const d = defaultFor(e.target.value);
+                                const d = defaultFor(
+                                  e.target.value,
+                                  state.skuAliases,
+                                );
                                 update({
                                   sku: e.target.value,
                                   ...(d
@@ -1044,6 +1128,68 @@ export function AwbIntake({
                               <X size={14} />
                             </Button>
                           )}
+                          {canEdit &&
+                            line.sku.trim() &&
+                            !defaultFor(line.sku, state.skuAliases) && (
+                              <div className="awb-sku-hint">
+                                <span>
+                                  {t(
+                                    "Unknown SKU — map it once so future labels resolve automatically.",
+                                    "SKU tidak dikenali — petakan sekali supaya label akan datang dikenal pasti secara automatik.",
+                                  )}{" "}
+                                  {skuAliasProblem(line.sku)
+                                    ? t(
+                                        "This SKU cannot be remembered: use 3 to 40 letters, digits, - or _, with a letter.",
+                                        "SKU ini tidak boleh diingat: gunakan 3 hingga 40 huruf, digit, - atau _, dengan sekurang-kurangnya satu huruf.",
+                                      )
+                                    : !products.some(
+                                          (p) => p.id === line.product,
+                                        ) ||
+                                        !line.units ||
+                                        line.units > 1000
+                                      ? t(
+                                          "Choose the product and units per package first.",
+                                          "Pilih produk dan unit setiap pakej dahulu.",
+                                        )
+                                      : null}
+                                </span>
+                                {canMapSkus && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={
+                                      busy ||
+                                      !!skuAliasProblem(line.sku) ||
+                                      !products.some(
+                                        (p) => p.id === line.product,
+                                      ) ||
+                                      !Number.isInteger(line.units) ||
+                                      Number(line.units) < 1 ||
+                                      Number(line.units) > 1000
+                                    }
+                                    onClick={() =>
+                                      void rememberSku(line, `${row.id}:${i}`)
+                                    }
+                                  >
+                                    {t("Remember this SKU", "Ingat SKU ini")}
+                                  </Button>
+                                )}
+                              </div>
+                            )}
+                          {skuMessage?.key === `${row.id}:${i}` &&
+                            (skuMessage.error ? (
+                              <FormError
+                                className="awb-sku-hint"
+                                message={skuMessage.text}
+                              />
+                            ) : (
+                              <p
+                                className="awb-sku-hint text-success"
+                                role="status"
+                              >
+                                {skuMessage.text}
+                              </p>
+                            ))}
                         </div>
                       );
                     })}

@@ -129,6 +129,13 @@ export const commandRules: Record<
     capability: "orders.import",
     stateKeys: ["awbImports", "orders", "events"],
   },
+  // Package SKU mappings for AWB imports (20261020090000_operator_sku_aliases.sql).
+  "sku-alias-save": { capability: "orders.import", stateKeys: ["skuAliases", "events"] },
+  "sku-alias-retire": { capability: "orders.import", stateKeys: ["skuAliases", "events"] },
+  "sku-alias-reactivate": {
+    capability: "orders.import",
+    stateKeys: ["skuAliases", "events"],
+  },
   "sort-count": { capability: "outbound.fulfil", stateKeys: ["sortCounts", "events"] },
   "assign-package": { capability: "outbound.fulfil", stateKeys: ["orders", "events"] },
   "assign-orders": { capability: "outbound.fulfil", stateKeys: ["orders", "events"] },

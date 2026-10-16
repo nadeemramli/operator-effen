@@ -1,4 +1,4 @@
-import type { Draft, Order } from "./draft";
+import type { Draft, Order, Recorder } from "./draft";
 
 export const channels = ["Luxana", "Shopee", "TikTok", "Lazada"];
 export const couriers = ["Ninja Van", "SPX", "J&T", "LEX", "Other"];
@@ -166,10 +166,97 @@ export type ParsedPage = {
 };
 export const normalizeAwb = (value: string) =>
   value.trim().toUpperCase().replace(/\s+/g, "");
-export function defaultFor(sku: string) {
-  return packageDefaults.find((p) => p.sku === sku.trim().toLowerCase());
+/**
+ * A package SKU the office admin mapped in the app (Package SKUs), for SKUs the built-in
+ * `packageDefaults` do not know yet. Kept for good: a mapping no longer in use is retired,
+ * never deleted, so the audit trail and earlier imports still explain themselves.
+ */
+export type SkuAlias = {
+  id: string;
+  /** Lower-case and trimmed; unique among mappings and never a built-in SKU. */
+  sku: string;
+  product: string;
+  units: number;
+  canonical: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+  history: {
+    kind: "created" | "edited" | "retired" | "reactivated";
+    at: string;
+    changes: Record<string, [string, string]>;
+    reason?: string;
+    recordedBy?: Recorder;
+  }[];
+};
+/** Mappings one site may hold. */
+export const skuAliasLimit = 500;
+/**
+ * The package a SKU stands for: the built-in defaults first, then the site's active
+ * mapped SKUs (`Draft.skuAliases`). A mapping can never shadow a built-in SKU.
+ */
+export function defaultFor(
+  sku: string,
+  aliases?: readonly SkuAlias[],
+): PackageDefault | undefined {
+  const key = sku.trim().toLowerCase();
+  const builtIn = packageDefaults.find((p) => p.sku === key);
+  if (builtIn || !aliases?.length) return builtIn;
+  const alias = aliases.find((a) => a.active && a.sku === key);
+  return alias
+    ? {
+        sku: alias.sku,
+        product: alias.product,
+        units: alias.units,
+        canonical: alias.canonical,
+      }
+    : undefined;
+}
+const skuShape =
+  /\b[a-z][a-z0-9_-]*\d[a-z0-9_-]*\b|\b[39](?:botol|free3)[a-z]*\b/gi;
+/**
+ * SKU candidates in a text, in reading order: the built-in SKU shapes plus the exact text
+ * of every active mapped SKU (a mapped SKU need not look like a built-in one).
+ */
+function skuTokens(text: string, aliases?: readonly SkuAlias[]) {
+  const mapped = (aliases ?? [])
+    .filter((a) => a.active && skuAliasProblem(a.sku) === null)
+    .map((a) => a.sku)
+    .sort((a, b) => b.length - a.length);
+  const pattern = mapped.length
+    ? new RegExp(`\\b(?:${mapped.join("|")})\\b|${skuShape.source}`, "gi")
+    : skuShape;
+  return text.match(pattern) ?? [];
 }
 const productIds = ["cav", "gly", "lip", "syn", "ady"];
+// Product names alone never choose a package, so they cannot become a mapped SKU either.
+const productWords = [
+  ...productIds,
+  "cavernosil",
+  "glycoxil",
+  "lipidri",
+  "synovil",
+  "adypocide",
+  "adipocyde",
+];
+/**
+ * Why a SKU cannot be mapped, or null. A mapped SKU is found anywhere in a label's text,
+ * so it must be distinctive: 3 to 40 letters, digits, "-" or "_", starting and ending
+ * with a letter or digit, with at least one letter, and never a product name.
+ */
+export function skuAliasProblem(raw: string): string | null {
+  const sku = raw.trim().toLowerCase();
+  if (!/^[a-z0-9_-]+$/.test(sku))
+    return "Use only letters, digits, - or _ in the SKU.";
+  if (sku.length < 3 || sku.length > 40)
+    return "Use a SKU of 3 to 40 characters.";
+  if (!/^[a-z0-9](?:.*[a-z0-9])?$/.test(sku) || !/[a-z]/.test(sku))
+    return "Start and end the SKU with a letter or digit, and include a letter.";
+  if (productWords.includes(sku))
+    return "A product name is not a package SKU. Use the SKU printed on the label.";
+  return null;
+}
 const whole = (n: unknown, min = 1): n is number =>
   typeof n === "number" && Number.isSafeInteger(n) && n >= min && n <= 1000000;
 const refPattern =
@@ -179,7 +266,7 @@ const refPattern =
  * The references a page's text carries: tracking numbers (AWBs), order references and
  * SKU tokens with a known package mapping. Shared by the OCR decision and the parser.
  */
-export function detectReferences(raw: string) {
+export function detectReferences(raw: string, aliases?: readonly SkuAlias[]) {
   const text = raw.replace(/\r/g, "");
   const upper = text.toUpperCase();
   const orderRefs = [
@@ -219,12 +306,8 @@ export function detectReferences(raw: string) {
   }
   const knownSkus = [
     ...new Set(
-      (
-        text.match(
-          /\b[a-z][a-z0-9_-]*\d[a-z0-9_-]*\b|\b[39](?:botol|free3)[a-z]*\b/gi,
-        ) ?? []
-      )
-        .filter((s) => defaultFor(s))
+      skuTokens(text, aliases)
+        .filter((s) => defaultFor(s, aliases))
         .map((s) => s.toLowerCase()),
     ),
   ];
@@ -285,9 +368,15 @@ export function mergeOcrText(textLayer: string, ocrText: string) {
   return added.length ? `${textLayer}\n${added.join("\n")}` : textLayer;
 }
 /** A page with no tracking number, order reference or known SKU produces no label row. */
-export const isLabelPage = (page: ParsedPage) => {
+export const isLabelPage = (
+  page: ParsedPage,
+  aliases?: readonly SkuAlias[],
+) => {
   if (page.error) return true;
-  const { tracking, orderRefs, knownSkus } = detectReferences(page.text);
+  const { tracking, orderRefs, knownSkus } = detectReferences(
+    page.text,
+    aliases,
+  );
   return !!(tracking.length || orderRefs.length || knownSkus.length);
 };
 export const OCR_NOTE = "Read by OCR — compare with the PDF";
@@ -296,24 +385,30 @@ export function parsePages(
   pages: ParsedPage[],
   channel: string,
   store: string,
+  aliases?: readonly SkuAlias[],
 ): ImportRow[] {
-  return parseImport(pages, channel, store).rows;
+  return parseImport(pages, channel, store, aliases).rows;
 }
-/** Label rows from the pages, plus the pages skipped as non-label (cover, title, …). */
+/**
+ * Label rows from the pages, plus the pages skipped as non-label (cover, title, …).
+ * `aliases` are the site's mapped package SKUs, resolved after the built-in defaults.
+ */
 export function parseImport(
   pages: ParsedPage[],
   channel: string,
   store: string,
+  aliases?: readonly SkuAlias[],
 ): { rows: ImportRow[]; skipped: { file: string; page: number }[] } {
+  const lookup = (sku: string) => defaultFor(sku, aliases);
   const rows: ImportRow[] = [];
   const skipped: { file: string; page: number }[] = [];
   for (const page of pages) {
-    if (!isLabelPage(page)) {
+    if (!isLabelPage(page, aliases)) {
       skipped.push({ file: page.file, page: page.page });
       continue;
     }
     const text = page.text.replace(/\r/g, "");
-    const { orderRefs, tracking } = detectReferences(text);
+    const { orderRefs, tracking } = detectReferences(text, aliases);
     const detectedChannel = /TIKTOK/i.test(text)
       ? "TikTok"
       : /LAZADA|\bLEX\b/i.test(text)
@@ -342,14 +437,9 @@ export function parseImport(
       .map((x) => x.trim())
       .filter(Boolean);
     // Only known aliases or explicit SKU fields; product names alone never choose a recipe.
-    const tokens =
-      text.match(
-        /\b[a-z][a-z0-9_-]*\d[a-z0-9_-]*\b|\b[39](?:botol|free3)[a-z]*\b/gi,
-      ) ?? [];
+    const tokens = skuTokens(text, aliases);
     const skus = [
-      ...new Set(
-        tokens.filter((s) => defaultFor(s)).map((s) => s.toLowerCase()),
-      ),
+      ...new Set(tokens.filter((s) => lookup(s)).map((s) => s.toLowerCase())),
     ];
     const declared = [
       ...text.matchAll(/(?:Seller\s+SKU|SKU)\s*:\s*([a-z0-9_-]+)/gi),
@@ -376,12 +466,12 @@ export function parseImport(
             .map((s) => s.toLowerCase());
     [...declared, ...bracketSkus, ...tableSkus].forEach((s) => {
       // A parent SKU printed beside its variation ("adipocyde" with "adipocyde6") is not a product.
-      if (!defaultFor(s) && skus.some((k) => defaultFor(k) && k.startsWith(s)))
+      if (!lookup(s) && skus.some((k) => lookup(k) && k.startsWith(s)))
         return;
       if (!skus.includes(s)) skus.push(s);
     });
     for (const sku of skus) {
-      const def = defaultFor(sku);
+      const def = lookup(sku);
       const positions = rawLines
         .map((line, i) => (new RegExp(`\\b${sku}\\b`, "i").test(line) ? i : -1))
         .filter((i) => i >= 0);
@@ -816,4 +906,171 @@ export function applyImportCommand(
   batch.confirmedAt = at;
   batch.updatedAt = at;
   return `Handoff confirmed · ${ready.length} new AWBs · no print, packing or stock movement inferred`;
+}
+/**
+ * Package SKU mappings: `sku-alias-save` (a new mapping without `id`, an edit with `id`),
+ * `sku-alias-retire` and `sku-alias-reactivate`. A mapping is kept for good (retired, never
+ * deleted) with its own history; edits and status changes need a reason. Returns the
+ * audit entry for the caller to record.
+ */
+export function applySkuAliasCommand(
+  state: Draft,
+  type: string,
+  input: Record<string, unknown>,
+  at: string,
+  recordedBy: Recorder,
+): { entity: string; action: string; detail: string } {
+  const aliases = (state.skuAliases ??= []);
+  const text = (key: string) =>
+    typeof input[key] === "string" ? (input[key] as string).trim() : "";
+  const reason = () => {
+    const value = text("reason");
+    if (!value) throw new Error("Give a reason for this change.");
+    if (value.length > 500) throw new Error("Use a shorter reason.");
+    return value;
+  };
+  const builtIn = (sku: string) => packageDefaults.find((p) => p.sku === sku);
+  const describe = (a: SkuAlias) =>
+    `${a.sku} · ${a.product.toUpperCase()} · ${a.units} per package · ${a.canonical}`;
+  const find = () => {
+    const alias = aliases.find((a) => a.id === text("id"));
+    if (!alias)
+      throw new Error(
+        "This SKU mapping could not be found. Refresh and try again.",
+      );
+    const raw = input.expectedVersion;
+    if (
+      raw !== undefined &&
+      raw !== null &&
+      raw !== "" &&
+      Number(raw) !== alias.version
+    )
+      throw new Error(
+        "This SKU mapping was changed by someone else after you opened it. Review it and save again.",
+      );
+    return alias;
+  };
+  if (type === "sku-alias-save") {
+    const sku = text("sku").toLowerCase();
+    const problem = skuAliasProblem(sku);
+    if (problem) throw new Error(problem);
+    const fixed = builtIn(sku);
+    if (fixed)
+      throw new Error(
+        `${sku} is a built-in package SKU (${fixed.canonical}, ${fixed.units} per package) and is already recognised.`,
+      );
+    const product = text("product");
+    if (!productIds.includes(product))
+      throw new Error("Choose the product this SKU packs.");
+    const units =
+      input.units === "" || input.units === null ? NaN : Number(input.units);
+    if (!Number.isSafeInteger(units) || units < 1 || units > 1000)
+      throw new Error(
+        "Enter the units per package as a whole number from 1 to 1000.",
+      );
+    const label = text("canonical");
+    if (label.length > 60) throw new Error("Use a shorter package label.");
+    const canonical = label || sku.toUpperCase();
+    const editing = text("id") ? find() : undefined;
+    const clash = aliases.find((a) => a.sku === sku && a.id !== editing?.id);
+    if (clash)
+      throw new Error(
+        clash.active
+          ? `${sku} is already mapped. Edit that mapping in Package SKUs.`
+          : `${sku} has a retired mapping. Reactivate or edit it in Package SKUs.`,
+      );
+    if (!editing) {
+      if (aliases.length >= skuAliasLimit)
+        throw new Error(
+          `This site already has ${skuAliasLimit} package SKU mappings. Retire unused ones or ask for the SKU to become a built-in default.`,
+        );
+      const alias: SkuAlias = {
+        id: crypto.randomUUID(),
+        sku,
+        product,
+        units,
+        canonical,
+        active: true,
+        createdAt: at,
+        updatedAt: at,
+        version: 1,
+        history: [
+          {
+            kind: "created",
+            at,
+            changes: {
+              sku: ["", sku],
+              product: ["", product],
+              units: ["", String(units)],
+              canonical: ["", canonical],
+            },
+            recordedBy,
+          },
+        ],
+      };
+      aliases.push(alias);
+      return {
+        entity: "sku-alias:" + alias.id,
+        action: "Package SKU mapped",
+        detail: describe(alias),
+      };
+    }
+    const changes: Record<string, [string, string]> = {};
+    const next = { sku, product, units: String(units), canonical };
+    for (const key of ["sku", "product", "units", "canonical"] as const)
+      if (String(editing[key]) !== next[key])
+        changes[key] = [String(editing[key]), next[key]];
+    if (!Object.keys(changes).length)
+      throw new Error("No SKU mapping details changed.");
+    const why = reason();
+    Object.assign(editing, { sku, product, units, canonical, updatedAt: at });
+    editing.version += 1;
+    editing.history.push({
+      kind: "edited",
+      at,
+      changes,
+      reason: why,
+      recordedBy,
+    });
+    return {
+      entity: "sku-alias:" + editing.id,
+      action: "Package SKU mapping edited",
+      detail:
+        Object.entries(changes)
+          .map(([k, [a, b]]) => `${k}: ${a} → ${b}`)
+          .join(" · ") + ` · ${why}`,
+    };
+  }
+  if (type !== "sku-alias-retire" && type !== "sku-alias-reactivate")
+    throw new Error("Unknown action.");
+  const alias = find();
+  const active = type === "sku-alias-reactivate";
+  if (alias.active === active)
+    throw new Error(
+      active
+        ? "This SKU mapping is already active."
+        : "This SKU mapping is already retired.",
+    );
+  if (active && builtIn(alias.sku))
+    throw new Error(
+      `${alias.sku} is now a built-in package SKU; this mapping is no longer needed.`,
+    );
+  const why = reason();
+  alias.active = active;
+  alias.updatedAt = at;
+  alias.version += 1;
+  alias.history.push({
+    kind: active ? "reactivated" : "retired",
+    at,
+    changes: { active: [String(!active), String(active)] },
+    reason: why,
+    recordedBy,
+  });
+  return {
+    entity: "sku-alias:" + alias.id,
+    action: active
+      ? "Package SKU mapping reactivated"
+      : "Package SKU mapping retired",
+    detail: `${describe(alias)} · ${why}`,
+  };
 }

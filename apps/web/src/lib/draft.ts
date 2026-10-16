@@ -5,9 +5,11 @@ import {
 } from "./capabilities.ts";
 import {
   applyImportCommand,
+  applySkuAliasCommand,
   channels,
   normalizeAwb,
   type AwbImport,
+  type SkuAlias,
 } from "./awb-import.ts";
 export type Lang = "en" | "ms";
 export const tr = (lang: Lang, en: string, ms: string) =>
@@ -558,6 +560,8 @@ export interface Draft {
   sortCounts?: SortCount[];
   adypocideReceipts?: AdypocideReceipt[];
   awbImports?: AwbImport[];
+  /** Package SKUs the office admin mapped for AWB imports (see awb-import.ts). */
+  skuAliases?: SkuAlias[];
   machines?: Machine[];
   operations?: OperationRecord[];
   version: 1;
@@ -2823,6 +2827,14 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           : "Team profile updated",
         profile.name + " · " + changes.join(" · "),
       );
+      break;
+    }
+    case "sku-alias-save":
+    case "sku-alias-retire":
+    case "sku-alias-reactivate": {
+      allow("admin");
+      const entry = applySkuAliasCommand(s, cmd.type, v, at, recorder);
+      log(entry.entity, entry.action, entry.detail);
       break;
     }
     case "correct": {

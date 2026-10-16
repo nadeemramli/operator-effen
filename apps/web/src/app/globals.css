@@ -2572,6 +2572,19 @@ td small {
   list-style: disc;
   color: var(--muted-foreground);
 }
+/* Unknown SKU on a label line: the hint and "Remember this SKU" span the whole line. */
+.awb-sku-hint {
+  grid-column: 1/-1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.awb-sku-hint > span {
+  flex: 1 1 260px;
+  color: var(--muted-foreground);
+}
 .awb-source-links button {
   max-width: 100%;
   white-space: normal;

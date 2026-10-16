@@ -2259,6 +2259,7 @@ export function DraftApp() {
           role={role}
           busy={busy}
           onCommand={command}
+          canMapSkus={can("orders.import") && !viewingAs}
         >
           <Panel
             title={t("Manual / scanned AWB", "AWB manual / diimbas")}

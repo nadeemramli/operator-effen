@@ -1138,6 +1138,41 @@ do $$ begin
     or not exists (select 1 from jsonb_array_elements(pg_temp.state() -> 'batches') b
       where b ->> 'id' = 'x-ady' and b -> 'cancelled' ->> 'reason' = 'Recorded with the wrong date') then
     raise exception 'FAIL: expected the corrected date and the cancelled batch kept in the document'; end if;
+-- 12e. Package SKU mappings (20261020090000). Only the import capability (the office admin)
+--      maps, edits, retires or reactivates a SKU; the mappings are a new top-level key that
+--      only these commands change, and these commands change nothing else.
+create function pg_temp.skus(p jsonb, p_event text default null) returns jsonb language sql as $$
+  select jsonb_set(jsonb_set(pg_temp.state(), '{skuAliases}', p), '{events}',
+    (pg_temp.state() -> 'events') || case when p_event is null then '[]'::jsonb
+      else jsonb_build_array(pg_temp.ev(p_event, '00000000-0000-4000-8000-000000000007')) end) $$;
+create function pg_temp.sku(p_id text, p_active boolean default true) returns jsonb language sql as $$
+  select jsonb_build_object('id', p_id, 'sku', 'syn' || p_id, 'product', 'syn', 'units', 8,
+    'canonical', 'SYN-' || upper(p_id), 'active', p_active, 'createdAt', 't', 'updatedAt', 't',
+    'version', 1, 'history', '[]'::jsonb) $$;
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'sku-alias-save',
+  pg_temp.skus(jsonb_build_array(pg_temp.sku('k1')))), '42501', 'stock-out SV maps a package SKU');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'sku-alias-save',
+  pg_temp.skus(jsonb_build_array(pg_temp.sku('k1')))), '42501', 'production SV maps a package SKU');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000004', :A, 'sku-alias-save',
+  pg_temp.skus(jsonb_build_array(pg_temp.sku('k1')))), '42501', 'management maps a package SKU');
+select pg_temp.expect(pg_temp.commit_as(:PK, :A, 'sku-alias-retire',
+  pg_temp.skus(jsonb_build_array(pg_temp.sku('k1')))), '42501', 'packer changes package SKUs');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'sku-alias-save',
+  jsonb_set(pg_temp.skus(jsonb_build_array(pg_temp.sku('k1'))), '{batches,0,code}', '"X"')),
+  '42501', 'sku-alias-save used to edit batches');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-save',
+  pg_temp.skus(jsonb_build_array(pg_temp.sku('k1')))), '42501', 'an upload save changing package SKUs');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'sku-alias-save',
+  pg_temp.skus(jsonb_build_array(pg_temp.sku('k1')), 'e-sku1')), 'ok', 'admin maps a package SKU');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'sku-alias-retire',
+  pg_temp.skus(jsonb_build_array(pg_temp.sku('k1', false)), 'e-sku2')), 'ok', 'admin retires the mapping');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'sku-alias-reactivate',
+  pg_temp.skus(jsonb_build_array(pg_temp.sku('k1')), 'e-sku3')), 'ok', 'admin reactivates the mapping');
+do $$ begin
+  if (select state -> 'skuAliases' -> 0 ->> 'sku' from public.operator_workspaces where site_id = 'site-a')
+      is distinct from 'synk1'
+    or (select count(*) from public.operator_events where id in ('e-sku1', 'e-sku2', 'e-sku3')) <> 3 then
+    raise exception 'FAIL: expected the mapping in the document and three audit entries'; end if;
 end $$;
 
 -- 13. Workspace capacity (20261014090000). A document up to 4,000,000 bytes of jsonb text

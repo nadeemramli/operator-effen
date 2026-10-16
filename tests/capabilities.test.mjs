@@ -29,6 +29,7 @@ const later = [
   "20261009090003_operator_trip_dropoffs",
   "20261011090000_operator_remove_awbs",
   "20261019090000_operator_batch_cancel",
+  "20261020090000_operator_sku_aliases",
 ].map(migration);
 const merged = (table) =>
   section(table) +
@@ -157,6 +158,11 @@ test("every operational command stays inside its database scope", () => {
   run("outbound", "dispatch", { id: o, reference: "M-1", pic: "D" });
   run("admin", "order", { awb: "COV-AWB-3", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });
   run("outbound", "remove-order", { id: s.orders[0].id, reason: "Cancelled by the customer" });
+  run("admin", "sku-alias-save", { sku: "cov-pakej8", product: "cav", units: 8 });
+  const alias = s.skuAliases[0];
+  run("admin", "sku-alias-save", { id: alias.id, sku: "cov-pakej8", product: "cav", units: 9, reason: "x" });
+  run("admin", "sku-alias-retire", { id: alias.id, reason: "x" });
+  run("admin", "sku-alias-reactivate", { id: alias.id, reason: "x" });
   run("management", "review", { text: "Check" });
   run("packer", "feedback", { text: "Note" });
   run("production", "close", { date: "2026-10-01", note: "Done" });
