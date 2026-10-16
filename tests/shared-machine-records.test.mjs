@@ -59,9 +59,14 @@ test("Production and Stock-in edit the same stage record; no second history is c
   assert.equal(updated.corrections[0].from, "Holo A");
   assert.equal(updated.corrections[0].recordedBy.role, "intake");
   assert.equal(updated.pic, "Operator H");
-  // Stock-in can record a stage too; Production sees it (same state).
-  s = as(s, "intake", "machine", { id, stage: "mixing", pic: "Operator M" });
-  assert.equal(stageStep(s.batches[0], "mixing").recordedBy.role, "intake");
+  // Stock-in can record a warehouse stage too; Production sees it (same state). The factory
+  // stages (mixing, filling) are production's.
+  assert.throws(
+    () => as(s, "intake", "machine", { id, stage: "mixing", pic: "Operator M" }),
+    /recorded by production/,
+  );
+  s = as(s, "intake", "machine", { id, stage: "batching", pic: "Operator B" });
+  assert.equal(stageStep(s.batches[0], "batching").recordedBy.role, "intake");
 });
 
 test("machine registry: create, find, edit and deactivate without rewriting history", () => {

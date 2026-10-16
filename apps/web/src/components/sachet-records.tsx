@@ -24,6 +24,7 @@ import { PersonBadge } from "./person-profile";
 import { Empty, Panel, ProductName, type Field, type FormSpec } from "./draft-primitives";
 import {
   adypocideReceipts,
+  batchBoxTotal,
   batchComplete,
   batchRoute,
   batchTransferred,
@@ -40,6 +41,8 @@ import {
   stepNames,
   toMyt,
   tr,
+  warehouseStages,
+  warehouseStagesDone,
   type Batch,
   type Draft,
   type Lang,
@@ -402,6 +405,7 @@ export function StageRecords({
   pic,
   role,
   stageFilter,
+  onBoxCount,
 }: {
   batch: Batch;
   state: Draft;
@@ -411,6 +415,8 @@ export function StageRecords({
   role?: Role;
   /** Show only the factory stages (production) or only the warehouse stages (stock-in). */
   stageFilter?: "factory" | "warehouse";
+  /** Present when the viewer may enter the batch's finished box count (stock.receive). */
+  onBoxCount?: (batch: Batch) => void;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const editable = !!show && !!pic;
@@ -431,6 +437,15 @@ export function StageRecords({
   const legacy = b.steps
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => !step.sachetStage && step.done);
+  // Stock-in records the warehouse stages only; the factory stages are production's.
+  const readOnly = (key: string) =>
+    isFactoryStage(key) && (role === "intake" || stageFilter === "warehouse");
+  // The batch's finished box total belongs to its last warehouse stage (the Shrink machine).
+  const last = route.at(-1);
+  const totalStage = last && !isFactoryStage(last.id) ? last.id : undefined;
+  const total = batchBoxTotal(state, b);
+  // Batches planned with a route need their warehouse stages before the box count.
+  const boxReady = !b.route || warehouseStagesDone(b);
   const record = (stage: (typeof sachetProcesses)[number], step?: Step) =>
     show!({
       type: "machine",
@@ -524,6 +539,7 @@ export function StageRecords({
           {stages.map((stage) => {
             const step = stageStep(b, stage.id);
             const index = step ? b.steps.indexOf(step) : -1;
+            const canEdit = editable && !readOnly(stage.id);
             return (
               <tr key={stage.id}>
                 <td data-label={t("Stage / machine", "Peringkat / mesin")}>
@@ -535,6 +551,21 @@ export function StageRecords({
                       {" · "}
                       {when(step.occurredAt, lang)}
                     </small>
+                  )}
+                  {readOnly(stage.id) && (
+                    <small>{t("Recorded by production", "Direkod oleh pengeluaran")}</small>
+                  )}
+                  {stage.id === totalStage && (
+                    <span className="stage-box-total">
+                      {t("Total boxes", "Jumlah kotak")}:{" "}
+                      {total === null ? (
+                        <>
+                          — <small>{t("not yet counted", "belum dikira")}</small>
+                        </>
+                      ) : (
+                        <strong>{total}</strong>
+                      )}
+                    </span>
                   )}
                 </td>
                 <td data-label="PIC">
@@ -565,7 +596,7 @@ export function StageRecords({
                     </small>
                   ))}
                   <div className="stage-actions">
-                  {editable && !step?.done && !closed(stage.id) && (
+                  {canEdit && !step?.done && !closed(stage.id) && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -576,12 +607,12 @@ export function StageRecords({
                         : t("Record completion", "Rekod penyiapan")}
                     </Button>
                   )}
-                  {!editable && !step?.done && (
+                  {!canEdit && !step?.done && (
                     <span className="text-muted-foreground">
                       {t("Not completed", "Belum selesai")}
                     </span>
                   )}
-                  {editable && step?.done && (
+                  {canEdit && step?.done && (
                     <span className="flex flex-wrap gap-1">
                       <Button
                         size="sm"
@@ -608,7 +639,7 @@ export function StageRecords({
                       )}
                     </span>
                   )}
-                  {step && editable ? (
+                  {step && canEdit ? (
                     <ProcessPicTools
                       batch={b}
                       index={index}
@@ -620,6 +651,41 @@ export function StageRecords({
                     step && <ProcessPicHistory step={step} lang={lang} />
                   )}
                   </div>
+                  {stage.id === totalStage && onBoxCount && !b.cancelled && (
+                    <div className="stage-box-count">
+                      {!sent ? (
+                        <p className="field-hint">
+                          {t(
+                            "Total boxes are entered after production sends the batch.",
+                            "Jumlah kotak dimasukkan selepas pengeluaran menghantar kelompok.",
+                          )}
+                        </p>
+                      ) : !boxReady ? (
+                        <p className="field-hint">
+                          {warehouseStages(b).includes("hologram")
+                            ? t(
+                                "Record batching, hologram and wrapping first.",
+                                "Rekod nombor kelompok, hologram dan balutan dahulu.",
+                              )
+                            : t(
+                                "Record batching and wrapping first.",
+                                "Rekod nombor kelompok dan balutan dahulu.",
+                              )}
+                        </p>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant={total === null ? "default" : "outline"}
+                          className={total === null ? "action-primary" : undefined}
+                          onClick={() => onBoxCount(b)}
+                        >
+                          {total === null
+                            ? t("Enter total boxes", "Masukkan jumlah kotak")
+                            : t("Add boxes to the total", "Tambah kotak pada jumlah")}
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </td>
               </tr>
             );
@@ -905,6 +971,7 @@ export function SachetProductionRecords({
   role,
   onTrace,
   machineShow,
+  onBoxCount,
 }: {
   state: Draft;
   lang: Lang;
@@ -914,6 +981,8 @@ export function SachetProductionRecords({
   onTrace: (id: string) => void;
   /** Present when the viewer may add or change machines. */
   machineShow?: Show;
+  /** Present when the viewer may enter a batch's finished box count. */
+  onBoxCount?: (batch: Batch) => void;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [query, setQuery] = useState("");
@@ -944,13 +1013,26 @@ export function SachetProductionRecords({
       {!!batches.length && (
         <div className="sachet-record-list">
           {batches.map((b) => {
-            const stages = routeStages(b);
-            const done = stages.filter((stage) => stageDone(b, stage.id)).length;
-            const [tone, status] = batchTransferred(b)
-              ? ["tone-success", t("Sent to warehouse", "Dihantar ke gudang")]
-              : batchComplete(b)
-                ? ["tone-info", t("All stages recorded", "Semua peringkat direkodkan")]
-                : ["tone-muted", t("In production", "Dalam pengeluaran")];
+            // Stock-in counts the warehouse stages it records; others see the whole route.
+            const warehouseView = role === "intake";
+            const stages = warehouseView
+              ? warehouseStages(b)
+              : routeStages(b).map((stage) => stage.id);
+            const done = stages.filter((key) => stageDone(b, key)).length;
+            const total = batchBoxTotal(state, b);
+            const [tone, status] = warehouseView
+              ? !batchTransferred(b)
+                ? ["tone-muted", t("In production", "Dalam pengeluaran")]
+                : total !== null
+                  ? ["tone-success", t("Boxes counted", "Kotak dikira")]
+                  : !b.route || warehouseStagesDone(b)
+                    ? ["tone-info", t("Ready for box count", "Sedia untuk kiraan kotak")]
+                    : ["tone-warning", t("Warehouse stages open", "Peringkat gudang belum selesai")]
+              : batchTransferred(b)
+                ? ["tone-success", t("Sent to warehouse", "Dihantar ke gudang")]
+                : batchComplete(b)
+                  ? ["tone-info", t("All stages recorded", "Semua peringkat direkodkan")]
+                  : ["tone-muted", t("In production", "Dalam pengeluaran")];
             return (
               <details key={b.id} className="sachet-record">
                 <summary>
@@ -961,7 +1043,11 @@ export function SachetProductionRecords({
                   </span>
                   <span className="sachet-record-meta">
                     {b.date} · {done}/{stages.length}{" "}
-                    {t("stages", "peringkat")}
+                    {warehouseView
+                      ? t("warehouse stages", "peringkat gudang")
+                      : t("stages", "peringkat")}
+                    {" · "}
+                    {t("Total boxes", "Jumlah kotak")}: {total ?? "—"}
                   </span>
                   <span className="sachet-record-status">
                     {!!b.revisions?.length && (
@@ -980,6 +1066,7 @@ export function SachetProductionRecords({
                     show={show}
                     pic={pic}
                     role={role}
+                    onBoxCount={onBoxCount}
                   />
                   <Button
                     size="sm"

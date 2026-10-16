@@ -94,11 +94,13 @@ import {
   available,
   batchReceived,
   isSachet,
+  batchBoxTotal,
   batchComplete,
   batchTransferred,
   cartonReturned,
   stageDone,
   warehouseStages,
+  warehouseStagesDone,
   isQcStep,
   isTeamRole,
   adypocideReceipts,
@@ -121,6 +123,7 @@ import {
   today,
   tr,
   variance,
+  type Batch,
   type Carton,
   type Draft,
   type Event as AuditEvent,
@@ -942,6 +945,42 @@ export function DraftApp() {
       ],
       submit: t("Confirm box stock-in", "Sahkan stok masuk kotak"),
     });
+  // The same box count, entered from the batch's Shrink machine stage. The server uses the
+  // batch's receipt awaiting boxing, or records the receipt with the count.
+  const enterBoxTotal = (batch: Batch) => {
+    const counted = state ? batchBoxTotal(state, batch) : null;
+    show({
+      type: "stock-in-ady",
+      title:
+        counted === null
+          ? t("Enter total boxes", "Masukkan jumlah kotak")
+          : t("Add boxes to the total", "Tambah kotak pada jumlah"),
+      description:
+        batch.code +
+        " · " +
+        (counted === null
+          ? t(
+              "Confirm the actual finished box count for this batch after the Shrink machine. One box is one stock unit.",
+              "Sahkan jumlah kotak siap sebenar bagi kelompok ini selepas mesin shrink. Satu kotak ialah satu unit stok.",
+            )
+          : t(
+              `${counted} boxes are already stocked in for this batch. Count only boxes not yet stocked in; they are added to the total.`,
+              `${counted} kotak sudah direkod sebagai stok bagi kelompok ini. Kira hanya kotak yang belum direkod; ia ditambah pada jumlah.`,
+            )),
+      hidden: { batchId: batch.id },
+      fields: [
+        number(
+          "boxes",
+          t("Finished boxes counted", "Kotak siap dikira"),
+          undefined,
+          0,
+        ),
+        { name: "rack", label: t("Rack / location", "Rak / lokasi") },
+        pic("pic", t("Stock-in supervisor", "Penyelia stok masuk")),
+      ],
+      submit: t("Confirm box stock-in", "Sahkan stok masuk kotak"),
+    });
+  };
   // Returns are recorded in two steps: choose the batch, then its carton and the details.
   const recordReturn = () =>
     show({
@@ -1921,7 +1960,7 @@ export function DraftApp() {
                       const recorded = batch
                         ? stages.filter((k) => stageDone(batch, k)).length
                         : 0;
-                      const ready = !gated || batchComplete(batch!);
+                      const ready = !gated || warehouseStagesDone(batch!);
                       return (
                       <Fragment key={receipt.id}>
                       <tr>
@@ -2239,6 +2278,7 @@ export function DraftApp() {
             role={role}
             onTrace={(id) => setTrace(id)}
             machineShow={can("machines.manage") ? show : undefined}
+            onBoxCount={can("stock.receive") ? enterBoxTotal : undefined}
           />
           {can("day.close") && (
             <div className="page-actions">

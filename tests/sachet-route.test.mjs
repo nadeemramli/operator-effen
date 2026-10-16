@@ -10,6 +10,7 @@ import {
   sachetRoutes,
   stageStep,
   stepNames,
+  warehouseStagesDone,
 } from "../apps/web/src/lib/draft.ts";
 
 const run = (s, type, input, role = "production") =>
@@ -72,7 +73,7 @@ test("new sachet batches snapshot the five-stage route with stable keys and bili
   }
 });
 
-test("a planned Hologram PIC is not completed work; the box count needs all five actual records", () => {
+test("a planned Hologram PIC is not completed work; the box count needs the actual warehouse-stage records", () => {
   let s = planned({ pic_3: "Planned Holo PIC" });
   const id = s.batches[0].id;
   assert.equal(stageStep(s.batches[0], "hologram").pic, "Planned Holo PIC");
@@ -93,6 +94,8 @@ test("a planned Hologram PIC is not completed work; the box count needs all five
   assert.ok(s.batches[0].steps.every((st) => st.qc === "not-recorded"));
   assert.throws(() => record(s, id, "hologram", ""), /pic/);
   s = run(s, "machine", { id, stage: "hologram", pic: "Planned Holo PIC" }, "intake");
+  // Factory stages were enforced at transfer; the box count needs the warehouse stages.
+  assert.equal(warehouseStagesDone(s.batches[0]), true);
   assert.equal(batchComplete(s.batches[0]), true);
   s = run(s, "stock-in-ady", { receiptId, boxes: 10, rack: "R", pic: "SV" }, "intake");
   assert.equal(s.cartons.filter((c) => c.batchId === id).length, 1);

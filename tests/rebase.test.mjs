@@ -84,7 +84,7 @@ test("a second writer whose loaded revision went stale is rebased and both chang
   const result = await db.save(
     "intake",
     "machine",
-    { id, stage: "filling", pic: "Operator F" },
+    { id, stage: "batching", pic: "Operator B" },
     "op-b",
     (() => {
       let once = false;
@@ -106,7 +106,7 @@ test("a second writer whose loaded revision went stale is rebased and both chang
   assert.equal(db.loads, 2, "one stale attempt, one rebased attempt");
   const b = db.state.batches[0];
   assert.equal(stageStep(b, "mixing").pic, "Operator M");
-  assert.equal(stageStep(b, "filling").pic, "Operator F");
+  assert.equal(stageStep(b, "batching").pic, "Operator B");
 });
 
 test("a stale expectedVersion is still a record conflict after rebasing", async () => {

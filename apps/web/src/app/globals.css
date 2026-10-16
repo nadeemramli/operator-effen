@@ -2897,6 +2897,30 @@ td.actions {
 .stage-actions > .process-pic-tools {
   display: contents;
 }
+.stage-box-total {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--foreground);
+}
+.stage-box-total strong {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.stage-box-total small {
+  display: inline;
+  margin: 0;
+}
+.stage-box-count {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+.stage-box-count .field-hint {
+  margin: 0;
+}
 @media (max-width: 600px) {
   .panel-search {
     padding: 12px 17px;

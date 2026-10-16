@@ -919,6 +919,14 @@ export const batchReceived = (s: Draft, b: Batch) =>
   s.cartons
     .filter((c) => c.batchId === b.id && c.unit === batchUnit(b))
     .reduce((n, c) => n + c.qty, 0);
+/**
+ * A sachet batch's total finished boxes: every box count stocked in for it. Old sachet-unit
+ * cartons are not boxes and are left out. Null until the first box count.
+ */
+export const batchBoxTotal = (s: Draft, b: Batch): number | null =>
+  s.cartons.some((c) => c.batchId === b.id && c.unit === batchUnit(b))
+    ? batchReceived(s, b)
+    : null;
 export const id = () => crypto.randomUUID();
 const blankStep = (): Step => ({
   pic: "",
@@ -1414,6 +1422,13 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
     return stage;
   };
+  /** Stock-in records the warehouse stages only; the factory stages belong to production. */
+  const warehouseOnly = (stage: SachetStage) => {
+    if (cmd.role === "intake" && isFactoryStage(stage.id))
+      throw new Error(
+        `${stage.en}: mixing and filling are recorded by production. Stock-in records batching, hologram and wrapping.`,
+      );
+  };
   const pickMachine = (stageKey: string, forCorrection = false) => {
     const machineId = str("machineId", false);
     if (!machineId) return undefined;
@@ -1761,6 +1776,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (!isSachet(b.product))
         throw new Error("Machine-only records are for sachet products.");
       const stage = resolveStage(b);
+      warehouseOnly(stage);
       // Factory stages close at transfer; warehouse stages are recorded after it.
       if (batchTransferred(b) && isFactoryStage(stage.id))
         throw new Error("This batch has already been sent to the warehouse.");
@@ -1814,6 +1830,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           "Rework can be recorded for sachet batches still in production.",
         );
       const stage = resolveStage(b);
+      warehouseOnly(stage);
       // Factory-stage rework ends at transfer; warehouse-stage rework ends at the box count.
       if (
         batchTransferred(b) &&
@@ -1856,6 +1873,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (!isSachet(b.product))
         throw new Error("Machine corrections apply to sachet batches.");
       const stage = resolveStage(b);
+      warehouseOnly(stage);
       const step = stageStep(b, stage.id);
       if (!step?.done)
         throw new Error("Only a recorded stage completion can be corrected.");
@@ -2164,25 +2182,50 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "stock-in-ady": {
       allow("intake");
-      const receipt = adypocideReceipts(s).find(
-        (r) => r.id === str("receiptId"),
-      );
-      if (!receipt) throw new Error("Choose a sachet receipt awaiting boxing.");
-      if (receipt.stockedAt)
-        throw new Error("This receipt has already been stocked in.");
-      const batch = s.batches.find((b) => b.id === receipt.batchId);
-      if (!batch || !isSachet(batch.product))
-        throw new Error("Choose a sachet batch.");
-      if (batch.cancelled) throw new Error(`Batch ${batch.code} was cancelled.`);
-      // Batches planned with a route need every stage recorded before box stock exists.
-      // Historical batches without a route snapshot are not re-checked.
-      if (batch.route && !batchComplete(batch))
+      // Finalize a receipt awaiting boxing (receiptId), or count a sent batch directly at its
+      // last warehouse stage (batchId): its awaiting receipt is used, or one is created.
+      const receiptId = str("receiptId", false);
+      let receipt: AdypocideReceipt | undefined;
+      let batch: Batch | undefined;
+      if (receiptId || !str("batchId", false)) {
+        receipt = adypocideReceipts(s).find((r) => r.id === str("receiptId"));
+        if (!receipt) throw new Error("Choose a sachet receipt awaiting boxing.");
+        if (receipt.stockedAt)
+          throw new Error("This receipt has already been stocked in.");
+        const receiptBatch = receipt.batchId;
+        batch = s.batches.find((b) => b.id === receiptBatch);
+        if (!batch || !isSachet(batch.product))
+          throw new Error("Choose a sachet batch.");
+        if (batch.cancelled) throw new Error(`Batch ${batch.code} was cancelled.`);
+      } else {
+        const sent = liveBatch("batchId");
+        if (!isSachet(sent.product) || !batchTransferred(sent))
+          throw new Error("Choose a sachet batch sent to the warehouse.");
+        batch = sent;
+        receipt = adypocideReceipts(s).find(
+          (r) => r.batchId === sent.id && !r.stockedAt,
+        );
+      }
+      // Batches planned with a route need their warehouse stages recorded before box stock
+      // exists; the factory stages were already required at transfer. Historical batches
+      // without a route snapshot are not re-checked.
+      if (batch.route && !warehouseStagesDone(batch))
         throw new Error(
           "Record the warehouse stages (batching, hologram, wrapping) with their PICs before finalizing the box count.",
         );
       const boxes = num("boxes"),
         pic = str("pic"),
+        rack = str("rack"),
         ref = batch.code;
+      if (!receipt) {
+        receipt = { id: id(), ref, batchId: batch.id, pic, at };
+        (s.adypocideReceipts ??= []).unshift(receipt);
+        log(
+          batch.id,
+          "Sachet cartons received for boxing",
+          ref + " · " + pic + " · recorded at the box count",
+        );
+      }
       const carton: Carton = {
         id: id(),
         ref,
@@ -2190,14 +2233,14 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         product: batch.product,
         unit: batchUnit(batch),
         qty: boxes,
-        rack: str("rack"),
+        rack,
         pic,
         at,
       };
       s.cartons.unshift(carton);
       const finalized = { ...receipt, stockedAt: at, stockCartonId: carton.id };
       s.adypocideReceipts ??= [];
-      const index = s.adypocideReceipts.findIndex((r) => r.id === receipt.id);
+      const index = s.adypocideReceipts.findIndex((r) => r.id === finalized.id);
       if (index < 0) s.adypocideReceipts.unshift(finalized);
       else s.adypocideReceipts[index] = finalized;
       log(

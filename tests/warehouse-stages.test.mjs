@@ -46,7 +46,7 @@ test("the factory/warehouse split matches the database function", () => {
   assert.deepEqual(warehouseStages(planned().batches[0]), ["batching", "hologram", "wrapping"]);
 });
 
-test("transfer needs mixing and filling only; the box count needs all five stages", () => {
+test("transfer needs mixing and filling; the box count needs the three warehouse stages", () => {
   let s = planned();
   const id = s.batches[0].id;
   s = record(s, "production", id, "mixing");
@@ -73,6 +73,7 @@ test("transfer needs mixing and filling only; the box count needs all five stage
   const beforeWrap = s;
   s = record(s, "intake", id, "wrapping");
   assert.deepEqual(outOfScopeKeys("machine", beforeWrap, s), []);
+  assert.equal(warehouseStagesDone(s.batches[0]), true);
   assert.equal(batchComplete(s.batches[0]), true);
   // Warehouse stages recorded after transfer are the normal flow, not a revision.
   assert.equal(s.batches[0].revisions, undefined);

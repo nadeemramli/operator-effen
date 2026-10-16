@@ -375,13 +375,16 @@ await check("A: an unrelated save after a teammate's save succeeds without a ref
 await check("A: post-transfer correction of a factory stage keeps stock/custody facts and flags the revision", async () => {
   const before = stored(W.a);
   const mixing = before.batches.find((b) => b.id === batchId).steps.find((s) => s.sachetStage === "mixing");
-  const r = await post(intake, "stage-correct", { id: batchId, stage: "mixing", field: "occurredAt", occurredAt: "2026-10-03T09:00", reason: "Line log shows the actual mixing time", expectedVersion: mixing.version }, { role: "intake" });
+  // Mixing and filling are production's records; stock-in may not correct them.
+  const refused = await post(intake, "stage-correct", { id: batchId, stage: "mixing", field: "occurredAt", occurredAt: "2026-10-03T09:00", reason: "x", expectedVersion: mixing.version }, { role: "intake" });
+  assert.notEqual(refused.status, 200, JSON.stringify(refused.body));
+  const r = await post(prod, "stage-correct", { id: batchId, stage: "mixing", field: "occurredAt", occurredAt: "2026-10-03T09:00", reason: "Line log shows the actual mixing time", expectedVersion: mixing.version });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const after = stored(W.a);
   assert.deepEqual([after.cartons, after.adypocideReceipts, after.issues, after.adjustments], [before.cartons, before.adypocideReceipts, before.issues, before.adjustments]);
   const b0 = before.batches.find((b) => b.id === batchId), b1 = after.batches.find((b) => b.id === batchId);
   assert.equal(b1.transferredAt, b0.transferredAt);
-  assert.equal(b1.revisions.at(-1).recordedBy.userId, people.intakeA.id);
+  assert.equal(b1.revisions.at(-1).recordedBy.userId, people.prodA.id);
   await prod.page.goto(`/?view=production&production=history&batch=${batchId}`);
   await prod.page.reload();
   await prod.page.getByText(/Revised after transfer/).first().waitFor();
