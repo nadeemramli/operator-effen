@@ -229,7 +229,7 @@ function skuTokens(text: string, aliases?: readonly SkuAlias[]) {
     : skuShape;
   return text.match(pattern) ?? [];
 }
-const productIds = ["cav", "gly", "lip", "syn", "ady"];
+const productIds = ["cav", "gly", "lip", "syn", "nur", "ady"];
 // Product names alone never choose a package, so they cannot become a mapped SKU either.
 const productWords = [
   ...productIds,
@@ -237,6 +237,7 @@ const productWords = [
   "glycoxil",
   "lipidri",
   "synovil",
+  "nurokids",
   "adypocide",
   "adipocyde",
 ];

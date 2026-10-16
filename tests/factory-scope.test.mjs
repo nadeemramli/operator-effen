@@ -20,6 +20,8 @@ import { commandRules } from "../apps/web/src/lib/capabilities.ts";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const sql = read("../supabase/migrations/20261007090000_operator_factory_scope.sql");
+// Products added later redefine operator_private.product_factory; the newest wins.
+const factoryMap = read("../supabase/migrations/20261021090000_operator_nurokids.sql");
 const route = read("../apps/web/src/app/api/draft/route.ts");
 
 const member = (role) => ({
@@ -49,9 +51,9 @@ const bottleId = (s) => s.batches.find((b) => !isSachet(b.product)).id;
 const sachetId = (s) => s.batches.find((b) => isSachet(b.product)).id;
 
 test("the database maps products to the same factories as the app", () => {
-  const body = sql.slice(
-    sql.indexOf("create function operator_private.product_factory"),
-    sql.indexOf("$$;", sql.indexOf("create function operator_private.product_factory")),
+  const body = factoryMap.slice(
+    factoryMap.indexOf("create or replace function operator_private.product_factory"),
+    factoryMap.indexOf("$$;", factoryMap.indexOf("create or replace function operator_private.product_factory")),
   );
   const sachet = [...body.matchAll(/when p_product = '([a-z]+)' then 'sachet'/g)].map((m) => m[1]);
   const bottle = body
@@ -178,4 +180,15 @@ test("the API command path applies both checks for every operational save", () =
   assert.ok(pre > 0 && pre < apply && apply < post && post < commit);
   // The database check runs inside the commit function, before the transition checks.
   assert.match(sql, /perform operator_private\.assert_factory_scope\(v_current\.state, v_new, v_factory\);/);
+});
+
+test("Nurokids is a bottle product: the bottle supervisor plans it, the sachet one cannot", () => {
+  const s = createDraft();
+  const input = { product: "nur", code: "NK-1", date: "2026-10-16", target: 100 };
+  const planned = save(s, "bottle", "batch", input);
+  assert.ok(planned.state, planned.denied);
+  const batch = planned.state.batches.find((b) => b.code === "NK-1");
+  assert.equal(isSachet(batch.product), false);
+  assert.equal(batch.steps.length, s.batches.find((b) => b.product === "cav").steps.length);
+  assert.match(save(s, "sachet", "batch", input).denied ?? "", /sachet factory only/);
 });

@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261021090000_operator_nurokids.down.sql"
+"${psql[@]}" -At -c "select operator_private.product_factory('nur') is null and operator_private.product_factory('cav') = 'bottle'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261020090000_operator_sku_aliases.down.sql"
 "${psql[@]}" -At -c "select count(*) from public.operator_command_rules where command like 'sku-alias-%'" | grep -qx 0
 "${psql[@]}" -f "$root/supabase/rollback/20261019090000_operator_batch_cancel.down.sql"
@@ -114,4 +116,7 @@ echo "batch cancel and date correction commands re-apply"
 echo "package SKU mapping rules re-apply"
 "${psql[@]}" -f "$root/supabase/migrations/20261020090000_operator_sku_aliases.sql"
 "${psql[@]}" -At -c "select string_agg(command || ':' || capability || ':' || array_to_string(state_keys, '+'), ',' order by command) from public.operator_command_rules where command like 'sku-alias-%'" | grep -qx 'sku-alias-reactivate:orders.import:skuAliases+events,sku-alias-retire:orders.import:skuAliases+events,sku-alias-save:orders.import:skuAliases+events'
+echo "nurokids joins the bottle factory"
+"${psql[@]}" -f "$root/supabase/migrations/20261021090000_operator_nurokids.sql"
+"${psql[@]}" -At -c "select operator_private.product_factory('nur') = 'bottle' and operator_private.product_factory('ady') = 'sachet'" | grep -qx t
 echo "ok"

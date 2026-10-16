@@ -68,6 +68,14 @@ export const products = [
     color: "var(--ai)",
   },
   {
+    id: "nur",
+    name: "Nurokids",
+    short: "NUR",
+    unit: "bottle" as Unit,
+    factory: "bottle" as const,
+    color: "var(--chart-2)",
+  },
+  {
     id: "ady",
     name: "Adypocide",
     short: "ADY",
