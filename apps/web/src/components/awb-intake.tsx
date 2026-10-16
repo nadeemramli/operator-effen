@@ -1337,10 +1337,7 @@ function PdfSource({
   );
 }
 
-/**
- * Orders whose work date is more than a week ago live in the order archive
- * (20261016090000); they are read-only and found here by AWB.
- */
+/** Finds any AWB on the site by number, whatever its work date (screens show one day). */
 function ArchiveLookup({ workspaceId, lang }: { workspaceId: string; lang: Lang }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [query, setQuery] = useState(""),
@@ -1362,17 +1359,17 @@ function ArchiveLookup({ workspaceId, lang }: { workspaceId: string; lang: Lang 
     const data = await res?.json().catch(() => ({}));
     setLoading(false);
     if (!res?.ok || !Array.isArray(data?.orders)) {
-      setError(data?.error ?? t("Unable to search the archive.", "Tidak dapat mencari arkib."));
+      setError(data?.error ?? t("Unable to search AWBs.", "Tidak dapat mencari AWB."));
       return;
     }
     setResults(data.orders);
   }
   return (
     <Panel
-      title={t("Archived AWBs", "AWB diarkibkan")}
+      title={t("Find an AWB", "Cari AWB")}
       detail={t(
-        "AWBs with a work date more than 7 days ago move to the archive. They stay searchable and read-only, and still count as duplicates when uploaded again.",
-        "AWB dengan tarikh kerja lebih 7 hari lalu dipindahkan ke arkib. Ia boleh dicari, baca sahaja, dan masih dikira pendua jika dimuat naik semula.",
+        "Search every AWB on this site by number, whatever its work date.",
+        "Cari mana-mana AWB di tapak ini mengikut nombor, apa jua tarikh kerjanya.",
       )}
     >
       <form
@@ -1386,7 +1383,7 @@ function ArchiveLookup({ workspaceId, lang }: { workspaceId: string; lang: Lang 
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t("Search AWB…", "Cari AWB…")}
-          aria-label={t("Search archived AWBs", "Cari AWB diarkibkan")}
+          aria-label={t("Search AWBs", "Cari AWB")}
         />
         <Button type="submit" variant="outline" disabled={loading}>
           {t("Search", "Cari")}
@@ -1395,7 +1392,7 @@ function ArchiveLookup({ workspaceId, lang }: { workspaceId: string; lang: Lang 
       <FormError message={error} />
       {results && !results.length && (
         <p className="text-sm text-muted-foreground">
-          {t("No archived AWB matches.", "Tiada AWB diarkibkan sepadan.")}
+          {t("No AWB matches.", "Tiada AWB sepadan.")}
         </p>
       )}
       {!!results?.length && (

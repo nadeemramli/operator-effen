@@ -108,6 +108,8 @@ async function post(s, type, input, extra = {}) {
   });
 }
 const stored = (ws) => JSON.parse(sql(`select state::text from public.operator_workspaces where id='${ws}'`));
+// Orders live in public.operator_orders (20261017090000), one row per AWB.
+const storedOrders = (ws) => JSON.parse(sql(`select coalesce(json_agg(doc order by order_date desc, id), '[]')::text from public.operator_orders where workspace_id='${ws}'`));
 const revision = (ws) => Number(sql(`select revision from public.operator_workspaces where id='${ws}'`));
 async function token(key) {
   const res = await fetch(supabase + "/auth/v1/token?grant_type=password", {
@@ -521,7 +523,7 @@ await check("B: office admin uploads a site source, imports and releases it", as
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const released = await post(a, "import-release", { id: batch.id }, { ws: W.a, role: "admin" });
   assert.equal(released.status, 200, JSON.stringify(released.body));
-  const imported = stored(W.a).orders.find((o) => o.awb === "NVMYINT000001");
+  const imported = storedOrders(W.a).find((o) => o.awb === "NVMYINT000001");
   assert.ok(imported);
   // Uploads and audit entries live in their own tables (20261015090000), not the document.
   assert.equal(sql(`select body -> 'recorder' ->> 'userId' from public.operator_events where workspace_id='${W.a}' and entity='${imported.id}'`), people.admin.id);
@@ -770,14 +772,14 @@ await check("C: the supervisor assigns today's AWBs to Ali and Abu", async () =>
   for (const awb of awbs) {
     const r = await post(outC, "order", { awb, product: "cav", channel: "TikTok", package: "INT pack", expected: 2, date: mytToday }, { role: "outbound" });
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    const id = stored(W.a).orders.find((o) => o.awb === awb).id;
+    const id = storedOrders(W.a).find((o) => o.awb === awb).id;
     assert.equal((await post(outC, "review-order", { id, pic: "S" }, { role: "outbound" })).status, 200);
   }
-  const counted = stored(W.a).orders.filter((o) => o.date === mytToday && o.product === "cav").reduce((n, o) => n + o.expected, 0);
+  const counted = storedOrders(W.a).filter((o) => o.date === mytToday && o.product === "cav").reduce((n, o) => n + o.expected, 0);
   const count = await post(outC, "sort-count", { date: mytToday, product: "cav", counted, pic: "S", note: "INT count" }, { role: "outbound" });
   assert.equal(count.status, 200, JSON.stringify(count.body));
-  aliAwb = stored(W.a).orders.find((o) => o.awb === awbs[0]).id;
-  abuAwb = stored(W.a).orders.find((o) => o.awb === awbs[1]).id;
+  aliAwb = storedOrders(W.a).find((o) => o.awb === awbs[0]).id;
+  abuAwb = storedOrders(W.a).find((o) => o.awb === awbs[1]).id;
   for (const [id, packer] of [[aliAwb, ali], [abuAwb, abu]]) {
     const r = await post(outC, "assign-orders", { ids: [id], packer, pic: "S" }, { role: "outbound" });
     assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -801,7 +803,7 @@ await check("C: on the shared packer sign-in, Ali taps his name, enters his PIN 
   await dialog.locator('input[name="actual"]').fill("2");
   await dialog.getByRole("button", { name: /Save my count/ }).click();
   await dialog.waitFor({ state: "hidden" });
-  const o = stored(W.a).orders.find((x) => x.id === aliAwb);
+  const o = storedOrders(W.a).find((x) => x.id === aliAwb);
   assert.equal(o.actual, 2);
   assert.equal(o.packer, ali);
   assert.equal(o.packRecordedBy.userId, people.packerA.id);
@@ -847,7 +849,7 @@ await check("C: five wrong PINs lock the profile until the supervisor sets a new
   assert.equal((await unlock("97531")).status, 200);
   const r = await post(packers, "pack-own", { id: abuAwb, actual: 2 }, { role: "packer" });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal(stored(W.a).orders.find((o) => o.id === abuAwb).packer, abu);
+  assert.equal(storedOrders(W.a).find((o) => o.id === abuAwb).packer, abu);
   // The supervisor still corrects a saved count, with a reason.
   const fix = await post(outC, "correct", { id: abuAwb, field: "actual", qty: 1, reason: "INT recount" }, { role: "outbound" });
   assert.equal(fix.status, 200, JSON.stringify(fix.body));
@@ -911,25 +913,31 @@ await check("C: a driver lists two assistants and logs a drop-off with its own t
   await d.page.locator(".dropoff-list", { hasText: "INT shop" }).first().waitFor();
   await d.context.close();
 });
-await check("C: AWBs older than 7 days move to the archive on load; still found and still duplicates", async () => {
-  const awb = "NVMYINTARCH001";
-  const old = { id: "int-archived", awb, channel: "TikTok", product: "cav", package: "INT archived", expected: 1,
+await check("C: orders live in their own table; screens load by work date; AWBs stay unique; order saves keep the document revision", async () => {
+  const awb = "NVMYINTOLD001";
+  const old = { id: "int-old", awb, channel: "TikTok", product: "cav", package: "INT old", expected: 1,
     originalExpected: 1, actual: null, packer: "", labelPic: "", printed: false, dispatched: false, handoverRef: "",
     date: "2026-01-02", note: "", reviewState: "confirmed" };
-  sql(`update public.operator_workspaces set state = jsonb_set(state, '{orders}', (state -> 'orders') || '${JSON.stringify(old)}'::jsonb) where id = '${W.a}'`);
-  const before = revision(W.a);
-  const data = await load(outC, W.a);
-  assert.equal(data.state.orders.some((o) => o.id === old.id), false);
-  assert.equal(revision(W.a), before + 1);
-  assert.equal(sql(`select awb from public.operator_orders_archive where workspace_id='${W.a}' and id='${old.id}'`), awb);
-  assert.ok(data.state.events.some((e) => e.action === "Orders archived"));
-  const found = await api(outC, "GET", null, `?workspace=${W.a}&archive=intarch`);
+  sql(`insert into public.operator_orders (workspace_id, id, doc) values ('${W.a}', '${old.id}', '${JSON.stringify(old)}'::jsonb)`);
+  assert.equal(stored(W.a).orders, undefined);
+  const today = await load(outC, W.a);
+  assert.equal(today.state.orders.some((o) => o.id === old.id), false);
+  assert.ok(today.state.orders.length > 0 && today.state.orders.every((o) => o.date === mytToday));
+  const day = await api(outC, "GET", null, `?workspace=${W.a}&dates=2026-01-02`);
+  assert.deepEqual(day.body.state.orders.map((o) => o.id), [old.id]);
+  const found = await api(outC, "GET", null, `?workspace=${W.a}&archive=intold`);
   assert.equal(found.status, 200, JSON.stringify(found.body));
   assert.deepEqual(found.body.orders.map((o) => o.awb), [awb]);
   const again = await post(outC, "order", { awb, product: "cav", channel: "TikTok", package: "INT pack", expected: 1, date: mytToday }, { role: "outbound" });
   assert.equal(again.status, 400, JSON.stringify(again.body));
   assert.match(again.body.error, /already recorded/);
-  assert.equal(stored(W.a).orders.some((o) => o.id === old.id), false);
+  const before = revision(W.a);
+  const printed = await post(outC, "print", { id: old.id, pic: "INT PIC" }, { role: "outbound" });
+  assert.equal(printed.status, 200, JSON.stringify(printed.body));
+  assert.equal(revision(W.a), before);
+  assert.deepEqual(printed.body.ordersDelta.put.map((o) => [o.id, o.printed]), [[old.id, true]]);
+  assert.equal(sql(`select version from public.operator_orders where id='${old.id}'`), "2");
+  assert.equal(printed.body.state.orders.length, 0);
 });
 await outC.context.close();
 await packers.context.close();

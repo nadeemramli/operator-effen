@@ -171,8 +171,17 @@ begin
 end $$;
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'machine', pg_temp.state(),
   p_op => '20000000-0000-4000-8000-000000000001'), 'PT409', 'reused operation ID, new input');
-select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'machine', pg_temp.state(), p_rev => 0), 'conflict',
-  'stale revision');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'feedback', jsonb_set(pg_temp.state(), '{notes}',
+  '[{"id":"n-stale","text":"stale","author":{"userId":"00000000-0000-4000-8000-000000000001"}}]'), p_rev => 0),
+  'conflict', 'stale revision on a change to the document');
+-- 20261017090000: a save that leaves the document as it is (only orders, or nothing) is not
+-- checked against the document revision and does not bump it.
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'machine', pg_temp.state(), p_rev => 0), 'ok',
+  'stale revision, document unchanged');
+do $$ begin
+  if (select revision from public.operator_workspaces where site_id = 'site-a') <> 2 then
+    raise exception 'FAIL: an unchanged document bumped the revision'; end if;
+end $$;
 
 -- 4. Roles and capabilities.
 select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000002', :A, 'machine',
@@ -882,27 +891,36 @@ create function pg_temp.ord(p_id text, p_import text default null) returns jsonb
     'reviewState', 'confirmed')
     || case when p_import is null then '{}'::jsonb else jsonb_build_object('importId', p_import) end $$;
 create function pg_temp.orders(p jsonb) returns jsonb language sql as $$ select jsonb_set(pg_temp.state(), '{orders}', p) $$;
+-- Orders live in public.operator_orders (20261017090000): a command sends the orders it
+-- changes as operations, each with the version it was based on (null for a new order).
+create function pg_temp.put(p_order jsonb, p_expected integer default null) returns jsonb language sql as $$
+  select jsonb_build_object('op', 'put', 'order', p_order, 'expected', p_expected) $$;
+create function pg_temp.del(p_id text, p_expected integer) returns jsonb language sql as $$
+  select jsonb_build_object('op', 'delete', 'id', p_id, 'expected', p_expected) $$;
+create function pg_temp.order_ids() returns jsonb language sql as $$
+  select coalesce(jsonb_agg(id order by id), '[]') from public.operator_orders
+  where workspace_id = '10000000-0000-4000-8000-00000000000a' $$;
 select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-save',
   jsonb_set(pg_temp.state(), '{awbImports}', '[{"id":"imp1","name":"Synthetic upload","date":"2026-10-06","files":[],"rows":[],"createdAt":"t","updatedAt":"t"}]')),
   'ok', 'admin saves an upload');
 select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-release',
-  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1')))),
+  pg_temp.orders(jsonb_build_array(pg_temp.put(pg_temp.ord('o1', 'imp1')), pg_temp.put(pg_temp.ord('o2', 'imp1'))))),
   'ok', 'admin releases two AWBs from the upload');
 select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'order',
-  pg_temp.orders((pg_temp.state() -> 'orders') || jsonb_build_array(pg_temp.ord('o3')))),
+  pg_temp.orders(jsonb_build_array(pg_temp.put(pg_temp.ord('o3'))))),
   'ok', 'admin enters a manual AWB');
 select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'remove-order',
-  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1')))),
+  pg_temp.orders(jsonb_build_array(pg_temp.del('o3', 1)))),
   '42501', 'production SV removes an AWB');
 select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000004', :A, 'remove-order',
-  pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1')))),
+  pg_temp.orders(jsonb_build_array(pg_temp.del('o3', 1)))),
   '42501', 'management removes an AWB');
 select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'remove-order',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'), pg_temp.ord('o2', 'imp1'))),
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.del('o3', 1))),
     '{events}', (pg_temp.state() -> 'events') || jsonb_build_array(pg_temp.ev('e-rm3', '00000000-0000-4000-8000-000000000007')))),
   'ok', 'admin removes the manual AWB with an audit entry');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{batches,0,code}', '"X"')),
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.del('o2', 1))), '{batches,0,code}', '"X"')),
   '42501', 'remove-order used to edit batches');
 -- Audit entries live in public.operator_events (20261015090000): a command cannot drop them
 -- from the document, and nobody can change or delete them in the table.
@@ -939,11 +957,11 @@ select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
     || '[{"id":"i-o2","cartonId":"c1","orderId":"o2","qty":1,"pic":"SO","at":"t"}]')),
   'ok', 'stock issued to the second AWB');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o1', 'imp1'))), '{issues}',
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.del('o2', 1))), '{issues}',
     (select coalesce(jsonb_agg(i), '[]') from jsonb_array_elements(pg_temp.state() -> 'issues') i where i ->> 'orderId' <> 'o2'))),
   '42501', 'remove-order taking the stock issue with it (issues are outside its scope)');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'import-delete',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{awbImports}', '[{"id":"imp1","deleted":true}]')),
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.del('o1', 1))), '{awbImports}', '[{"id":"imp1","deleted":true}]')),
   '42501', 'stock-out SV deletes an upload');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
   jsonb_set(pg_temp.state(), '{awbImports}', '[{"id":"imp1","deleted":true}]')),
@@ -955,15 +973,70 @@ select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-save',
   jsonb_set(pg_temp.state(), '{awbImports}', '[{"id":"imp2"}]')),
   '22023', 'an upload without label rows');
 select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'import-delete',
-  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.ord('o2', 'imp1'))), '{awbImports}', '[{"id":"imp1","deleted":true}]')),
+  jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.del('o1', 1))), '{awbImports}', '[{"id":"imp1","deleted":true}]')),
   'ok', 'admin deletes the upload and its untouched AWB');
 do $$ begin
   if exists (select 1 from public.operator_imports where id = 'imp1')
-    or (select state -> 'orders' from public.operator_workspaces where site_id = 'site-a') <> jsonb_build_array(pg_temp.ord('o2', 'imp1'))
+    or pg_temp.order_ids() <> '["o2"]'::jsonb
+    or (select state ? 'orders' from public.operator_workspaces where site_id = 'site-a')
     or not exists (select 1 from public.operator_workspaces w, jsonb_array_elements(w.state -> 'issues') i
       where w.site_id = 'site-a' and i ->> 'id' = 'i-o2') then
     raise exception 'FAIL: expected the upload gone, only the issued AWB left and its stock issue kept'; end if;
 end $$;
+
+-- 12b. Orders in their own table (20261017090000): every change carries the version it was
+--      based on, one active order per AWB, only order commands change orders, and a save
+--      that touches only orders leaves the document and its revision alone.
+select revision as "REV_ORD" from public.operator_workspaces where site_id = 'site-a' \gset
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'pack',
+  pg_temp.orders(jsonb_build_array(pg_temp.put(pg_temp.ord('o2', 'imp1') || '{"actual": 4}', 1))), p_rev => 0),
+  'ok', 'order-only save with an old document revision');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'pack',
+  pg_temp.orders(jsonb_build_array(pg_temp.put(pg_temp.ord('o2', 'imp1') || '{"actual": 3}', 1)))),
+  'conflict', 'a change based on an older version of the order');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'order',
+  pg_temp.orders(jsonb_build_array(pg_temp.put(pg_temp.ord('o2', 'imp1'))))),
+  'conflict', 'creating an order that already exists');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'pack',
+  pg_temp.orders(jsonb_build_array(pg_temp.del('o2', 9)))),
+  'conflict', 'removing an order with a stale version');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'order',
+  pg_temp.orders(jsonb_build_array(pg_temp.put(pg_temp.ord('o9') || '{"awb": " nvmy o2 "}')))),
+  '23505', 'a second order with the same AWB');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
+  pg_temp.orders(jsonb_build_array(pg_temp.put(pg_temp.ord('o2', 'imp1') || '{"actual": 1}', 2)))),
+  '42501', 'a stock issue changing an order (orders are outside its scope)');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'pack',
+  pg_temp.orders('[{"op": "put", "order": {"id": "o5"}}]')),
+  '22023', 'an order without an AWB');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'pack',
+  pg_temp.orders(jsonb_build_array(pg_temp.ord('o5')))),
+  '22023', 'a plain order list instead of operations (an application that predates the table)');
+do $$ begin
+  if (select version from public.operator_orders where id = 'o2') <> 2
+    or (select (doc ->> 'actual')::int from public.operator_orders where id = 'o2') <> 4
+    or (select awb from public.operator_orders where id = 'o2') <> 'NVMYO2' then
+    raise exception 'FAIL: expected o2 at version 2 with actual 4'; end if;
+end $$;
+select pg_temp.expect((select jsonb_build_object('ok', revision = :REV_ORD and not state ? 'orders')
+  from public.operator_workspaces where site_id = 'site-a'), 'ok', 'order-only saves keep the document revision');
+begin;
+select pg_temp.as_user(:SV);
+do $$ begin
+  if (select count(*) from public.operator_orders_for('10000000-0000-4000-8000-00000000000a', p_awbs => '{NVMYO2}')) <> 1
+    or (select count(*) from public.operator_orders_for('10000000-0000-4000-8000-00000000000a', p_dates => '{2026-10-06}')) <> 1 then
+    raise exception 'FAIL: a member cannot look up the site''s orders'; end if;
+end $$;
+select pg_temp.expect_denied($q$update public.operator_orders set version = 1$q$, 'editing orders directly');
+rollback;
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000011');
+do $$ begin
+  if exists (select 1 from public.operator_orders)
+    or exists (select 1 from public.operator_orders_for('10000000-0000-4000-8000-00000000000a', p_ids => '{o2}')) then
+    raise exception 'FAIL: a non-member reads orders'; end if;
+end $$;
+rollback;
 
 -- 13. Workspace capacity (20261014090000). A document up to 4,000,000 bytes of jsonb text
 --     is stored; a larger one is refused by the table's check.

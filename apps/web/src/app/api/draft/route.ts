@@ -45,6 +45,15 @@ import {
   commitPayload,
   entityEvents,
   legacyDocument,
+  legacyOrders,
+  loadOrders,
+  orderNeeds,
+  dayNeeds,
+  orderOps,
+  addLoaded,
+  viewDates,
+  type LoadedOrders,
+  type OrderOp,
   archivedByAwb,
   archiveOrders,
   needsArchive,
@@ -141,7 +150,7 @@ export async function GET(request: NextRequest) {
             ? doc.events.filter((e) => entities.includes(e.entity))
             : await entityEvents(db, m.workspaceId, entities),
         });
-      state = await clientState(db, m.workspaceId, doc);
+      state = await clientState(db, m.workspaceId, doc, undefined, viewDates(params.get("dates")));
     } catch (e) {
       if (e instanceof StoreError) return json({ error: e.message }, 503);
       throw e;
@@ -229,7 +238,8 @@ export async function POST(request: NextRequest) {
   )
     return json({ error: "Invalid action." }, 400);
   const type: string = body.command.type,
-    input: Record<string, unknown> = body.command.input;
+    input: Record<string, unknown> = body.command.input,
+    dates = viewDates(body.dates);
   const print = fingerprint(type, input);
 
   // Fictional sandbox: per-account JSON, preview roles. Never an operational workspace.
@@ -429,8 +439,8 @@ export async function POST(request: NextRequest) {
           prior.data.fingerprint === print && prior.data.command === type
             ? json({
                 state: withBatchReferences(
-                  await clientState(db, membership.workspaceId, loadedData.state as Draft).catch(
-                    () => loadedData.state as Draft,
+                  await clientState(db, membership.workspaceId, loadedData.state as Draft, undefined, dates).catch(
+                    () => ({ ...(loadedData.state as Draft), orders: (loadedData.state as Draft).orders ?? [] }),
                   ),
                 ),
                 revision: loadedData.revision,
@@ -447,6 +457,22 @@ export async function POST(request: NextRequest) {
               ),
       };
     const current = loaded.data.state as Draft;
+    // The orders this command reads or changes come from their table (WP C), with the
+    // versions the commit is checked against.
+    const ordersInTable = !legacyOrders(current);
+    const loadedOrders: LoadedOrders = { orders: [], versions: new Map() };
+    if (ordersInTable) {
+      try {
+        addLoaded(loadedOrders, await loadOrders(db, membership.workspaceId, orderNeeds(type, input)));
+        addLoaded(
+          loadedOrders,
+          await loadOrders(db, membership.workspaceId, dayNeeds(type, loadedOrders.orders)),
+        );
+      } catch {
+        return { done: json({ error: "Unable to load your site workspace." }, 503) };
+      }
+      current.orders = loadedOrders.orders;
+    }
     // The upload this command reads or changes comes from its table (WP A).
     const legacy = legacyDocument(current),
       importId = legacy ? undefined : touchedImport(type, input, current);
@@ -460,11 +486,21 @@ export async function POST(request: NextRequest) {
       }
       existed = !!found;
       current.awbImports = found ? [found] : [];
+      // A release checks its labels' AWBs against existing orders.
+      if (ordersInTable && type === "import-release")
+        try {
+          addLoaded(
+            loadedOrders,
+            await loadOrders(db, membership.workspaceId, orderNeeds(type, input, current)),
+          );
+        } catch {
+          return { done: json({ error: "Unable to load your site workspace." }, 503) };
+        }
     }
     // Archived orders take part in the duplicate-AWB checks without returning to the
     // document: they are added for the command and removed from what is saved.
     const archivedIds = new Set<string>();
-    if (!legacy && (type === "order" || type === "import-release")) {
+    if (!legacy && !ordersInTable && (type === "order" || type === "import-release")) {
       const awbs =
         type === "order"
           ? [normalizeAwb(String(input.awb ?? ""))]
@@ -483,7 +519,9 @@ export async function POST(request: NextRequest) {
     // batches; the database re-checks the signed state (operator_private.assert_factory_scope).
     const outside = factoryDenial(membership.factory, type, input, current.batches ?? []);
     if (outside) return { done: json({ error: outside }, 403) };
-    let stateText: string, touched: AwbImport | undefined;
+    let stateText: string,
+      touched: AwbImport | undefined,
+      ops: OrderOp[] | undefined;
     try {
       const state = applyCommand(current, {
         type,
@@ -508,7 +546,8 @@ export async function POST(request: NextRequest) {
       if (archivedIds.size)
         state.orders = state.orders.filter((o) => !archivedIds.has(o.id));
       touched = importId ? state.awbImports?.find((b) => b.id === importId) : undefined;
-      stateText = JSON.stringify(legacy ? state : commitPayload(state, importId, existed));
+      ops = ordersInTable ? orderOps(loadedOrders, state.orders) : undefined;
+      stateText = JSON.stringify(legacy ? state : commitPayload(state, importId, existed, ops));
       if (new TextEncoder().encode(stateText).length > WORKSPACE_BYTES)
         throw new Error(WORKSPACE_FULL);
     } catch (e) {
@@ -543,6 +582,8 @@ export async function POST(request: NextRequest) {
                 ? json({ error: result.error.message, code: "operation-mismatch" }, 409)
                 : code === "23514"
                   ? json({ error: result.error.message, code: "invariant" }, 409)
+                  : code === "23505"
+                    ? json({ error: "This AWB is already recorded." }, 409)
                   : code === "55000"
                     ? json({ error: result.error.message }, 503)
                     : json(
@@ -555,12 +596,29 @@ export async function POST(request: NextRequest) {
       result.data as { new_state: Draft; new_revision: number; replayed: boolean }[]
     )?.[0];
     if (!saved) return { stale: true };
+    // With orders in their table the screen gets only the orders this save changed.
     const response = json({
       state: withBatchReferences(
-        await clientState(db, membership.workspaceId, saved.new_state, touched).catch(
-          () => ({ ...saved.new_state, awbImports: touched ? [touched] : [] }),
-        ),
+        await clientState(
+          db,
+          membership.workspaceId,
+          saved.new_state,
+          touched,
+          ops ? [] : dates,
+        ).catch(() => ({
+          ...saved.new_state,
+          orders: saved.new_state.orders ?? [],
+          awbImports: touched ? [touched] : [],
+        })),
       ),
+      ...(ops
+        ? {
+            ordersDelta: {
+              put: ops.flatMap((op) => (op.op === "put" ? [op.order] : [])),
+              removed: ops.flatMap((op) => (op.op === "delete" ? [op.id] : [])),
+            },
+          }
+        : {}),
       revision: saved.new_revision,
       replayed: saved.replayed,
       ...(packer ? { packerExpiresAt: Date.now() + PACKER_IDLE_MS } : {}),

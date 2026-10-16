@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261017090000_operator_orders.down.sql"
+"${psql[@]}" -At -c "select (state -> 'orders') @> '[{\"id\": \"o2\"}]' and to_regclass('public.operator_orders') is null from public.operator_workspaces where site_id = 'site-a'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261016090000_operator_order_archive.down.sql"
 "${psql[@]}" -At -c "select (state -> 'orders') @> '[{\"id\": \"arch-old\"}]' from public.operator_workspaces where site_id = 'site-a'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261015090000_operator_imports_and_events.down.sql"
@@ -90,4 +92,9 @@ echo "uploads and audit entries move to their tables"
 echo "order archive re-applies"
 "${psql[@]}" -f "$root/supabase/migrations/20261016090000_operator_order_archive.sql"
 "${psql[@]}" -At -c "select has_function_privilege('authenticated', 'public.operator_archive_orders(uuid)', 'execute')" | grep -qx t
+echo "orders move to their table"
+"${psql[@]}" -c "update public.operator_workspaces set state = jsonb_set(state, '{orders}', '[{\"id\": \"ox1\", \"awb\": \"nvmy x1\", \"date\": \"2026-10-15\"}]') where site_id = 'site-x'"
+"${psql[@]}" -f "$root/supabase/migrations/20261017090000_operator_orders.sql"
+"${psql[@]}" -At -c "select string_agg(o.id || ':' || o.awb || ':' || o.version, ',') from public.operator_orders o join public.operator_workspaces w on w.id = o.workspace_id where w.site_id = 'site-x'" | grep -qx 'ox1:NVMYX1:1'
+"${psql[@]}" -At -c "select bool_and(not state ? 'orders') from public.operator_workspaces" | grep -qx t
 echo "ok"

@@ -44,6 +44,9 @@ type Props = {
   role: Role;
   busy: boolean;
   mode: "management" | "tally";
+  /** The work date on screen; the app loads its orders. */
+  date: string;
+  setDate: (date: string) => void;
   show: (form: FormSpec) => void;
   pic: () => Field;
   trace: (id: string) => void;
@@ -56,6 +59,8 @@ export function OrderWorkspace({
   role,
   busy,
   mode,
+  date,
+  setDate,
   show,
   pic,
   trace,
@@ -63,7 +68,6 @@ export function OrderWorkspace({
   dispatch,
 }: Props) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
-  const [date, setDate] = useState(today);
   const [productId, setProduct] = useState("");
   const [packageName, setPackage] = useState("");
   const [query, setQuery] = useState("");

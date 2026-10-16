@@ -25,6 +25,11 @@ delete from public.operator_commits;
 delete from public.operator_imports;
 delete from public.operator_events;
 
+-- Orders kept in their own table since 20261017090000_operator_orders.sql, and any orders
+-- archived under 20261016090000 (skip each line before its migration).
+delete from public.operator_orders;
+delete from public.operator_orders_archive;
+
 -- Reset each site to the empty workspace shape. Revision keeps increasing so any open
 -- browser tab with the old revision is rejected as stale and reloads.
 update public.operator_workspaces w
