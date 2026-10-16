@@ -70,8 +70,12 @@ export function commitPayload(
   state: Draft,
   importId: string | undefined,
   existed: boolean,
+  orders?: OrderOp[],
 ): Record<string, unknown> {
-  const { awbImports, ...doc } = state;
+  const { awbImports, orders: list, ...rest } = state;
+  // Orders in their own table (20261017090000) travel as the changes only.
+  const doc: Record<string, unknown> =
+    orders === undefined ? { ...rest, orders: list } : orders.length ? { ...rest, orders } : rest;
   if (!importId) return doc;
   const after = awbImports?.find((b) => b.id === importId);
   if (after) return { ...doc, awbImports: [after] };
@@ -88,8 +92,12 @@ export async function clientState(
   workspaceId: string,
   doc: Draft,
   full?: AwbImport,
+  dates: string[] = [],
 ): Promise<Draft> {
   if (legacyDocument(doc)) return doc;
+  const orders = legacyOrders(doc)
+    ? doc.orders
+    : (await loadOrders(db, workspaceId, { ids: [], awbs: [], dates, imports: [] })).orders;
   const [events, imports] = await Promise.all([
     db
       .from("operator_events")
@@ -105,7 +113,7 @@ export async function clientState(
       .limit(RECENT_IMPORTS),
   ]);
   if (missingRelation(events.error?.code) || missingRelation(imports.error?.code))
-    return doc;
+    return { ...doc, orders };
   if (events.error || imports.error) throw new StoreError();
   const summaries = (imports.data ?? []).map(
     (r) => ({ ...(r.summary as object), rows: [] }) as unknown as AwbImport,
@@ -117,6 +125,7 @@ export async function clientState(
   }
   return {
     ...doc,
+    orders,
     events: [
       ...(doc.events ?? []),
       ...(events.data ?? []).map((r) => r.body as Event),
@@ -188,19 +197,194 @@ export async function archivedByAwb(
   if (error && !missingRelation(error.code)) throw new StoreError();
   return (data ?? []).map((r) => r.doc as Order);
 }
-/** Archived orders whose AWB contains the query, newest work date first (lookup screen). */
+/**
+ * Orders whose AWB contains the query, newest work date first (AWB lookup screen): every
+ * order once orders have their own table, the archive before that.
+ */
 export async function searchArchive(
   db: Db,
   workspaceId: string,
   query: string,
 ): Promise<Order[]> {
+  const pattern = `%${query.replace(/[%_\\]/g, "")}%`;
+  const table = await db
+    .from("operator_orders")
+    .select("doc")
+    .eq("workspace_id", workspaceId)
+    .ilike("awb", pattern)
+    .order("order_date", { ascending: false })
+    .limit(50);
+  if (!table.error) return (table.data ?? []).map((r) => r.doc as Order);
+  if (!missingRelation(table.error.code)) throw new StoreError();
   const { data, error } = await db
     .from("operator_orders_archive")
     .select("doc")
     .eq("workspace_id", workspaceId)
-    .ilike("awb", `%${query.replace(/[%_\\]/g, "")}%`)
+    .ilike("awb", pattern)
     .order("order_date", { ascending: false })
     .limit(50);
   if (error && !missingRelation(error.code)) throw new StoreError();
   return (data ?? []).map((r) => r.doc as Order);
+}
+
+/**
+ * Orders in their own table (20261017090000_operator_orders.sql), one row per AWB with its
+ * own version. A command loads the orders it needs; the commit carries only the orders it
+ * created, changed or removed, each with the version it was based on. Screens load the
+ * work dates they show. Until the migration is applied the document holds every order.
+ */
+export const legacyOrders = (doc: Draft) =>
+  Array.isArray((doc as { orders?: unknown }).orders);
+
+export type OrderNeeds = { ids: string[]; awbs: string[]; dates: string[]; imports: string[] };
+export type OrderOp =
+  | { op: "put"; order: Order; expected: number | null }
+  | { op: "delete"; id: string; expected: number };
+export type LoadedOrders = { orders: Order[]; versions: Map<string, number> };
+
+const normalize = (awb: unknown) =>
+  typeof awb === "string" ? awb.trim().toUpperCase().replace(/\s+/g, "") : "";
+const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The orders a command reads or changes: by ID, by AWB (duplicate checks), by work date
+ * (package groups and the daily tally) or by upload. `state` carries the upload a
+ * release reads, when loaded.
+ */
+export function orderNeeds(
+  type: string,
+  input: Record<string, unknown>,
+  state?: Draft,
+): OrderNeeds {
+  const needs: OrderNeeds = { ids: [], awbs: [], dates: [], imports: [] };
+  const id = text(input.id);
+  switch (type) {
+    case "order":
+      needs.awbs.push(normalize(input.awb));
+      break;
+    case "edit-order":
+      if (id) needs.ids.push(id);
+      needs.awbs.push(normalize(input.awb));
+      break;
+    case "split-order":
+      if (id) needs.ids.push(id);
+      for (const [k, v] of Object.entries(input))
+        if (k.startsWith("awb_")) needs.awbs.push(normalize(v));
+      break;
+    case "review-order":
+    case "remove-order":
+    case "print":
+    case "pack":
+    case "pack-own":
+    case "correct":
+    case "dispatch":
+      if (id) needs.ids.push(id);
+      break;
+    case "issue":
+      if (text(input.orderId)) needs.ids.push(input.orderId as string);
+      break;
+    case "assign-orders":
+    case "print-orders":
+    case "move-orders":
+    case "issue-orders":
+      if (Array.isArray(input.ids))
+        needs.ids.push(...input.ids.filter((x): x is string => typeof x === "string"));
+      break;
+    case "assign-package":
+    case "sort-count":
+      if (DATE.test(String(input.date ?? ""))) needs.dates.push(input.date as string);
+      break;
+    case "import-delete":
+      if (id) needs.imports.push(id);
+      break;
+    case "import-release":
+      for (const row of state?.awbImports?.find((b) => b.id === id)?.rows ?? [])
+        needs.awbs.push(normalize(row.awb));
+      break;
+  }
+  needs.awbs = needs.awbs.filter(Boolean);
+  return needs;
+}
+
+/**
+ * Second step for commands that check the day's supervisor count (assign-orders,
+ * issue-orders): every order on the work dates of the selected orders.
+ */
+export function dayNeeds(type: string, orders: Order[]): OrderNeeds {
+  const needs: OrderNeeds = { ids: [], awbs: [], dates: [], imports: [] };
+  if (type === "assign-orders" || type === "issue-orders")
+    needs.dates = [...new Set(orders.map((o) => o.date).filter((d) => DATE.test(d ?? "")))];
+  return needs;
+}
+
+const empty = (n: OrderNeeds) =>
+  !n.ids.length && !n.awbs.length && !n.dates.length && !n.imports.length;
+
+/** Loads the orders matching any of the needs, with their versions. */
+export async function loadOrders(
+  db: Db,
+  workspaceId: string,
+  needs: OrderNeeds,
+): Promise<LoadedOrders> {
+  const versions = new Map<string, number>();
+  if (empty(needs)) return { orders: [], versions };
+  const { data, error } = await db.rpc("operator_orders_for", {
+    p_workspace: workspaceId,
+    p_ids: [...new Set(needs.ids)],
+    p_awbs: [...new Set(needs.awbs)],
+    p_dates: [...new Set(needs.dates)],
+    p_imports: [...new Set(needs.imports)],
+  });
+  if (error) throw new StoreError();
+  const orders = ((data ?? []) as { doc: Order; version: number }[]).map((r) => {
+    versions.set(r.doc.id, r.version);
+    return r.doc;
+  });
+  return { orders, versions };
+}
+
+/** Adds newly loaded orders to a loaded set (first load wins). */
+export function addLoaded(into: LoadedOrders, more: LoadedOrders) {
+  for (const o of more.orders)
+    if (!into.versions.has(o.id)) {
+      into.orders.push(o);
+      into.versions.set(o.id, more.versions.get(o.id)!);
+    }
+}
+
+/** The orders a command created, changed or removed, against the versions it read. */
+export function orderOps(before: LoadedOrders, after: Order[]): OrderOp[] {
+  const was = new Map(before.orders.map((o) => [o.id, JSON.stringify(o)]));
+  const ops: OrderOp[] = [];
+  const kept = new Set<string>();
+  for (const order of after) {
+    kept.add(order.id);
+    if (!was.has(order.id)) ops.push({ op: "put", order, expected: null });
+    else if (was.get(order.id) !== JSON.stringify(order))
+      ops.push({ op: "put", order, expected: before.versions.get(order.id)! });
+  }
+  for (const [id] of was)
+    if (!kept.has(id))
+      ops.push({ op: "delete", id, expected: before.versions.get(id)! });
+  return ops;
+}
+
+/** The orders a screen holds, after a save that returned only its changes. */
+export function mergeOrders(
+  current: Order[],
+  delta: { put: Order[]; removed: string[] },
+): Order[] {
+  const gone = new Set([...delta.removed, ...delta.put.map((o) => o.id)]);
+  return [...delta.put, ...current.filter((o) => !gone.has(o.id))];
+}
+
+/** Today in Malaysia, and the work dates a request asks for (at most 7). */
+export const todayMyt = (now = new Date()) =>
+  new Date(now.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+export function viewDates(value: unknown, now = new Date()): string[] {
+  const list = (Array.isArray(value) ? value : String(value ?? "").split(","))
+    .map(String)
+    .filter((d) => DATE.test(d));
+  return [...new Set(list.length ? list : [todayMyt(now)])].slice(0, 7);
 }

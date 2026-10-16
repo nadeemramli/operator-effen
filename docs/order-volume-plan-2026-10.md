@@ -29,6 +29,18 @@ After it, the live document is about 0.5 MB, almost all orders (about 620 B each
 250 KB a day at current volume). The 3.6 MB limit and the 5,000-order ceiling then give
 roughly ten days, so WP C (orders) is still needed.
 
+Update 2026-10-16, WP C (orders) in `20261017090000_operator_orders.sql`:
+`public.operator_orders` holds one row per AWB with its own version; AWBs are unique per site
+in the database. A command loads the orders it reads (by ID, AWB, work date or upload, plus
+the whole work date for the supervisor-count checks) and commits only the orders it
+created, changed or removed, each against the version it read. The document revision is
+checked and bumped only when the document itself changes, so order saves no longer
+conflict with each other or with the rest of the site. Screens load the work dates on
+screen (today, the order screen's day, the packing day); a save returns only the orders it
+changed. The 7-day archive (`20261016090000`) is retired: archived orders return to the
+table. Stock issues stay in the document for now (next step); after them the document
+holds only batches, stock records and settings.
+
 ## Why now
 
 The owner reports days with 2,000 AWBs to fulfil and PDFs of 1,000 labels. The current

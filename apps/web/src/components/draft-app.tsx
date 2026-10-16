@@ -46,6 +46,7 @@ import { DriverTrips } from "./driver-trips";
 import { PackerProfiles, PackerUnlock } from "./packer-station";
 import { TeamProfiles } from "./team-profiles";
 import { channels } from "@/lib/awb-import";
+import { mergeOrders } from "@/lib/workspace-store";
 import {
   allowedViews,
   homeView,
@@ -314,6 +315,7 @@ export function DraftApp() {
     [channel] = useState("all"),
     [packerProfile, setPackerProfile] = useState(""),
     [packingDate, setPackingDate] = useState(today),
+    [orderDate, setOrderDate] = useState(today),
     [packingSelection, setPackingSelection] = useState<string[]>([]),
     [trace, setTrace] = useState<string | null>(null);
   const t = (en: string, ms: string) => tr(lang, en, ms);
@@ -355,13 +357,19 @@ export function DraftApp() {
     localStorage.setItem("operator-language", next);
     document.documentElement.lang = next;
   };
+  // Work dates whose orders the screens show: today, the order screen's day and the
+  // packing day. A change reloads them (operational sites keep orders in their own table).
+  const viewDates = [...new Set([today(), orderDate, packingDate])].sort().join(",");
+  const viewDatesRef = useRef(viewDates.split(","));
   // `silent`: a background refresh. It keeps the open screen, form and selections and
   // never shows an error; the next save or manual refresh reports any problem.
   const load = useCallback(async (workspace?: string, silent = false) => {
     try {
+      // Operational sites send the orders of the work dates on screen (orders table).
       const res = await fetch(
-        "/api/draft" +
-          (workspace ? "?workspace=" + encodeURIComponent(workspace) : ""),
+        "/api/draft?dates=" +
+          encodeURIComponent(viewDatesRef.current.join(",")) +
+          (workspace ? "&workspace=" + encodeURIComponent(workspace) : ""),
         { cache: "no-store" },
       );
       if (res.status === 401) {
@@ -426,6 +434,18 @@ export function DraftApp() {
   const idle = !form && !busy && !reset;
   const workspaceId = actor?.workspaceId;
   const ready = !!actor;
+  // A new work date on screen loads its orders; saves merge into the orders on screen.
+  const loadedDates = useRef(viewDates);
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  useEffect(() => {
+    viewDatesRef.current = viewDates.split(",");
+    if (!ready || loadedDates.current === viewDates) return;
+    loadedDates.current = viewDates;
+    void load(workspaceId, true);
+  }, [viewDates, ready, workspaceId, load]);
   useEffect(() => {
     if (!ready || !idle) return;
     const refresh = () => {
@@ -568,6 +588,7 @@ export function DraftApp() {
             revision: revisionRef.current,
             operationId: pending.operationId,
             workspaceId: pending.workspaceId,
+            dates: viewDatesRef.current,
           }),
         });
       } catch {
@@ -614,7 +635,14 @@ export function DraftApp() {
         throw new Error(data.error ?? "Unable to save. Please refresh.");
       }
       clear();
-      setState(data.state);
+      // Operational saves return only the orders they changed.
+      const next: Draft = data.ordersDelta
+        ? {
+            ...data.state,
+            orders: mergeOrders(stateRef.current?.orders ?? [], data.ordersDelta),
+          }
+        : data.state;
+      setState(next);
       setRevision(data.revision);
       revisionRef.current = data.revision;
       if (!keepForm) setForm(null);
@@ -632,7 +660,7 @@ export function DraftApp() {
                 "Disimpan ke ruang ujian bersama.",
               ),
       );
-      return data.state as Draft;
+      return next;
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Unable to save.";
       setFormConflict(conflicted);
@@ -2256,6 +2284,8 @@ export function DraftApp() {
           role={role}
           busy={busy}
           mode={view === "tally" ? "tally" : "management"}
+          date={orderDate}
+          setDate={setOrderDate}
           show={show}
           pic={pic}
           trace={setTrace}
