@@ -986,4 +986,49 @@ begin
   end;
 end $$;
 
+-- 14. Order archive (20261016090000). Orders whose work date is more than 7 days ago (MYT)
+--     move to public.operator_orders_archive; only an active member can trigger it, the
+--     cutoff is fixed, and the move is recorded.
+update public.operator_workspaces set state = jsonb_set(state, '{orders}', jsonb_build_array(
+  pg_temp.ord('arch-old') || '{"date": "2000-01-01", "awb": " nvmy arch old "}',
+  pg_temp.ord('arch-new') || jsonb_build_object('date',
+    to_char((now() at time zone 'Asia/Kuala_Lumpur')::date, 'YYYY-MM-DD'))))
+where site_id = 'site-a';
+select revision as "REV_BEFORE" from public.operator_workspaces where site_id = 'site-a' \gset
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000011');
+select pg_temp.expect_denied($q$select public.operator_archive_orders('10000000-0000-4000-8000-00000000000a')$q$, 'a non-member archives orders');
+rollback;
+begin;
+select pg_temp.as_user(:SV);
+do $$ begin
+  if public.operator_archive_orders('10000000-0000-4000-8000-00000000000a') <> 1 then
+    raise exception 'FAIL: expected one order archived'; end if;
+  if public.operator_archive_orders('10000000-0000-4000-8000-00000000000a') <> 0 then
+    raise exception 'FAIL: a second run archived again'; end if;
+  if not exists (select 1 from public.operator_orders_archive where id = 'arch-old' and awb = 'NVMYARCHOLD'
+      and order_date = '2000-01-01') then
+    raise exception 'FAIL: the old order is not readable in the archive'; end if;
+end $$;
+commit;
+do $$ begin
+  if (select jsonb_agg(o ->> 'id') from public.operator_workspaces w, jsonb_array_elements(w.state -> 'orders') o
+      where w.site_id = 'site-a') <> '["arch-new"]'::jsonb then
+    raise exception 'FAIL: expected only the recent order left in the document'; end if;
+  if not exists (select 1 from public.operator_events where body ->> 'action' = 'Orders archived'
+      and body -> 'recorder' ->> 'userId' = '00000000-0000-4000-8000-000000000001') then
+    raise exception 'FAIL: the archive move has no attributed audit entry'; end if;
+end $$;
+select pg_temp.expect((select jsonb_build_object('ok', revision = :REV_BEFORE + 1) from public.operator_workspaces
+  where site_id = 'site-a'), 'ok', 'archiving bumps the revision once');
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000011');
+do $$ begin
+  if exists (select 1 from public.operator_orders_archive) then
+    raise exception 'FAIL: a non-member reads archived orders'; end if;
+end $$;
+select pg_temp.expect_denied($q$insert into public.operator_orders_archive (workspace_id, id, awb, doc)
+  values ('10000000-0000-4000-8000-00000000000a', 'forged', 'X', '{}')$q$, 'writing the archive directly');
+rollback;
+
 select 'operator access tests passed' as result;

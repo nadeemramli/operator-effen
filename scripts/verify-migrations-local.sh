@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261016090000_operator_order_archive.down.sql"
+"${psql[@]}" -At -c "select (state -> 'orders') @> '[{\"id\": \"arch-old\"}]' from public.operator_workspaces where site_id = 'site-a'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261015090000_operator_imports_and_events.down.sql"
 "${psql[@]}" -At -c "select to_regclass('public.operator_events') is null and to_regclass('public.operator_imports') is null" | grep -qx t
 "${psql[@]}" -At -c "select jsonb_array_length(state -> 'events') > 0 from public.operator_workspaces where site_id = 'site-a'" | grep -qx t
@@ -85,4 +87,7 @@ echo "uploads and audit entries move to their tables"
 "${psql[@]}" -At -c "select string_agg(i.id, ',' order by i.id) from public.operator_imports i
   join public.operator_workspaces w on w.id = i.workspace_id where w.site_id = 'site-x'" | grep -qx 'imp-o,imp-r'
 "${psql[@]}" -At -c "select bool_and(not state ? 'awbImports' and state -> 'events' = '[]') from public.operator_workspaces" | grep -qx t
+echo "order archive re-applies"
+"${psql[@]}" -f "$root/supabase/migrations/20261016090000_operator_order_archive.sql"
+"${psql[@]}" -At -c "select has_function_privilege('authenticated', 'public.operator_archive_orders(uuid)', 'execute')" | grep -qx t
 echo "ok"

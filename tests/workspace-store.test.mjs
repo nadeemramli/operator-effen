@@ -66,3 +66,16 @@ test("saving an opened list entry drops its summary counts", () => {
   assert.equal("rowCount" in saved, false);
   assert.equal("releasedCount" in saved, false);
 });
+
+test("orders older than 7 days by Malaysia time are due for the archive", async () => {
+  const { archiveCutoff, needsArchive } = await import("../apps/web/src/lib/workspace-store.ts");
+  // 2026-10-16 01:30 in Kuala Lumpur is still 2026-10-15 in UTC.
+  const now = new Date("2026-10-15T17:30:00Z");
+  assert.equal(archiveCutoff(now), "2026-10-09");
+  const doc = (dates) => ({ ...createDraft(), orders: dates.map((date, i) => ({ id: "o" + i, date })) });
+  assert.equal(needsArchive(doc(["2026-10-09", "2026-10-16"]), now), false);
+  assert.equal(needsArchive(doc(["2026-10-08"]), now), true);
+  assert.equal(needsArchive(doc(["", "not-a-date"]), now), false);
+  assert.match(route, /needsArchive\(loaded\.data\.state as Draft\)/);
+  assert.match(route, /state\.orders = state\.orders\.filter\(\(o\) => !archivedIds\.has\(o\.id\)\)/);
+});

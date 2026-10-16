@@ -911,6 +911,26 @@ await check("C: a driver lists two assistants and logs a drop-off with its own t
   await d.page.locator(".dropoff-list", { hasText: "INT shop" }).first().waitFor();
   await d.context.close();
 });
+await check("C: AWBs older than 7 days move to the archive on load; still found and still duplicates", async () => {
+  const awb = "NVMYINTARCH001";
+  const old = { id: "int-archived", awb, channel: "TikTok", product: "cav", package: "INT archived", expected: 1,
+    originalExpected: 1, actual: null, packer: "", labelPic: "", printed: false, dispatched: false, handoverRef: "",
+    date: "2026-01-02", note: "", reviewState: "confirmed" };
+  sql(`update public.operator_workspaces set state = jsonb_set(state, '{orders}', (state -> 'orders') || '${JSON.stringify(old)}'::jsonb) where id = '${W.a}'`);
+  const before = revision(W.a);
+  const data = await load(outC, W.a);
+  assert.equal(data.state.orders.some((o) => o.id === old.id), false);
+  assert.equal(revision(W.a), before + 1);
+  assert.equal(sql(`select awb from public.operator_orders_archive where workspace_id='${W.a}' and id='${old.id}'`), awb);
+  assert.ok(data.state.events.some((e) => e.action === "Orders archived"));
+  const found = await api(outC, "GET", null, `?workspace=${W.a}&archive=intarch`);
+  assert.equal(found.status, 200, JSON.stringify(found.body));
+  assert.deepEqual(found.body.orders.map((o) => o.awb), [awb]);
+  const again = await post(outC, "order", { awb, product: "cav", channel: "TikTok", package: "INT pack", expected: 1, date: mytToday }, { role: "outbound" });
+  assert.equal(again.status, 400, JSON.stringify(again.body));
+  assert.match(again.body.error, /already recorded/);
+  assert.equal(stored(W.a).orders.some((o) => o.id === old.id), false);
+});
 await outC.context.close();
 await packers.context.close();
 
