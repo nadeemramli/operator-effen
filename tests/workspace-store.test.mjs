@@ -48,7 +48,7 @@ test("a document that still holds uploads is saved as before (migration not appl
   assert.equal(legacyDocument({ ...createDraft(), awbImports: [] }), true);
   const { awbImports: _, ...doc } = createDraft();
   assert.equal(legacyDocument(doc), false);
-  assert.match(route, /JSON\.stringify\(legacy \? state : commitPayload\(state, importId, existed, ops\)\)/);
+  assert.match(route, /legacy\s+\? state\s+: commitPayload\(/);
 });
 
 test("saving an opened list entry drops its summary counts", () => {
@@ -130,4 +130,39 @@ test("assigning or issuing selected AWBs also loads their work dates for the sup
   assert.deepEqual(dayNeeds("issue-orders", orders).dates.length, 2);
   assert.deepEqual(dayNeeds("print-orders", orders).dates, []);
   assert.match(route, /dayNeeds\(type, loadedOrders\.orders\)/);
+});
+
+test("stock issues: real issues of loaded orders, plus each carton's totals per day and before the window", async () => {
+  const { hydrateIssues, addedIssues, commitPayload } = await import("../apps/web/src/lib/workspace-store.ts");
+  const now = new Date("2026-10-16T02:00:00Z"); // window starts 2026-08-15
+  const calls = [];
+  const db = {
+    rpc: async (name, args) => {
+      calls.push([name, args]);
+      if (name === "operator_issue_totals")
+        return { data: [
+          { carton_id: "c1", day: "2026-10-16", qty: 5 },
+          { carton_id: "c1", day: null, qty: 7 },
+          { carton_id: "c2", day: "2026-10-15", qty: 2 },
+        ], error: null };
+      return { data: [{ body: { id: "i1", cartonId: "c1", orderId: "o1", qty: 3, pic: "P", at: "2026-10-16T01:00:00Z" } }], error: null };
+    },
+  };
+  const h = await hydrateIssues(db, "w", { ids: ["o1"], dates: [] }, now);
+  assert.equal(calls[0][1].p_since, "2026-08-15");
+  const byId = Object.fromEntries(h.issues.map((i) => [i.id, i]));
+  assert.equal(byId.i1.qty, 3);
+  assert.equal(byId["total:c1:2026-10-16"].qty, 2); // 5 that day, 3 of them loaded
+  assert.equal(byId["total:c1:before"].qty, 7);
+  assert.equal(byId["total:c1:before"].at, "2026-08-14T04:00:00.000Z");
+  assert.equal(byId["total:c2:2026-10-15"].qty, 2);
+  // Every unit is counted exactly once per carton.
+  const sum = (c) => h.issues.filter((i) => i.cartonId === c).reduce((n, i) => n + i.qty, 0);
+  assert.deepEqual([sum("c1"), sum("c2")], [12, 2]);
+  const added = { id: "i9", cartonId: "c2", orderId: "o1", qty: 1, pic: "P", at: "t" };
+  assert.deepEqual(addedIssues(h, [added, ...h.issues]), [added]);
+  assert.deepEqual(commitPayload({ ...createDraft(), issues: h.issues }, undefined, false, [], [added]).issues, [added]);
+  // Before the migration (no such function) the document keeps every issue.
+  const old = { rpc: async () => ({ data: null, error: { code: "PGRST202" } }) };
+  assert.equal(await hydrateIssues(old, "w", { ids: [], dates: [] }, now), null);
 });

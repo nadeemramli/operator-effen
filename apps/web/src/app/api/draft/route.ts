@@ -52,6 +52,9 @@ import {
   orderOps,
   addLoaded,
   viewDates,
+  hydrateIssues,
+  addedIssues,
+  type HydratedIssues,
   type LoadedOrders,
   type OrderOp,
   archivedByAwb,
@@ -497,6 +500,19 @@ export async function POST(request: NextRequest) {
           return { done: json({ error: "Unable to load your site workspace." }, 503) };
         }
     }
+    // Stock issues: the real issues of the loaded orders, totals for the rest (WP C2).
+    let hydrated: HydratedIssues | null = null;
+    if (ordersInTable) {
+      try {
+        hydrated = await hydrateIssues(db, membership.workspaceId, {
+          ids: loadedOrders.orders.map((o) => o.id),
+          dates: [],
+        });
+      } catch {
+        return { done: json({ error: "Unable to load your site workspace." }, 503) };
+      }
+      if (hydrated) current.issues = hydrated.issues;
+    }
     // Archived orders take part in the duplicate-AWB checks without returning to the
     // document: they are added for the command and removed from what is saved.
     const archivedIds = new Set<string>();
@@ -547,7 +563,17 @@ export async function POST(request: NextRequest) {
         state.orders = state.orders.filter((o) => !archivedIds.has(o.id));
       touched = importId ? state.awbImports?.find((b) => b.id === importId) : undefined;
       ops = ordersInTable ? orderOps(loadedOrders, state.orders) : undefined;
-      stateText = JSON.stringify(legacy ? state : commitPayload(state, importId, existed, ops));
+      stateText = JSON.stringify(
+        legacy
+          ? state
+          : commitPayload(
+              state,
+              importId,
+              existed,
+              ops,
+              hydrated ? addedIssues(hydrated, state.issues) : undefined,
+            ),
+      );
       if (new TextEncoder().encode(stateText).length > WORKSPACE_BYTES)
         throw new Error(WORKSPACE_FULL);
     } catch (e) {
@@ -605,6 +631,10 @@ export async function POST(request: NextRequest) {
           saved.new_state,
           touched,
           ops ? [] : dates,
+          {
+            dates,
+            ids: (ops ?? []).flatMap((op) => (op.op === "put" ? [op.order.id] : [])),
+          },
         ).catch(() => ({
           ...saved.new_state,
           orders: saved.new_state.orders ?? [],
