@@ -20,6 +20,7 @@ import {
   tr,
   type Draft,
   type Lang,
+  type Order,
   type Role,
 } from "@/lib/draft";
 import {
@@ -529,6 +530,9 @@ export function AwbIntake({
             ))}
           </div>
         </Panel>
+      )}
+      {screen === "batches" && workspaceId && (
+        <ArchiveLookup workspaceId={workspaceId} lang={lang} />
       )}
       {screen === "review" && batch && (
         <>
@@ -1330,5 +1334,96 @@ function PdfSource({
         <canvas ref={canvas} aria-label={`${file.name}, ${page}`} />
       )}
     </div>
+  );
+}
+
+/**
+ * Orders whose work date is more than a week ago live in the order archive
+ * (20261016090000); they are read-only and found here by AWB.
+ */
+function ArchiveLookup({ workspaceId, lang }: { workspaceId: string; lang: Lang }) {
+  const t = (en: string, ms: string) => tr(lang, en, ms);
+  const [query, setQuery] = useState(""),
+    [results, setResults] = useState<Order[] | null>(null),
+    [error, setError] = useState(""),
+    [loading, setLoading] = useState(false);
+  async function search() {
+    const q = query.trim();
+    if (q.length < 3) {
+      setError(t("Enter at least 3 characters of the AWB.", "Masukkan sekurang-kurangnya 3 aksara AWB."));
+      return;
+    }
+    setLoading(true);
+    setError("");
+    const res = await fetch(
+      "/api/draft?workspace=" + encodeURIComponent(workspaceId) + "&archive=" + encodeURIComponent(q),
+      { cache: "no-store" },
+    ).catch(() => null);
+    const data = await res?.json().catch(() => ({}));
+    setLoading(false);
+    if (!res?.ok || !Array.isArray(data?.orders)) {
+      setError(data?.error ?? t("Unable to search the archive.", "Tidak dapat mencari arkib."));
+      return;
+    }
+    setResults(data.orders);
+  }
+  return (
+    <Panel
+      title={t("Archived AWBs", "AWB diarkibkan")}
+      detail={t(
+        "AWBs with a work date more than 7 days ago move to the archive. They stay searchable and read-only, and still count as duplicates when uploaded again.",
+        "AWB dengan tarikh kerja lebih 7 hari lalu dipindahkan ke arkib. Ia boleh dicari, baca sahaja, dan masih dikira pendua jika dimuat naik semula.",
+      )}
+    >
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void search();
+        }}
+      >
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t("Search AWB…", "Cari AWB…")}
+          aria-label={t("Search archived AWBs", "Cari AWB diarkibkan")}
+        />
+        <Button type="submit" variant="outline" disabled={loading}>
+          {t("Search", "Cari")}
+        </Button>
+      </form>
+      <FormError message={error} />
+      {results && !results.length && (
+        <p className="text-sm text-muted-foreground">
+          {t("No archived AWB matches.", "Tiada AWB diarkibkan sepadan.")}
+        </p>
+      )}
+      {!!results?.length && (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>AWB</th>
+                <th>{t("Work date", "Tarikh kerja")}</th>
+                <th>{t("Source", "Sumber")}</th>
+                <th>{t("Package", "Pakej")}</th>
+                <th className="num">{t("Expected", "Dijangka")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((o) => (
+                <tr key={o.id}>
+                  <td className="mono">{o.awb}</td>
+                  <td>{o.date}</td>
+                  <td>{[o.channel, o.store].filter(Boolean).join(" · ")}</td>
+                  <td>{o.package}</td>
+                  <td className="num">{o.expected}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
   );
 }

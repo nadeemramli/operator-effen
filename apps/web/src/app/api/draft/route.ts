@@ -45,11 +45,15 @@ import {
   commitPayload,
   entityEvents,
   legacyDocument,
+  archivedByAwb,
+  archiveOrders,
+  needsArchive,
+  searchArchive,
   loadImport,
   StoreError,
   touchedImport,
 } from "@/lib/workspace-store";
-import type { AwbImport } from "@/lib/awb-import";
+import { normalizeAwb, type AwbImport } from "@/lib/awb-import";
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, {
     status,
@@ -86,19 +90,35 @@ export async function GET(request: NextRequest) {
   const { db, user, memberships } = access;
   const params = request.nextUrl.searchParams;
   const importId = params.get("import"),
-    entities = params.get("events")?.split(",").filter(Boolean);
-  if (entities && (entities.length > 50 || entities.some((e) => e.length > 200)))
+    entities = params.get("events")?.split(",").filter(Boolean),
+    archiveQuery = params.get("archive")?.trim();
+  if (
+    (entities && (entities.length > 50 || entities.some((e) => e.length > 200))) ||
+    (archiveQuery !== undefined && (archiveQuery.length < 3 || archiveQuery.length > 40))
+  )
     return json({ error: "Invalid request." }, 400);
   if (memberships.length) {
     const m = pick(memberships, params.get("workspace"));
     if (!m) return json({ error: "You do not have access to that site." }, 403);
-    const { data, error } = await db
-      .from("operator_workspaces")
-      .select("state,revision")
-      .eq("id", m.workspaceId)
-      .maybeSingle();
+    const load = () =>
+      db
+        .from("operator_workspaces")
+        .select("state,revision")
+        .eq("id", m.workspaceId)
+        .maybeSingle();
+    let { data, error } = await load();
     if (error || !data)
       return json({ error: "Unable to load your site workspace." }, 503);
+    // Orders past the archive cutoff leave the document before it is shown.
+    if (
+      !legacyDocument(data.state as Draft) &&
+      needsArchive(data.state as Draft) &&
+      (await archiveOrders(db, m.workspaceId)) > 0
+    ) {
+      ({ data, error } = await load());
+      if (error || !data)
+        return json({ error: "Unable to load your site workspace." }, 503);
+    }
     const doc = data.state as Draft;
     let state: Draft;
     try {
@@ -111,6 +131,10 @@ export async function GET(request: NextRequest) {
           ? json({ import: found })
           : json({ error: "Upload batch not found." }, 404);
       }
+      if (archiveQuery)
+        return json({
+          orders: await searchArchive(db, m.workspaceId, normalizeAwb(archiveQuery)),
+        });
       if (entities)
         return json({
           events: legacyDocument(doc)
@@ -169,6 +193,7 @@ export async function GET(request: NextRequest) {
   }
   if (entities)
     return json({ events: sandbox.events.filter((e) => entities.includes(e.entity)) });
+  if (archiveQuery) return json({ orders: [] });
   return json({
     ...data,
     state: withBatchReferences(data.state as Draft),
@@ -370,6 +395,7 @@ export async function POST(request: NextRequest) {
   }
   // Load the latest state, apply, commit with its revision; repeat if someone saved first.
   // The operation-ID replay check is the first step of every attempt.
+  let archiveChecked = false;
   return rebaseLoop(async (): Promise<RebaseStep<NextResponse>> => {
     const prior = await db
       .from("operator_commits")
@@ -377,24 +403,37 @@ export async function POST(request: NextRequest) {
       .eq("workspace_id", membership.workspaceId)
       .eq("operation_id", operationId)
       .maybeSingle();
-    const loaded = await db
-      .from("operator_workspaces")
-      .select("state,revision")
-      .eq("id", membership.workspaceId)
-      .single();
+    const load = () =>
+      db
+        .from("operator_workspaces")
+        .select("state,revision")
+        .eq("id", membership.workspaceId)
+        .single();
+    let loaded = await load();
+    // Orders past the archive cutoff leave the document first (once per save).
+    if (
+      !archiveChecked &&
+      loaded.data &&
+      !legacyDocument(loaded.data.state as Draft) &&
+      needsArchive(loaded.data.state as Draft)
+    ) {
+      archiveChecked = true;
+      if ((await archiveOrders(db, membership.workspaceId)) > 0) loaded = await load();
+    }
     if (prior.error || !loaded.data)
       return { done: json({ error: "Unable to load your site workspace." }, 503) };
+    const loadedData = loaded.data;
     if (prior.data)
       return {
         done:
           prior.data.fingerprint === print && prior.data.command === type
             ? json({
                 state: withBatchReferences(
-                  await clientState(db, membership.workspaceId, loaded.data.state as Draft).catch(
-                    () => loaded.data.state as Draft,
+                  await clientState(db, membership.workspaceId, loadedData.state as Draft).catch(
+                    () => loadedData.state as Draft,
                   ),
                 ),
-                revision: loaded.data.revision,
+                revision: loadedData.revision,
                 replayed: true,
                 resultRevision: prior.data.result_revision,
               })
@@ -422,6 +461,24 @@ export async function POST(request: NextRequest) {
       existed = !!found;
       current.awbImports = found ? [found] : [];
     }
+    // Archived orders take part in the duplicate-AWB checks without returning to the
+    // document: they are added for the command and removed from what is saved.
+    const archivedIds = new Set<string>();
+    if (!legacy && (type === "order" || type === "import-release")) {
+      const awbs =
+        type === "order"
+          ? [normalizeAwb(String(input.awb ?? ""))]
+          : (current.awbImports?.[0]?.rows ?? []).map((r) => normalizeAwb(r.awb));
+      try {
+        for (const o of await archivedByAwb(db, membership.workspaceId, awbs.filter(Boolean)))
+          if (!current.orders.some((x) => x.id === o.id)) {
+            archivedIds.add(o.id);
+            current.orders.push(o);
+          }
+      } catch {
+        return { done: json({ error: "Unable to load your site workspace." }, 503) };
+      }
+    }
     // A production supervisor limited to one factory never changes the other factory's
     // batches; the database re-checks the signed state (operator_private.assert_factory_scope).
     const outside = factoryDenial(membership.factory, type, input, current.batches ?? []);
@@ -448,6 +505,8 @@ export async function POST(request: NextRequest) {
         throw new AccessDenied(
           `Your access covers the ${membership.factory} factory only. This change has not been saved.`,
         );
+      if (archivedIds.size)
+        state.orders = state.orders.filter((o) => !archivedIds.has(o.id));
       touched = importId ? state.awbImports?.find((b) => b.id === importId) : undefined;
       stateText = JSON.stringify(legacy ? state : commitPayload(state, importId, existed));
       if (new TextEncoder().encode(stateText).length > WORKSPACE_BYTES)

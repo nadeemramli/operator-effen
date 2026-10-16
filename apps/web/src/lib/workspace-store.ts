@@ -1,5 +1,5 @@
 import type { AwbImport } from "@/lib/awb-import";
-import type { Draft, Event } from "@/lib/draft";
+import type { Draft, Event, Order } from "@/lib/draft";
 import type { resolveAccess } from "@/lib/supabase/server";
 
 /**
@@ -146,4 +146,61 @@ export class StoreError extends Error {
   constructor() {
     super("Unable to load your site records.");
   }
+}
+
+/**
+ * Order archive (20261016090000_operator_order_archive.sql). Orders whose work date is more
+ * than ORDER_ARCHIVE_DAYS ago (Malaysia time) move from the document to
+ * `operator_orders_archive`; the database fixes the cutoff, this only decides when to ask.
+ */
+export const ORDER_ARCHIVE_DAYS = 7;
+export function archiveCutoff(now = new Date()) {
+  const myt = new Date(now.getTime() + 8 * 3600 * 1000);
+  myt.setUTCDate(myt.getUTCDate() - ORDER_ARCHIVE_DAYS);
+  return myt.toISOString().slice(0, 10);
+}
+/** Whether the document holds orders old enough to archive. */
+export const needsArchive = (doc: Draft, now = new Date()) => {
+  const cutoff = archiveCutoff(now);
+  return (doc.orders ?? []).some(
+    (o) => /^\d{4}-\d{2}-\d{2}$/.test(o.date ?? "") && o.date < cutoff,
+  );
+};
+/** Moves old orders to the archive; 0 when nothing moved or the migration is not applied. */
+export async function archiveOrders(db: Db, workspaceId: string): Promise<number> {
+  const { data, error } = await db.rpc("operator_archive_orders", {
+    p_workspace: workspaceId,
+  });
+  return error ? 0 : Number(data) || 0;
+}
+/** Archived orders with these AWBs (normalized), for duplicate checks. */
+export async function archivedByAwb(
+  db: Db,
+  workspaceId: string,
+  awbs: string[],
+): Promise<Order[]> {
+  if (!awbs.length) return [];
+  const { data, error } = await db
+    .from("operator_orders_archive")
+    .select("doc")
+    .eq("workspace_id", workspaceId)
+    .in("awb", [...new Set(awbs)].slice(0, 1000));
+  if (error && !missingRelation(error.code)) throw new StoreError();
+  return (data ?? []).map((r) => r.doc as Order);
+}
+/** Archived orders whose AWB contains the query, newest work date first (lookup screen). */
+export async function searchArchive(
+  db: Db,
+  workspaceId: string,
+  query: string,
+): Promise<Order[]> {
+  const { data, error } = await db
+    .from("operator_orders_archive")
+    .select("doc")
+    .eq("workspace_id", workspaceId)
+    .ilike("awb", `%${query.replace(/[%_\\]/g, "")}%`)
+    .order("order_date", { ascending: false })
+    .limit(50);
+  if (error && !missingRelation(error.code)) throw new StoreError();
+  return (data ?? []).map((r) => r.doc as Order);
 }
