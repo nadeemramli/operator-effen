@@ -859,7 +859,10 @@ export function DraftApp() {
           type: "select",
           options: state?.batches
             .filter(
-              (b) => !isSachet(b.product) && b.sent > batchReceived(state, b),
+              (b) =>
+                !b.cancelled &&
+                !isSachet(b.product) &&
+                b.sent > batchReceived(state, b),
             )
             .map((b) => ({
               value: b.id,
@@ -899,6 +902,7 @@ export function DraftApp() {
           options: state?.batches
             .filter(
               (b) =>
+                !b.cancelled &&
                 isSachet(b.product) &&
                 batchTransferred(b) &&
                 !receipts.some((r) => r.batchId === b.id && !r.stockedAt),
@@ -953,7 +957,10 @@ export function DraftApp() {
           label: t("Batch", "Kelompok"),
           type: "select",
           options: (state?.batches ?? [])
-            .filter((b) => inventoryCartons.some((c) => c.batchId === b.id))
+            .filter(
+              (b) =>
+                !b.cancelled && inventoryCartons.some((c) => c.batchId === b.id),
+            )
             .sort((a, b) => (b.date + b.id).localeCompare(a.date + a.id))
             .map((b) => {
               const cartons = inventoryCartons.filter((c) => c.batchId === b.id);
@@ -1618,9 +1625,10 @@ export function DraftApp() {
           <div className="metrics-grid">
             <Metric
               label={t("Production batches", "Kelompok pengeluaran")}
-              value={state.batches.length}
+              value={state.batches.filter((b) => !b.cancelled).length}
               detail={
-                state.batches.filter((b) => !batchComplete(b)).length +
+                state.batches.filter((b) => !b.cancelled && !batchComplete(b))
+                  .length +
                 " " +
                 t("in progress", "sedang diproses")
               }
@@ -1669,7 +1677,9 @@ export function DraftApp() {
                   {
                     icon: Factory,
                     title: t("Production", "Pengeluaran"),
-                    count: state.batches.filter((b) => batchComplete(b)).length,
+                    count: state.batches.filter(
+                      (b) => !b.cancelled && batchComplete(b),
+                    ).length,
                     unit: t("finished batches", "kelompok siap"),
                     color: "var(--info)",
                   },
@@ -2574,13 +2584,14 @@ export function DraftApp() {
               {state.batches
                 .filter(
                   (b) =>
-                    search(b.code + " " + product(b.product).name) ||
-                    state.cartons.some(
-                      (c) =>
-                        c.batchId === b.id &&
-                        search(c.ref + " " + (c.legacyRef ?? "")),
-                    ) ||
-                    receipts.some((r) => r.batchId === b.id && search(r.ref)),
+                    !b.cancelled &&
+                    (search(b.code + " " + product(b.product).name) ||
+                      state.cartons.some(
+                        (c) =>
+                          c.batchId === b.id &&
+                          search(c.ref + " " + (c.legacyRef ?? "")),
+                      ) ||
+                      receipts.some((r) => r.batchId === b.id && search(r.ref))),
                 )
                 .map((b) => (
                   <div className="trace-batch" key={b.id}>
@@ -2690,6 +2701,7 @@ export function DraftApp() {
                       <td className="num">
                         {
                           state.batches
+                            .filter((b) => !b.cancelled)
                             .flatMap((b) => b.steps)
                             .filter((s) => s.done && p.is(s.pic)).length
                         }

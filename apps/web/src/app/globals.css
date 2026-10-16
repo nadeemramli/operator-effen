@@ -299,6 +299,10 @@ select {
   color: var(--muted-foreground);
   background: var(--muted);
 }
+.tone-danger {
+  color: var(--destructive);
+  background: color-mix(in srgb, var(--destructive) 11%, transparent);
+}
 .live-dot,
 .test-dot {
   width: 5px;
@@ -1002,6 +1006,30 @@ td small {
 .batch-footer small {
   font-size: 9px;
   color: var(--muted-foreground);
+}
+.batch-footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  align-items: center;
+}
+.batch-cancel-reason {
+  display: block;
+  max-width: 220px;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  white-space: normal;
+}
+.batch-history-notes {
+  display: grid;
+  gap: 10px;
+  padding: 0 23px 18px;
+}
+.batch-cancelled-note > svg {
+  color: var(--destructive);
 }
 .form-select {
   width: 100%;

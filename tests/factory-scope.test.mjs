@@ -89,6 +89,8 @@ test("a sachet supervisor cannot change a bottle batch with any production comma
     ["stage-correct", { id, stage: "mixing", field: "machine", reason: "x" }],
     ["change-step-pic", { id, step: 0, kind: "correction", pic: "Q", reason: "x" }],
     ["route-review", { id, decision: "upgrade", reason: "x" }],
+    ["batch-cancel", { id, reason: "x", pic: "P" }],
+    ["batch-correct", { id, field: "date", date: "2026-10-06", reason: "x", pic: "P" }],
   ];
   for (const [type, input] of attempts) {
     const result = save(s, "sachet", type, input);
@@ -108,6 +110,7 @@ test("a bottle supervisor cannot change a sachet batch or the machine register",
     ["batch", { product: "ady", code: "X-2", date: "2026-10-07", route: "sachet-v2" }],
     ["machine", { id, stage: "mixing", pic: "P" }],
     ["transfer", { id, pic: "P" }],
+    ["batch-cancel", { id, reason: "x", pic: "P" }],
     ["machine-create", { stage: "mixing", name: "Mixer 9" }],
   ])
     assert.match(save(s, "bottle", type, input).denied ?? "", /factory only/, type);

@@ -50,7 +50,7 @@ import {
 
 type Show = (spec: FormSpec) => void;
 type Pic = (name?: string, label?: string) => Field;
-const when = (iso: string | undefined, lang: Lang) =>
+export const when = (iso: string | undefined, lang: Lang) =>
   iso
     ? new Date(iso).toLocaleString(lang === "ms" ? "ms-MY" : "en-MY", {
         timeZone: "Asia/Kuala_Lumpur",
@@ -920,6 +920,7 @@ export function SachetProductionRecords({
   const batches = state.batches
     .filter(
       (b) =>
+        !b.cancelled &&
         isSachet(b.product) &&
         (b.code + " " + b.date).toLowerCase().includes(query.toLowerCase()),
     )

@@ -248,6 +248,30 @@ export interface BatchRevision {
   at: string;
   recordedBy?: Recorder;
 }
+/**
+ * A correction to a batch made while it is still in the factory (nothing sent, no warehouse
+ * records). Changes after transfer are flagged as revisions instead.
+ */
+export interface BatchCorrection {
+  id: string;
+  field: "date";
+  from: string;
+  to: string;
+  reason: string;
+  pic: string;
+  at: string;
+  recordedBy?: Recorder;
+}
+/**
+ * A batch planned or recorded by mistake, cancelled before it left the factory. It is never
+ * deleted: it stays in history with its steps, and its batch number stays reserved.
+ */
+export interface BatchCancellation {
+  at: string;
+  reason: string;
+  pic: string;
+  recordedBy?: Recorder;
+}
 export interface Machine {
   id: string;
   siteId?: string;
@@ -278,6 +302,8 @@ export interface Batch {
   version?: number;
   route?: RouteSnapshot;
   revisions?: BatchRevision[];
+  corrections?: BatchCorrection[];
+  cancelled?: BatchCancellation;
   transferredAt?: string;
   transferPic?: string;
   id: string;
@@ -624,6 +650,33 @@ export const warehouseStagesDone = (b: Batch) =>
   warehouseStages(b).every((key) => stageDone(b, key));
 export const batchRevised = (b: Batch) => !!b.revisions?.length;
 export const batchTransferred = (b: Batch) => !!b.transferredAt || b.sent > 0;
+/**
+ * Why a batch can no longer be cancelled or have its work date corrected, or null while it
+ * is still only in the factory: not cancelled, nothing sent, and no warehouse receipt or
+ * stock carton recorded against it.
+ */
+export const batchLock = (
+  s: Draft,
+  b: Batch,
+): "cancelled" | "sent" | "warehouse" | null =>
+  b.cancelled
+    ? "cancelled"
+    : batchTransferred(b)
+      ? "sent"
+      : s.cartons.some((c) => c.batchId === b.id) ||
+          adypocideReceipts(s).some((r) => r.batchId === b.id)
+        ? "warehouse"
+        : null;
+const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
+/** A real calendar date written as YYYY-MM-DD. */
+export const isCalendarDate = (value: string) => {
+  const time = Date.parse(value + "T00:00:00Z");
+  return (
+    CALENDAR_DATE.test(value) &&
+    Number.isFinite(time) &&
+    new Date(time).toISOString().slice(0, 10) === value
+  );
+};
 export const stockCartons = (s: Draft) =>
   s.cartons.filter((c) => c.unit === product(c.product).unit);
 // Old sachet counts stay in history; their remaining contents require a fresh box count.
@@ -1251,6 +1304,15 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       throw new Error("This record belongs to another site.");
     return record;
   };
+  /** A batch of this site that is still in use. Cancelled batches stay in history only. */
+  const liveBatch = (key = "id") => {
+    const b = inSite(find(s.batches, key));
+    if (b.cancelled)
+      throw new Error(
+        `Batch ${b.code} was cancelled. Its records stay in history only; choose another batch.`,
+      );
+    return b;
+  };
   const log = (
     entity: string,
     action: string,
@@ -1398,8 +1460,16 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const p = str("product");
       if (!product(p)) throw new Error("Choose a product.");
       const code = str("code");
-      if (s.batches.some((b) => b.code.toLowerCase() === code.toLowerCase()))
-        throw new Error("That batch number already exists.");
+      const taken = s.batches.find(
+        (b) => b.code.toLowerCase() === code.toLowerCase(),
+      );
+      // A cancelled batch keeps its number: its history and audit entries refer to it.
+      if (taken)
+        throw new Error(
+          taken.cancelled
+            ? "That batch number belongs to a cancelled batch and stays reserved. Use another batch number."
+            : "That batch number already exists.",
+        );
       const routeKey = str("route", false);
       if (isSachet(p) && routeKey && routeKey !== currentSachetRoute)
         throw new Error(
@@ -1453,9 +1523,89 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
       break;
     }
+    case "batch-cancel":
+    case "batch-correct": {
+      allow("production");
+      // Only while the batch is still only in the factory. Once it is sent or has warehouse
+      // records, mistakes are corrected on those records instead.
+      const b = inSite(find(s.batches));
+      const cancel = cmd.type === "batch-cancel",
+        lock = batchLock(s, b);
+      if (lock === "cancelled")
+        throw new Error(
+          cancel
+            ? `Batch ${b.code} is already cancelled.`
+            : `Batch ${b.code} was cancelled. Its record can no longer be changed.`,
+        );
+      if (lock)
+        throw new Error(
+          (lock === "sent"
+            ? `Batch ${b.code} has already been sent to ${isSachet(b.product) ? "the warehouse" : "fulfilment"}.`
+            : `Batch ${b.code} already has warehouse receipts or stock cartons.`) +
+            (cancel
+              ? " It can no longer be cancelled."
+              : " Its work date can no longer be corrected."),
+        );
+      expectVersion(b, b.code);
+      if (cancel) {
+        const reason = str("reason"),
+          pic = str("pic");
+        b.cancelled = { at, reason, pic, recordedBy: recorder };
+        bump(b);
+        log(
+          b.id,
+          "Batch cancelled",
+          `${b.code} · ${b.date} · ${pic} · ${reason}`,
+          { performer: pic },
+        );
+        break;
+      }
+      if (str("field") !== "date")
+        throw new Error("Choose the batch work date to correct.");
+      const date = str("date");
+      if (!isCalendarDate(date))
+        throw new Error("Enter the work date as a calendar date (YYYY-MM-DD).");
+      if (date === b.date) throw new Error("Enter a different work date.");
+      // Recorded actual times must stay on or after the batch work date.
+      const firstWork = b.steps
+        .flatMap((step) => [
+          step.occurredAt,
+          ...(step.occurrences ?? []).map((o) => o.occurredAt),
+          ...(step.picHistory ?? []).map((h) => h.effectiveAt),
+        ])
+        .filter((time): time is string => !!time && Number.isFinite(Date.parse(time)))
+        .map((time) => toMyt(time).slice(0, 10))
+        .sort()[0];
+      if (firstWork && date > firstWork)
+        throw new Error(
+          `The work date cannot be after work already recorded on ${firstWork}.`,
+        );
+      const reason = str("reason"),
+        pic = str("pic"),
+        from = b.date;
+      (b.corrections ??= []).push({
+        id: id(),
+        field: "date",
+        from,
+        to: date,
+        reason,
+        pic,
+        at,
+        recordedBy: recorder,
+      });
+      b.date = date;
+      bump(b);
+      log(
+        b.id,
+        "Batch date corrected",
+        `${b.code} · work date: ${from} → ${date} · ${pic} · ${reason}`,
+        { performer: pic },
+      );
+      break;
+    }
     case "route-review": {
       allow("production");
-      const b = inSite(find(s.batches));
+      const b = liveBatch();
       if (!isSachet(b.product))
         throw new Error("Route review applies to sachet batches.");
       const current = batchRoute(b);
@@ -1503,7 +1653,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "change-step-pic": {
       allow("production", "intake");
-      const b = inSite(find(s.batches));
+      const b = liveBatch();
       const stageKey = str("stage", false);
       const index = stageKey
         ? b.steps.findIndex((step) => step.sachetStage === stageKey)
@@ -1595,7 +1745,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "machine": {
       allow("production", "intake");
-      const b = inSite(find(s.batches));
+      const b = liveBatch();
       if (!isSachet(b.product))
         throw new Error("Machine-only records are for sachet products.");
       const stage = resolveStage(b);
@@ -1646,7 +1796,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "stage-rework": {
       allow("production", "intake");
-      const b = inSite(find(s.batches));
+      const b = liveBatch();
       if (!isSachet(b.product))
         throw new Error(
           "Rework can be recorded for sachet batches still in production.",
@@ -1690,7 +1840,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "stage-correct": {
       allow("production", "intake");
-      const b = inSite(find(s.batches));
+      const b = liveBatch();
       if (!isSachet(b.product))
         throw new Error("Machine corrections apply to sachet batches.");
       const stage = resolveStage(b);
@@ -1855,7 +2005,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "step": {
       allow("production");
-      const b = inSite(find(s.batches));
+      const b = liveBatch();
       if (isSachet(b.product))
         throw new Error(
           "Record the machine and PIC without an output quantity.",
@@ -1906,7 +2056,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "transfer": {
       allow("production");
-      const b = inSite(find(s.batches));
+      const b = liveBatch();
       if (isSachet(b.product)) {
         if (batchTransferred(b))
           throw new Error("This batch has already been sent to the warehouse.");
@@ -1943,7 +2093,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "receive": {
       allow("intake");
-      const b = inSite(find(s.batches, "batchId"));
+      const b = liveBatch("batchId");
       if (isSachet(b.product))
         throw new Error(
           "Receive sachets for boxing before confirming its finished boxes.",
@@ -1975,7 +2125,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     }
     case "receive-ady": {
       allow("intake");
-      const batch = inSite(find(s.batches, "batchId"));
+      const batch = liveBatch("batchId");
       if (!isSachet(batch.product) || !batchTransferred(batch))
         throw new Error("Choose a sachet batch sent to the warehouse.");
       const ref = batch.code;
@@ -2011,6 +2161,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const batch = s.batches.find((b) => b.id === receipt.batchId);
       if (!batch || !isSachet(batch.product))
         throw new Error("Choose a sachet batch.");
+      if (batch.cancelled) throw new Error(`Batch ${batch.code} was cancelled.`);
       // Batches planned with a route need every stage recorded before box stock exists.
       // Historical batches without a route snapshot are not re-checked.
       if (batch.route && !batchComplete(batch))

@@ -1083,6 +1083,62 @@ do $$ begin
     raise exception 'FAIL: a non-member reads stock issues'; end if;
 end $$;
 rollback;
+-- 12d. Cancelling a mistaken batch and correcting its work date (20261019090000). Only
+--      production supervisors (production.plan) may, inside their factory scope; the batch
+--      is marked cancelled or its date changed, never removed.
+create function pg_temp.patch_batch(p_id text, p_patch jsonb, p_uid text) returns jsonb language sql as $$
+  select jsonb_set(jsonb_set(pg_temp.state(), '{batches}', (
+      select jsonb_agg(case when b ->> 'id' = p_id then b || p_patch else b end order by n)
+      from jsonb_array_elements(pg_temp.state() -> 'batches') with ordinality x(b, n))),
+    '{events}', coalesce(pg_temp.state() -> 'events', '[]')
+      || jsonb_build_array(pg_temp.ev('e-' || gen_random_uuid(), p_uid))) $$;
+create function pg_temp.cancelled(p_uid text) returns jsonb language sql as $$
+  select jsonb_build_object('cancelled', jsonb_build_object('at', '2026-10-16T08:00:00.000Z',
+    'reason', 'Recorded with the wrong date', 'pic', 'SV', 'recordedBy', jsonb_build_object('userId', p_uid))) $$;
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch',
+  pg_temp.with_batch(pg_temp.new_batch('x-cav', 'cav'))), 'ok', 'plan a bottle batch to cancel');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch',
+  pg_temp.with_batch(pg_temp.new_batch('x-ady', 'ady'))), 'ok', 'plan a sachet batch to cancel');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :A, 'batch-cancel',
+  pg_temp.patch_batch('x-cav', pg_temp.cancelled('00000000-0000-4000-8000-000000000006'),
+    '00000000-0000-4000-8000-000000000006')), '42501', 'stock-in SV cancels a batch');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :A, 'batch-correct',
+  pg_temp.patch_batch('x-cav', '{"date": "2026-10-08"}', '00000000-0000-4000-8000-000000000006')),
+  '42501', 'stock-in SV corrects a batch date');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'batch-cancel',
+  pg_temp.patch_batch('x-cav', pg_temp.cancelled('00000000-0000-4000-8000-000000000009'),
+    '00000000-0000-4000-8000-000000000009')), '42501', 'stock-out SV cancels a batch');
+select pg_temp.expect(pg_temp.commit_as(:ADM, :A, 'batch-correct',
+  pg_temp.patch_batch('x-cav', '{"date": "2026-10-08"}', '00000000-0000-4000-8000-000000000007')),
+  '42501', 'office admin corrects a batch date');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000004', :A, 'batch-cancel',
+  pg_temp.patch_batch('x-cav', pg_temp.cancelled('00000000-0000-4000-8000-000000000004'),
+    '00000000-0000-4000-8000-000000000004')), '42501', 'management cancels a batch');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000002', :A, 'batch-cancel',
+  pg_temp.patch_batch('x-cav', pg_temp.cancelled('00000000-0000-4000-8000-000000000002'),
+    '00000000-0000-4000-8000-000000000002')), '42501', 'packer cancels a batch');
+select pg_temp.expect(pg_temp.commit_as(:BOTTLE, :A, 'batch-cancel',
+  pg_temp.patch_batch('x-ady', pg_temp.cancelled('00000000-0000-4000-8000-000000000015'),
+    '00000000-0000-4000-8000-000000000015')), '42501', 'bottle SV cancels a sachet batch');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-cancel',
+  jsonb_set(pg_temp.state(), '{batches}', (select jsonb_agg(b) from jsonb_array_elements(pg_temp.state() -> 'batches') b
+    where b ->> 'id' <> 'x-cav'))), '23514', 'cancelling by removing the batch');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-cancel',
+  jsonb_set(pg_temp.patch_batch('x-cav', pg_temp.cancelled('00000000-0000-4000-8000-000000000001'),
+    '00000000-0000-4000-8000-000000000001'), '{cartons,0,rack}', '"Z"')), '42501', 'batch-cancel changing a carton');
+select pg_temp.expect(pg_temp.commit_as(:BOTTLE, :A, 'batch-correct',
+  pg_temp.patch_batch('x-cav', '{"date": "2026-10-08", "version": 1}', '00000000-0000-4000-8000-000000000015')),
+  'ok', 'bottle SV corrects a bottle batch date');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-cancel',
+  pg_temp.patch_batch('x-ady', pg_temp.cancelled('00000000-0000-4000-8000-000000000001') || '{"version": 1}',
+    '00000000-0000-4000-8000-000000000001')), 'ok', 'production SV cancels a sachet batch');
+do $$ begin
+  if not exists (select 1 from jsonb_array_elements(pg_temp.state() -> 'batches') b
+      where b ->> 'id' = 'x-cav' and b ->> 'date' = '2026-10-08')
+    or not exists (select 1 from jsonb_array_elements(pg_temp.state() -> 'batches') b
+      where b ->> 'id' = 'x-ady' and b -> 'cancelled' ->> 'reason' = 'Recorded with the wrong date') then
+    raise exception 'FAIL: expected the corrected date and the cancelled batch kept in the document'; end if;
+end $$;
 
 -- 13. Workspace capacity (20261014090000). A document up to 4,000,000 bytes of jsonb text
 --     is stored; a larger one is refused by the table's check.

@@ -89,6 +89,8 @@ export const commandRules: Record<
   "route-review": { capability: "production.plan", stateKeys: ["batches", "events"] },
   step: { capability: "production.plan", stateKeys: ["batches", "events"] },
   transfer: { capability: "production.plan", stateKeys: ["batches", "events"] },
+  "batch-cancel": { capability: "production.plan", stateKeys: ["batches", "events"] },
+  "batch-correct": { capability: "production.plan", stateKeys: ["batches", "events"] },
   machine: { capability: "stage.record", stateKeys: ["batches", "events"] },
   "stage-rework": { capability: "stage.record", stateKeys: ["batches", "events"] },
   "change-step-pic": { capability: "stage.correct", stateKeys: ["batches", "events"] },

@@ -28,6 +28,7 @@ const later = [
   "20261009090002_operator_stock_returns",
   "20261009090003_operator_trip_dropoffs",
   "20261011090000_operator_remove_awbs",
+  "20261019090000_operator_batch_cancel",
 ].map(migration);
 const merged = (table) =>
   section(table) +
@@ -162,6 +163,10 @@ test("every operational command stays inside its database scope", () => {
   run("driver", "trip", { driver: "Sample Driver", assistant: "Sample Assistant", pickupAt: "2026-10-01T09:00" });
   run("driver", "trip-update", { id: s.trips[0].id, arriveAt: "2026-10-01T10:30" });
   run("driver", "trip-dropoff", { id: s.trips[0].id, at: "2026-10-01T10:00", photo: "10000000-0000-4000-8000-00000000000a/00000000-0000-4000-8000-000000000001/" + "a".repeat(64) + ".jpg" });
+  run("production", "batch", { product: "cav", code: "COV-X", date: "2026-10-01", target: 1 });
+  const mistaken = s.batches[0].id;
+  run("production", "batch-correct", { id: mistaken, field: "date", date: "2026-09-30", reason: "Wrong date", pic: "P" });
+  run("production", "batch-cancel", { id: mistaken, reason: "Planned twice", pic: "P" });
   run("production", "route-review", (() => {
     const legacy = s.batches.find((b) => b.id === "b-ady");
     delete legacy.route;

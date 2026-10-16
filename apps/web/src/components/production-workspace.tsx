@@ -7,6 +7,8 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Ban,
+  CalendarDays,
   Check,
   ClipboardList,
   Factory,
@@ -24,6 +26,7 @@ import {
   ProcessPicHistory,
   ProcessPicTools,
   StageRecords,
+  when,
 } from "./sachet-records";
 export { ProcessPicHistory } from "./sachet-records";
 import {
@@ -40,6 +43,7 @@ import {
   batchUnit,
   batchFactory,
   batchComplete,
+  batchLock,
   batchTransferred,
   batchRoute,
   factoryStagesDone,
@@ -58,6 +62,7 @@ import {
   isSachet,
   today,
   tr,
+  recorderLabel,
   type Batch,
   type Draft,
   type Lang,
@@ -76,6 +81,12 @@ const qcLabel = (value: string, lang: Lang) =>
           "Tidak direkod / tidak diperiksa",
         );
 function BatchStatus({ batch, lang }: { batch: Batch; lang: Lang }) {
+  if (batch.cancelled)
+    return (
+      <span className="status-pill tone-danger">
+        {tr(lang, "Cancelled", "Dibatalkan")}
+      </span>
+    );
   const complete = batchComplete(batch),
     started = batch.steps.some((s) => s.done);
   return (
@@ -91,6 +102,146 @@ function BatchStatus({ batch, lang }: { batch: Batch; lang: Lang }) {
           ? tr(lang, "In progress", "Dalam proses")
           : tr(lang, "Planned", "Dirancang")}
     </span>
+  );
+}
+
+/**
+ * Fixes for a batch still only in the factory (nothing sent, no warehouse records): correct
+ * its work date, or cancel a batch planned or recorded by mistake.
+ */
+function BatchFixTools({
+  batch: b,
+  state,
+  lang,
+  show,
+  pic,
+}: {
+  batch: Batch;
+  state: Draft;
+  lang: Lang;
+  show: (spec: FormSpec) => void;
+  pic: (name?: string, label?: string) => Field;
+}) {
+  const t = (en: string, ms: string) => tr(lang, en, ms);
+  if (batchLock(state, b)) return null;
+  const hidden = { id: b.id, expectedVersion: b.version ?? 0 };
+  const summary = [
+    { label: t("Batch", "Kelompok"), value: b.code },
+    { label: t("Work date", "Tarikh kerja"), value: b.date },
+  ];
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() =>
+          show({
+            type: "batch-correct",
+            title: t("Correct work date", "Betulkan tarikh kerja"),
+            description: t(
+              "The recorded steps and PICs stay as they are. The old date, the new date and the reason are kept in the batch history.",
+              "Langkah dan PIC yang direkod kekal. Tarikh lama, tarikh baharu dan sebabnya disimpan dalam sejarah kelompok.",
+            ),
+            hidden: { ...hidden, field: "date" },
+            summary,
+            fields: [
+              {
+                name: "date",
+                label: t("Correct work date", "Tarikh kerja yang betul"),
+                type: "date",
+                value: b.date,
+              },
+              {
+                name: "reason",
+                label: t("Reason for the correction", "Sebab pembetulan"),
+                type: "textarea",
+              },
+              pic(),
+            ],
+            submit: t("Save correction", "Simpan pembetulan"),
+          })
+        }
+      >
+        <CalendarDays size={14} />
+        {t("Correct date", "Betulkan tarikh")}
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="text-destructive"
+        onClick={() =>
+          show({
+            type: "batch-cancel",
+            title: t("Cancel batch", "Batalkan kelompok"),
+            description: t(
+              "Only for a batch planned or recorded by mistake. If only the date is wrong, use Correct date instead. The batch is not deleted: it moves to previous batches as cancelled, with its records and your reason, and its batch number cannot be used again.",
+              "Hanya untuk kelompok yang dirancang atau direkod secara silap. Jika hanya tarikh yang salah, gunakan Betulkan tarikh. Kelompok tidak dipadam: ia dipindahkan ke kelompok terdahulu sebagai dibatalkan, bersama rekod dan sebab anda, dan nombor kelompoknya tidak boleh digunakan semula.",
+            ),
+            hidden,
+            summary,
+            fields: [
+              {
+                name: "reason",
+                label: t("Reason for cancelling", "Sebab pembatalan"),
+                type: "textarea",
+              },
+              pic(),
+            ],
+            submit: t("Cancel batch", "Batalkan kelompok"),
+          })
+        }
+      >
+        <Ban size={14} />
+        {t("Cancel batch", "Batalkan kelompok")}
+      </Button>
+    </>
+  );
+}
+
+/** Cancellation and work-date corrections, shown on the saved batch record. */
+function BatchHistoryNotes({ batch: b, lang }: { batch: Batch; lang: Lang }) {
+  const t = (en: string, ms: string) => tr(lang, en, ms);
+  const corrections = b.corrections ?? [];
+  if (!b.cancelled && !corrections.length) return null;
+  return (
+    <div className="batch-history-notes">
+      {b.cancelled && (
+        <div className="inline-note batch-cancelled-note">
+          <Ban size={16} />
+          <p>
+            <strong>{t("Batch cancelled", "Kelompok dibatalkan")}</strong> ·{" "}
+            {when(b.cancelled.at, lang)} · PIC {b.cancelled.pic}
+            <br />
+            {b.cancelled.reason}
+            <br />
+            {recorderLabel(b.cancelled.recordedBy)}
+            {b.cancelled.recordedBy ? " · " : ""}
+            {t(
+              "Its records are kept for history. It cannot be recorded or sent, and its batch number cannot be used again.",
+              "Rekodnya disimpan untuk sejarah. Ia tidak boleh direkod atau dihantar, dan nombor kelompoknya tidak boleh digunakan semula.",
+            )}
+          </p>
+        </div>
+      )}
+      {!!corrections.length && (
+        <details className="pic-history">
+          <summary>
+            {t("Work date corrections", "Pembetulan tarikh kerja")} (
+            {corrections.length})
+          </summary>
+          {corrections.map((c) => (
+            <p key={c.id}>
+              <strong>
+                {c.from} → {c.to}
+              </strong>
+              <br />
+              {c.reason} · PIC {c.pic} · {recorderLabel(c.recordedBy)} ·{" "}
+              {when(c.at, lang)}
+            </p>
+          ))}
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -185,8 +336,10 @@ export function ProductionWorkspace({
     router.replace("/?" + q.toString(), { scroll: false });
   }
   const newBatch = () => router.push(href("plan"));
+  // Cancelled batches stay in previous batches only.
   const visibleBatches = state.batches.filter(
     (b) =>
+      !b.cancelled &&
       (factory === "all" || batchFactory(b) === factory) &&
       b.date === workDate &&
       (!selectedId || b.id === selectedId),
@@ -199,7 +352,10 @@ export function ProductionWorkspace({
           .toLowerCase()
           .includes(search.toLowerCase()) &&
         (status === "all" ||
-          (status === "recorded" ? batchComplete(b) : !batchComplete(b))),
+          (status === "cancelled"
+            ? !!b.cancelled
+            : !b.cancelled &&
+              (status === "recorded" ? batchComplete(b) : !batchComplete(b)))),
     )
     .sort((a, b) => b.date.localeCompare(a.date));
   const productionLog = (
@@ -454,39 +610,48 @@ export function ProductionWorkspace({
                 <small>
                   {b.date} · {units(lang, batchUnit(b))}
                 </small>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!batchComplete(b) || b.actual <= b.sent}
-                  onClick={() =>
-                    show({
-                      type: "transfer",
-                      title: t(
-                        "Send to fulfilment",
-                        "Hantar ke pusat pemenuhan",
-                      ),
-                      description:
-                        b.code +
-                        " · " +
-                        (b.actual - b.sent) +
-                        " " +
-                        t("available at factory", "tersedia di kilang"),
-                      hidden: { id: b.id },
-                      fields: [
-                        number(
-                          "qty",
-                          t("Units sent", "Unit dihantar"),
-                          undefined,
-                          1,
+                <div className="batch-footer-actions">
+                  <BatchFixTools
+                    batch={b}
+                    state={state}
+                    lang={lang}
+                    show={show}
+                    pic={pic}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!batchComplete(b) || b.actual <= b.sent}
+                    onClick={() =>
+                      show({
+                        type: "transfer",
+                        title: t(
+                          "Send to fulfilment",
+                          "Hantar ke pusat pemenuhan",
                         ),
-                        pic(),
-                      ],
-                    })
-                  }
-                >
-                  {t("Send to fulfilment", "Hantar ke pemenuhan")}
-                  <ArrowRight size={14} />
-                </Button>
+                        description:
+                          b.code +
+                          " · " +
+                          (b.actual - b.sent) +
+                          " " +
+                          t("available at factory", "tersedia di kilang"),
+                        hidden: { id: b.id },
+                        fields: [
+                          number(
+                            "qty",
+                            t("Units sent", "Unit dihantar"),
+                            undefined,
+                            1,
+                          ),
+                          pic(),
+                        ],
+                      })
+                    }
+                  >
+                    {t("Send to fulfilment", "Hantar ke pemenuhan")}
+                    <ArrowRight size={14} />
+                  </Button>
+                </div>
               </div>
             </section>
           ),
@@ -603,12 +768,14 @@ export function ProductionWorkspace({
                     )}
                   </Link>
                 </Button>
-                <Button asChild className="action-primary">
-                  <Link href={href("log", selected.id)}>
-                    {t("Open production log", "Buka log pengeluaran")}
-                    <ArrowRight size={15} />
-                  </Link>
-                </Button>
+                {!selected.cancelled && (
+                  <Button asChild className="action-primary">
+                    <Link href={href("log", selected.id)}>
+                      {t("Open production log", "Buka log pengeluaran")}
+                      <ArrowRight size={15} />
+                    </Link>
+                  </Button>
+                )}
               </div>
               <BatchRecord batch={selected} state={state} lang={lang} />
             </>
@@ -677,6 +844,9 @@ export function ProductionWorkspace({
                   {t("Planned / in progress", "Dirancang / dalam proses")}
                 </option>
                 <option value="recorded">{t("Recorded", "Direkodkan")}</option>
+                <option value="cancelled">
+                  {t("Cancelled", "Dibatalkan")}
+                </option>
               </select>
             </div>
             {historyBatches.length ? (
@@ -761,6 +931,11 @@ export function ProductionWorkspace({
                         </td>
                         <td>
                           <BatchStatus batch={b} lang={lang} />
+                          {b.cancelled && (
+                            <small className="batch-cancel-reason">
+                              {b.cancelled.reason}
+                            </small>
+                          )}
                         </td>
                         <td>
                           <Button asChild variant="outline" size="sm">
@@ -888,26 +1063,35 @@ function AdypocideProductionCard({
       )}
       <div className="batch-footer">
         <small>{b.date}</small>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={sent || needsReview || !factoryStagesDone(b)}
-          onClick={() =>
-            show({
-              type: "transfer",
-              title: t("Send batch to warehouse", "Hantar kelompok ke gudang"),
-              description: t(
-                "Confirm that mixing and filling have an actual PIC. Stock-in records batching, hologram and wrapping, then counts finished boxes.",
-                "Sahkan pengadunan dan pengisian mempunyai PIC sebenar. Stok masuk merekod nombor kelompok, hologram dan balutan, kemudian mengira kotak siap.",
-              ),
-              hidden: { id: b.id },
-              fields: [pic()],
-            })
-          }
-        >
-          {t("Send to warehouse", "Hantar ke gudang")}
-          <ArrowRight size={14} />
-        </Button>
+        <div className="batch-footer-actions">
+          <BatchFixTools
+            batch={b}
+            state={state}
+            lang={lang}
+            show={show}
+            pic={pic}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={sent || needsReview || !factoryStagesDone(b)}
+            onClick={() =>
+              show({
+                type: "transfer",
+                title: t("Send batch to warehouse", "Hantar kelompok ke gudang"),
+                description: t(
+                  "Confirm that mixing and filling have an actual PIC. Stock-in records batching, hologram and wrapping, then counts finished boxes.",
+                  "Sahkan pengadunan dan pengisian mempunyai PIC sebenar. Stok masuk merekod nombor kelompok, hologram dan balutan, kemudian mengira kotak siap.",
+                ),
+                hidden: { id: b.id },
+                fields: [pic()],
+              })
+            }
+          >
+            {t("Send to warehouse", "Hantar ke gudang")}
+            <ArrowRight size={14} />
+          </Button>
+        </div>
       </div>
     </section>
   );
@@ -1163,11 +1347,16 @@ function BatchRecord({
         <div className="batch-record-heading">
           <ProductName id={b.product} />
           <span>
-            {batchTransferred(b)
-              ? t("Sent to warehouse", "Dihantar ke gudang")
-              : t("Awaiting warehouse handoff", "Menunggu serahan ke gudang")}
+            {b.cancelled ? (
+              <BatchStatus batch={b} lang={lang} />
+            ) : batchTransferred(b) ? (
+              t("Sent to warehouse", "Dihantar ke gudang")
+            ) : (
+              t("Awaiting warehouse handoff", "Menunggu serahan ke gudang")
+            )}
           </span>
         </div>
+        <BatchHistoryNotes batch={b} lang={lang} />
         <StageRecords batch={b} state={state} lang={lang} />
         <p className="record-footnote">
           {t(
@@ -1196,6 +1385,7 @@ function BatchRecord({
             : t("Bottle factory", "Kilang botol")}
         </span>
       </div>
+      <BatchHistoryNotes batch={b} lang={lang} />
       <dl className="batch-record-summary">
         {[
           [t("Work date", "Tarikh kerja"), b.date],
