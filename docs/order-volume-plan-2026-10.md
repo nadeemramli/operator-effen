@@ -41,6 +41,16 @@ changed. The 7-day archive (`20261016090000`) is retired: archived orders return
 table. Stock issues stay in the document for now (next step); after them the document
 holds only batches, stock records and settings.
 
+Update 2026-10-16, stock issues in `20261018090000_operator_issues.sql`: one insert-only row
+per issue in `public.operator_issues`; the document keeps `issues: []`. Commands and screens
+get the real issues of the orders they hold plus each carton's issued total per Malaysian day
+(last 62 days) and before that, so balances, the daily stock report (within 62 days) and the
+per-order checks read as before. The commit function runs every rule with each carton's
+stored total standing in for its issues, so "no carton below zero" stays exact; saves to a
+site run one at a time. New: an order with stock issues cannot be removed (also in the
+database). The document now holds only batches, stock records, settings and small daily
+records; nothing in it grows with AWB volume.
+
 ## Why now
 
 The owner reports days with 2,000 AWBs to fulfil and PDFs of 1,000 labels. The current

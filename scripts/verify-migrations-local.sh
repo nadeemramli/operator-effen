@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261018090000_operator_issues.down.sql"
+"${psql[@]}" -At -c "select (state -> 'issues') @> '[{\"id\": \"i-x4\"}]' and to_regclass('public.operator_issues') is null from public.operator_workspaces where site_id = 'site-a'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261017090000_operator_orders.down.sql"
 "${psql[@]}" -At -c "select (state -> 'orders') @> '[{\"id\": \"o2\"}]' and to_regclass('public.operator_orders') is null from public.operator_workspaces where site_id = 'site-a'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261016090000_operator_order_archive.down.sql"
@@ -97,4 +99,9 @@ echo "orders move to their table"
 "${psql[@]}" -f "$root/supabase/migrations/20261017090000_operator_orders.sql"
 "${psql[@]}" -At -c "select string_agg(o.id || ':' || o.awb || ':' || o.version, ',') from public.operator_orders o join public.operator_workspaces w on w.id = o.workspace_id where w.site_id = 'site-x'" | grep -qx 'ox1:NVMYX1:1'
 "${psql[@]}" -At -c "select bool_and(not state ? 'orders') from public.operator_workspaces" | grep -qx t
+echo "stock issues move to their table"
+"${psql[@]}" -c "update public.operator_workspaces set state = jsonb_set(state, '{issues}', '[{\"id\": \"ix1\", \"cartonId\": \"cx\", \"orderId\": \"ox1\", \"qty\": 2, \"at\": \"2026-10-15T20:00:00Z\"}]') where site_id = 'site-x'"
+"${psql[@]}" -f "$root/supabase/migrations/20261018090000_operator_issues.sql"
+"${psql[@]}" -At -c "select string_agg(i.id || ':' || i.qty || ':' || i.issue_day, ',') from public.operator_issues i join public.operator_workspaces w on w.id = i.workspace_id where w.site_id = 'site-x'" | grep -qx 'ix1:2:2026-10-16'
+"${psql[@]}" -At -c "select bool_and(state -> 'issues' = '[]') from public.operator_workspaces" | grep -qx t
 echo "ok"

@@ -29,6 +29,8 @@ delete from public.operator_events;
 -- archived under 20261016090000 (skip each line before its migration).
 delete from public.operator_orders;
 delete from public.operator_orders_archive;
+-- Stock issues kept in their own table since 20261018090000_operator_issues.sql.
+delete from public.operator_issues;
 
 -- Reset each site to the empty workspace shape. Revision keeps increasing so any open
 -- browser tab with the old revision is rejected as stale and reloads.

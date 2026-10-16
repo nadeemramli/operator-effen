@@ -1,5 +1,5 @@
 import type { AwbImport } from "@/lib/awb-import";
-import type { Draft, Event, Order } from "@/lib/draft";
+import type { Draft, Event, Issue, Order } from "@/lib/draft";
 import type { resolveAccess } from "@/lib/supabase/server";
 
 /**
@@ -71,8 +71,11 @@ export function commitPayload(
   importId: string | undefined,
   existed: boolean,
   orders?: OrderOp[],
+  /** Stock issues in their own table: only the ones the command added. */
+  issues?: Issue[],
 ): Record<string, unknown> {
-  const { awbImports, orders: list, ...rest } = state;
+  const { awbImports, orders: list, ...base } = state;
+  const rest = issues === undefined ? base : { ...base, issues };
   // Orders in their own table (20261017090000) travel as the changes only.
   const doc: Record<string, unknown> =
     orders === undefined ? { ...rest, orders: list } : orders.length ? { ...rest, orders } : rest;
@@ -93,11 +96,18 @@ export async function clientState(
   doc: Draft,
   full?: AwbImport,
   dates: string[] = [],
+  /** Stock issues for the orders on these dates and these orders (default: `dates`). */
+  issuesFor: { dates: string[]; ids: string[] } = { dates, ids: [] },
 ): Promise<Draft> {
   if (legacyDocument(doc)) return doc;
   const orders = legacyOrders(doc)
     ? doc.orders
     : (await loadOrders(db, workspaceId, { ids: [], awbs: [], dates, imports: [] })).orders;
+  const issues =
+    (await hydrateIssues(db, workspaceId, {
+      dates: issuesFor.dates,
+      ids: [...issuesFor.ids, ...orders.map((o) => o.id)],
+    }))?.issues ?? doc.issues;
   const [events, imports] = await Promise.all([
     db
       .from("operator_events")
@@ -113,7 +123,7 @@ export async function clientState(
       .limit(RECENT_IMPORTS),
   ]);
   if (missingRelation(events.error?.code) || missingRelation(imports.error?.code))
-    return { ...doc, orders };
+    return { ...doc, orders, issues };
   if (events.error || imports.error) throw new StoreError();
   const summaries = (imports.data ?? []).map(
     (r) => ({ ...(r.summary as object), rows: [] }) as unknown as AwbImport,
@@ -126,6 +136,7 @@ export async function clientState(
   return {
     ...doc,
     orders,
+    issues,
     events: [
       ...(doc.events ?? []),
       ...(events.data ?? []).map((r) => r.body as Event),
@@ -388,3 +399,78 @@ export function viewDates(value: unknown, now = new Date()): string[] {
     .filter((d) => DATE.test(d));
   return [...new Set(list.length ? list : [todayMyt(now)])].slice(0, 7);
 }
+
+/**
+ * Stock issues in their own table (20261018090000_operator_issues.sql). A command or screen
+ * gets the real issues of the orders it holds, plus, for every other issue, its carton's
+ * total per Malaysian day for the last ISSUE_DAYS days and one total before that (ids
+ * starting "total:"). Carton balances, the daily stock report (within the window) and the
+ * per-order checks then read exactly as with every issue loaded. Returns null until the
+ * migration is applied (the document still holds every issue).
+ */
+export const ISSUE_DAYS = 62;
+export type HydratedIssues = { issues: Issue[]; loaded: Set<string> };
+
+const mytDayOf = (iso: string) => {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? todayMyt(new Date(t)) : "";
+};
+const shiftDay = (day: string, by: number) => {
+  const d = new Date(day + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + by);
+  return d.toISOString().slice(0, 10);
+};
+
+export async function hydrateIssues(
+  db: Db,
+  workspaceId: string,
+  of: { ids: string[]; dates: string[] },
+  now = new Date(),
+): Promise<HydratedIssues | null> {
+  const since = shiftDay(todayMyt(now), -ISSUE_DAYS);
+  const ids = [...new Set(of.ids)],
+    dates = [...new Set(of.dates)];
+  const [totals, real] = await Promise.all([
+    db.rpc("operator_issue_totals", { p_workspace: workspaceId, p_since: since }),
+    ids.length || dates.length
+      ? db.rpc("operator_issues_for", { p_workspace: workspaceId, p_orders: ids, p_dates: dates })
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (totals.error || real.error) {
+    const code = totals.error?.code ?? real.error?.code;
+    if (code === "PGRST202" || code === "42883" || missingRelation(code)) return null;
+    throw new StoreError();
+  }
+  const issues = ((real.data ?? []) as { body: Issue }[]).map((r) => r.body);
+  const remaining = new Map<string, number>();
+  const key = (carton: string, day: string | null) => carton + "|" + (day ?? "");
+  for (const t of (totals.data ?? []) as { carton_id: string; day: string | null; qty: number }[])
+    remaining.set(key(t.carton_id, t.day), Number(t.qty));
+  for (const i of issues) {
+    const day = mytDayOf(i.at);
+    const k = key(i.cartonId, day >= since ? day : null);
+    remaining.set(k, (remaining.get(k) ?? 0) - i.qty);
+  }
+  const totalsAsIssues: Issue[] = [];
+  for (const [k, qty] of remaining) {
+    if (qty <= 0) continue;
+    const [cartonId, day] = k.split("|");
+    totalsAsIssues.push({
+      id: "total:" + cartonId + ":" + (day || "before"),
+      cartonId,
+      orderId: "",
+      qty,
+      pic: "",
+      // Noon in Malaysia on that day; totals before the window sit on its eve.
+      at: (day || shiftDay(since, -1)) + "T04:00:00.000Z",
+    });
+  }
+  return {
+    issues: [...issues, ...totalsAsIssues],
+    loaded: new Set([...issues, ...totalsAsIssues].map((i) => i.id)),
+  };
+}
+
+/** The stock issues a command added: everything it holds that was not loaded. */
+export const addedIssues = (hydrated: HydratedIssues, after: Issue[]) =>
+  after.filter((i) => !hydrated.loaded.has(i.id));

@@ -939,6 +939,28 @@ await check("C: orders live in their own table; screens load by work date; AWBs 
   assert.equal(sql(`select version from public.operator_orders where id='${old.id}'`), "2");
   assert.equal(printed.body.state.orders.length, 0);
 });
+await check("C: stock issues live in their own table; balances count them; an AWB with stock stays", async () => {
+  const carton = { id: "int-stock", ref: "INT-STOCK", batchId: null, product: "cav", unit: "bottle", qty: 3, rack: "A", pic: "R", at: new Date().toISOString() };
+  sql(`update public.operator_workspaces set state = jsonb_set(state, '{cartons}', (state -> 'cartons') || '${JSON.stringify(carton)}'::jsonb) where id = '${W.a}'`);
+  const before = revision(W.a);
+  const issued = await post(outC, "issue", { cartonId: carton.id, orderId: "int-old", qty: 2, pic: "INT S" }, { role: "outbound" });
+  assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  assert.equal(revision(W.a), before);
+  assert.deepEqual(stored(W.a).issues, []);
+  assert.equal(sql(`select qty from public.operator_issues where workspace_id='${W.a}' and order_id='int-old'`), "2");
+  const more = await post(outC, "issue", { cartonId: carton.id, orderId: "int-old", qty: 2, pic: "INT S" }, { role: "outbound" });
+  assert.equal(more.status, 400, JSON.stringify(more.body));
+  assert.match(more.body.error, /Not enough stock/);
+  // Today's screen holds the carton total; the order's own day holds the real issue.
+  const today = (await load(outC, W.a)).state;
+  const total = today.issues.find((i) => i.cartonId === carton.id);
+  assert.deepEqual([total.qty, total.orderId, total.id.startsWith("total:")], [2, "", true]);
+  const day = (await api(outC, "GET", null, `?workspace=${W.a}&dates=2026-01-02`)).body.state;
+  assert.deepEqual(day.issues.filter((i) => i.cartonId === carton.id).map((i) => [i.orderId, i.qty]), [["int-old", 2]]);
+  const removed = await post(outC, "remove-order", { id: "int-old", reason: "INT" }, { role: "outbound" });
+  assert.equal(removed.status, 400, JSON.stringify(removed.body));
+  assert.match(removed.body.error, /stock, packing or handover/);
+});
 await outC.context.close();
 await packers.context.close();
 

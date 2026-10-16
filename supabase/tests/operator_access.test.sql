@@ -959,7 +959,7 @@ select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'remove-order',
   jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.del('o2', 1))), '{issues}',
     (select coalesce(jsonb_agg(i), '[]') from jsonb_array_elements(pg_temp.state() -> 'issues') i where i ->> 'orderId' <> 'o2'))),
-  '42501', 'remove-order taking the stock issue with it (issues are outside its scope)');
+  '23514', 'removing an AWB that has a stock issue (20261018090000: it stays for traceability)');
 select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'import-delete',
   jsonb_set(pg_temp.orders(jsonb_build_array(pg_temp.del('o1', 1))), '{awbImports}', '[{"id":"imp1","deleted":true}]')),
   '42501', 'stock-out SV deletes an upload');
@@ -979,8 +979,8 @@ do $$ begin
   if exists (select 1 from public.operator_imports where id = 'imp1')
     or pg_temp.order_ids() <> '["o2"]'::jsonb
     or (select state ? 'orders' from public.operator_workspaces where site_id = 'site-a')
-    or not exists (select 1 from public.operator_workspaces w, jsonb_array_elements(w.state -> 'issues') i
-      where w.site_id = 'site-a' and i ->> 'id' = 'i-o2') then
+    or not exists (select 1 from public.operator_issues where id = 'i-o2' and order_id = 'o2' and qty = 1)
+    or (select state -> 'issues' from public.operator_workspaces where site_id = 'site-a') <> '[]'::jsonb then
     raise exception 'FAIL: expected the upload gone, only the issued AWB left and its stock issue kept'; end if;
 end $$;
 
@@ -1035,6 +1035,52 @@ do $$ begin
   if exists (select 1 from public.operator_orders)
     or exists (select 1 from public.operator_orders_for('10000000-0000-4000-8000-00000000000a', p_ids => '{o2}')) then
     raise exception 'FAIL: a non-member reads orders'; end if;
+end $$;
+rollback;
+
+-- 12c. Stock issues in their own table (20261018090000): the balance check counts the stored
+--      issues, issues need an existing carton, and nobody edits issues directly.
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
+  jsonb_set(pg_temp.state(), '{issues}', '[{"id":"i-x4","cartonId":"c1","orderId":"o2","qty":4,"pic":"SO","at":"2026-10-01T02:00:00Z"}]')),
+  'ok', 'issue the rest of the carton (4 of 5; 1 already stored)');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
+  jsonb_set(pg_temp.state(), '{issues}', '[{"id":"i-x5","cartonId":"c1","orderId":"o2","qty":1,"pic":"SO","at":"t"}]')),
+  '23514', 'issue below zero counting stored issues');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
+  jsonb_set(pg_temp.state(), '{issues}', '[{"id":"i-x6","cartonId":"nope","orderId":"o2","qty":1,"pic":"SO","at":"t"}]')),
+  '23514', 'issue from a carton that does not exist');
+select pg_temp.expect(pg_temp.commit_as(:SO, :A, 'issue',
+  jsonb_set(pg_temp.state(), '{issues}', '[{"id":"total:c1","cartonId":"c1","orderId":"o2","qty":1,"pic":"SO","at":"t"}]')),
+  '23514', 'an issue posing as a stored total');
+do $$ begin
+  if (select sum(qty) from public.operator_issues where carton_id = 'c1') <> 5
+    or (select state -> 'issues' from public.operator_workspaces where site_id = 'site-a') <> '[]'::jsonb
+    or (select issue_day from public.operator_issues where id = 'i-x4') <> '2026-10-01' then
+    raise exception 'FAIL: expected 5 issued from c1 in the table, none in the document'; end if;
+end $$;
+begin;
+select pg_temp.as_user(:SO);
+do $$ begin
+  if (select qty from public.operator_issue_totals('10000000-0000-4000-8000-00000000000a', '2026-10-02')
+      where carton_id = 'c1' and day is null) <> 4
+    or (select sum(qty) from public.operator_issue_totals('10000000-0000-4000-8000-00000000000a', '2026-10-02')
+      where carton_id = 'c1') <> 5
+    or (select count(*) from public.operator_issue_totals('10000000-0000-4000-8000-00000000000a', '2000-01-01')
+      where carton_id = 'c1' and day = '2026-10-01') <> 1
+    or (select count(*) from public.operator_issues_for('10000000-0000-4000-8000-00000000000a', '{o2}')) <> 2
+    or (select count(*) from public.operator_issues_for('10000000-0000-4000-8000-00000000000a', '{}', '{2026-10-06}')) <> 2
+    or (select count(*) from public.operator_issues_for('10000000-0000-4000-8000-00000000000a', '{}', '{2026-10-07}')) <> 0 then
+    raise exception 'FAIL: a member cannot read issue totals and order issues'; end if;
+end $$;
+select pg_temp.expect_denied($q$update public.operator_issues set qty = 1$q$, 'editing stock issues directly');
+select pg_temp.expect_denied('delete from public.operator_issues', 'deleting stock issues directly');
+rollback;
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000011');
+do $$ begin
+  if exists (select 1 from public.operator_issues)
+    or exists (select 1 from public.operator_issue_totals('10000000-0000-4000-8000-00000000000a', '2026-01-01')) then
+    raise exception 'FAIL: a non-member reads stock issues'; end if;
 end $$;
 rollback;
 
