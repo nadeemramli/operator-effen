@@ -696,6 +696,18 @@ export const orderHasActivity = (s: Pick<Draft, "issues">, o: Order) =>
   s.issues.some((i) => i.orderId === o.id);
 export const dailyOrders = (s: Draft, date: string) =>
   s.orders.filter((o) => o.date === date && orderReady(o));
+/**
+ * The courier an order travels with, for grouping: trimmed, and "" when none was recorded
+ * (manually entered or older orders). Imports always record one (awb-import couriers).
+ */
+export const orderCourier = (o: Pick<Order, "courier">) =>
+  (o.courier ?? "").trim();
+/**
+ * Packing groups: one per product, package, units per parcel and courier. Couriers stay
+ * apart because different teams pack them (for example Ninja Van and Shopee SPX), so each
+ * lane can be assigned to its own packers. Orders without a recorded courier form their
+ * own group (courier "") rather than being guessed from the sales channel.
+ */
 export function packageGroups(orders: Order[]) {
   const groups = new Map<
     string,
@@ -704,6 +716,10 @@ export function packageGroups(orders: Order[]) {
       product: string;
       package: string;
       perParcel: number;
+      /** "" when the orders have no recorded courier. */
+      courier: string;
+      /** Sales channels in the group, sorted. */
+      channels: string[];
       orders: Order[];
     }
   >();
@@ -712,22 +728,32 @@ export function packageGroups(orders: Order[]) {
   )) {
     const product = orderLines(o)[0].product;
     const perParcel = orderLines(o).reduce((n, l) => n + l.expected, 0);
-    const key = JSON.stringify([product, o.package, perParcel]);
+    const courier = orderCourier(o);
+    const key = JSON.stringify([product, o.package, perParcel, courier]);
     const group = groups.get(key) ?? {
       key,
       product,
       package: o.package,
       perParcel,
+      courier,
+      channels: [],
       orders: [],
     };
     group.orders.push(o);
+    if (o.channel && !group.channels.includes(o.channel)) {
+      group.channels.push(o.channel);
+      group.channels.sort((a, b) => a.localeCompare(b));
+    }
     groups.set(key, group);
   }
   return [...groups.values()].sort(
     (a, b) =>
       a.product.localeCompare(b.product) ||
       a.package.localeCompare(b.package) ||
-      a.perParcel - b.perParcel,
+      a.perParcel - b.perParcel ||
+      // Recorded couriers first, then orders without one.
+      Number(!a.courier) - Number(!b.courier) ||
+      a.courier.localeCompare(b.courier),
   );
 }
 export const demandFingerprint = (s: Draft, date: string, productId: string) =>
@@ -2200,7 +2226,10 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const group = packageGroups(dailyOrders(s, date)).find(
         (g) => g.key === key,
       );
-      if (!group) throw new Error("This package group is no longer available.");
+      if (!group)
+        throw new Error(
+          "This package group is no longer available. Refresh the day's packages and try again.",
+        );
       const tally = dailyTally(s, date).find(
         (t) => t.product === group.product,
       )!;
@@ -2212,7 +2241,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         .filter((o) => !o.dispatched && o.actual === null)
         .sort((a, b) => a.id.localeCompare(b.id));
       if (!orders.length)
-        throw new Error("No unpacked parcels remain in this package.");
+        throw new Error(
+          "No unpacked parcels remain in this package and courier group.",
+        );
       if (
         !Array.isArray(v.packers) ||
         !v.packers.length ||
@@ -2229,7 +2260,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       });
       if (targets.reduce((n, t) => n + t.count, 0) > orders.length)
         throw new Error(
-          "Assigned parcels exceed the remaining package orders.",
+          "Assigned parcels exceed the remaining parcels in this package and courier group.",
         );
       const assignments = new Map<string, string>();
       // Keep current assignments up to each quota, then allocate unassigned parcels.
@@ -2261,7 +2292,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         log(
           o.id,
           "Package packer assignment",
-          `${group.package} · ${previous} → ${next ?? "Unassigned"} · by ${pic} · ${str("reason", false)}`,
+          `${group.package} · ${group.courier || "No courier recorded"} · ${previous} → ${next ?? "Unassigned"} · by ${pic} · ${str("reason", false)}`,
         );
       }
       break;

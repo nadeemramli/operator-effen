@@ -279,3 +279,96 @@ test("direct legacy commands cannot assign, issue or pack a combined brand parce
     /Separate brands/,
   );
 });
+test("couriers form separate package groups; assigning the Ninja Van group leaves SPX parcels alone", () => {
+  let s = fixture();
+  s.orders.forEach((o, i) =>
+    i < 12
+      ? Object.assign(o, { courier: "Ninja Van", channel: "Luxana" })
+      : Object.assign(o, { courier: "SPX", channel: i % 2 ? "Shopee" : "TikTok" }),
+  );
+  const groups = packageGroups(s.orders);
+  assert.deepEqual(
+    groups.map((g) => [g.package, g.perParcel, g.courier, g.orders.length]),
+    [
+      ["Package A", 4, "Ninja Van", 12],
+      ["Package A", 4, "SPX", 8],
+    ],
+  );
+  assert.deepEqual(groups[0].channels, ["Luxana"]);
+  assert.deepEqual(groups[1].channels, ["Shopee", "TikTok"]);
+  assert.notEqual(groups[0].key, groups[1].key);
+  const ninja = {
+    date,
+    group: groups[0].key,
+    packers: ["Sample Packer A", "Sample Packer B"],
+    allocation_0: 6,
+    allocation_1: 6,
+    pic: "Supervisor",
+  };
+  assert.throws(
+    () => run(s, "assign-package", { ...ninja, allocation_1: 7 }),
+    /exceed/,
+  );
+  s = run(s, "assign-package", ninja);
+  for (const o of s.orders)
+    if (o.courier === "Ninja Van") assert.ok(o.assignedPacker);
+    else assert.equal(o.assignedPacker, undefined);
+  assert.ok(
+    s.events.some(
+      (e) =>
+        e.action === "Package packer assignment" &&
+        e.detail.includes("Ninja Van"),
+    ),
+  );
+  // The SPX lane goes to its own team without disturbing the Ninja Van assignments.
+  const before = s.orders
+    .filter((o) => o.courier === "Ninja Van")
+    .map((o) => o.assignedPacker);
+  s = run(s, "assign-package", {
+    ...ninja,
+    group: packageGroups(s.orders)[1].key,
+    packers: ["Sample Packer B"],
+    allocation_0: 8,
+  });
+  assert.deepEqual(
+    s.orders.filter((o) => o.courier === "Ninja Van").map((o) => o.assignedPacker),
+    before,
+  );
+  assert.ok(
+    s.orders
+      .filter((o) => o.courier === "SPX")
+      .every((o) => o.assignedPacker === "Sample Packer B"),
+  );
+});
+test("orders without a recorded courier share one group, listed after recorded couriers", () => {
+  let s = fixture();
+  s.orders.forEach((o, i) => {
+    if (i < 5) o.courier = "Other";
+    else if (i < 10) o.courier = "J&T";
+    else if (i < 14) delete o.courier;
+    else if (i < 17) o.courier = "";
+    else o.courier = "  ";
+  });
+  const groups = packageGroups(s.orders);
+  assert.deepEqual(
+    groups.map((g) => [g.courier, g.orders.length]),
+    [
+      ["J&T", 5],
+      ["Other", 5],
+      ["", 10],
+    ],
+  );
+  // Assignment by key still works for the fallback group and touches only its parcels.
+  s = run(s, "assign-package", {
+    date,
+    group: groups[2].key,
+    packers: ["Sample Packer A"],
+    allocation_0: 10,
+    pic: "Supervisor",
+  });
+  for (const o of s.orders)
+    assert.equal(
+      o.assignedPacker,
+      (o.courier ?? "").trim() ? undefined : "Sample Packer A",
+    );
+});

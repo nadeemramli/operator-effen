@@ -38,6 +38,25 @@ import {
   type Role,
 } from "@/lib/draft";
 
+/** A package group's courier lane; groups without a recorded courier say so. */
+const courierName = (lang: Lang, courier: string) =>
+  courier || tr(lang, "No courier recorded", "Kurier tidak direkod");
+/** Courier first (it decides the packing team), then the sales channels in the group. */
+function PackageCourier({
+  lang,
+  group,
+}: {
+  lang: Lang;
+  group: { courier: string; channels: string[] };
+}) {
+  return (
+    <small className="package-courier">
+      <b>{courierName(lang, group.courier)}</b>
+      {group.channels.length > 0 && <> · {group.channels.join(", ")}</>}
+    </small>
+  );
+}
+
 type Props = {
   state: Draft;
   lang: Lang;
@@ -199,8 +218,8 @@ export function OrderWorkspace({
         )}{" "}
         ·{" "}
         {t(
-          "Midnight cutoff. Package rows show the full group, including when searching for an AWB. Carry over unfinished parcels below.",
-          "Pertukaran hari pada tengah malam. Baris pakej memaparkan seluruh kumpulan walaupun mencari AWB. Pindahkan bungkusan tertunggak di bawah.",
+          "Midnight cutoff. Package rows are split by courier and show the full group, including when searching for an AWB. Carry over unfinished parcels below.",
+          "Pertukaran hari pada tengah malam. Baris pakej diasingkan mengikut kurier dan memaparkan seluruh kumpulan walaupun mencari AWB. Pindahkan bungkusan tertunggak di bawah.",
         )}
       </div>
       {mode === "tally" && (
@@ -638,6 +657,7 @@ export function OrderWorkspace({
                           <tr key={g.key}>
                             <td>
                               <strong>{g.package}</strong>
+                              <PackageCourier lang={lang} group={g} />
                             </td>
                             <td>
                               {g.perParcel} {units(lang, p.unit)}
@@ -696,7 +716,7 @@ export function OrderWorkspace({
                                         "Assign package to packers",
                                         "Tugaskan pakej kepada pembungkus",
                                       ),
-                                      description: `${p.name} · ${g.package} · ${g.perParcel} ${units(lang, p.unit)} ${t("per parcel", "setiap bungkusan")} · ${date}`,
+                                      description: `${p.name} · ${g.package} · ${t("Courier", "Kurier")}: ${courierName(lang, g.courier)}${g.channels.length ? ` (${g.channels.join(", ")})` : ""} · ${g.perParcel} ${units(lang, p.unit)} ${t("per parcel", "setiap bungkusan")} · ${date}`,
                                       summary: [
                                         {
                                           label: t(
@@ -1307,6 +1327,7 @@ export function PackerPackageSummary({
                       <tr key={g.key}>
                         <td>
                           {g.package}
+                          <PackageCourier lang={lang} group={g} />
                           <small>
                             {g.perParcel} {units(lang, p.unit)}{" "}
                             {t("per parcel", "setiap bungkusan")}
