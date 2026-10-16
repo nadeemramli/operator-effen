@@ -29,6 +29,7 @@ import {
   couriers,
   defaultFor,
   importLimit,
+  NO_ORDER_REF_NOTE,
   OCR_NOTE,
   pageLimit,
   parseImport,
@@ -1261,7 +1262,12 @@ export function AwbIntake({
                                   "Read by OCR — compare with the PDF.",
                                   "Dibaca oleh OCR — bandingkan dengan PDF.",
                                 )
-                              : n,
+                              : n === NO_ORDER_REF_NOTE
+                                ? t(
+                                    "No order reference printed; the AWB stands in as the reference.",
+                                    "Tiada rujukan pesanan dicetak; AWB digunakan sebagai rujukan.",
+                                  )
+                                : n,
                           )
                           .join(" ")}
                       </p>

@@ -260,8 +260,9 @@ export function skuAliasProblem(raw: string): string | null {
 }
 const whole = (n: unknown, min = 1): n is number =>
   typeof n === "number" && Number.isSafeInteger(n) && n >= min && n <= 1000000;
+// Ninja Van orders keyed in by hand print a "Reference" instead of an order number.
 const refPattern =
-  /(?:Order\s*(?:ID|No\.?|Number)?\s*[:#]|O\/N\s*:)\s*#?\s*([A-Z0-9-]+)/gi;
+  /(?:Order\s*(?:ID|No\.?|Number)?\s*[:#]|O\/N\s*:|Ref(?:erence)?\s*(?:No\.?|Number)?\s*[:#])\s*#?\s*([A-Z0-9-]+)/gi;
 
 /**
  * The references a page's text carries: tracking numbers (AWBs), order references and
@@ -276,8 +277,9 @@ export function detectReferences(raw: string, aliases?: readonly SkuAlias[]) {
   const tracking = [
     ...new Set(
       upper.match(
-        // SPX also prints its number as MY + digits + a letter (MY263140741048F).
-        /\b(?:NVMY[A-Z0-9]{7,30}|SPXMY[A-Z0-9]{7,25}|MY\d{10,14}[A-Z]|SG\d{9,18}[A-Z]?|MYMP[A-Z0-9]{7,25})\b/g,
+        // SPX also prints its number as MY + digits, with or without a trailing letter
+        // (MY263140741048F, MY2660933987983).
+        /\b(?:NVMY[A-Z0-9]{7,30}|SPXMY[A-Z0-9]{7,25}|MY\d{10,14}[A-Z]?|SG\d{9,18}[A-Z]?|MYMP[A-Z0-9]{7,25})\b/g,
       ) ?? [],
     ),
   ];
@@ -381,6 +383,8 @@ export const isLabelPage = (
   return !!(tracking.length || orderRefs.length || knownSkus.length);
 };
 export const OCR_NOTE = "Read by OCR — compare with the PDF";
+export const NO_ORDER_REF_NOTE =
+  "No order reference printed; the AWB stands in as the reference";
 
 export function parsePages(
   pages: ParsedPage[],
@@ -528,12 +532,17 @@ export function parseImport(
       warnings.push(
         "Check gift contents; add any gift as a separate supported item before release",
       );
+    // A Ninja Van order keyed in by hand prints no order reference at all; its AWB is
+    // the only reference the parcel has, so it stands in (noted, not flagged).
+    const awbAsRef =
+      courier === "Ninja Van" && tracking.length === 1 && !orderRefs.length;
+    if (awbAsRef) notes.push(NO_ORDER_REF_NOTE);
     const refs = tracking.length ? tracking : [""];
     for (const awb of refs) {
       const row: ImportRow = {
         id: crypto.randomUUID(),
         awb,
-        orderRef: orderRefs.length === 1 ? orderRefs[0] : "",
+        orderRef: orderRefs.length === 1 ? orderRefs[0] : awbAsRef ? awb : "",
         channel: detectedChannel,
         store,
         courier,

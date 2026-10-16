@@ -396,3 +396,43 @@ test("a TikTok label's bare tracking number is found by its repeats; the courier
   // A long number printed once (a phone or order number) is not a tracking number.
   assert.deepEqual(detectReferences("Phone 601160912301\nOrder ID: 581234567890123456").tracking, []);
 });
+
+test("SPX tracking printed as MY + 13 digits with no letter is read as the AWB", () => {
+  const rows = parsePages(
+    [page("Shopee SPX\nMY2660933987983\nSPX Express Website\nShip By Date: 16-10-2026\nWeight (kg): 3.944000\nOrder ID: 261016QB741FC8\nSender Details (Pengirim)\nPhone: 601160912301\nPostcode:47150", 1)],
+    "Shopee",
+    "",
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].awb, "MY2660933987983");
+  assert.equal(rows[0].courier, "SPX");
+  assert.equal(rows[0].orderRef, "261016QB741FC8");
+  assert.ok(!rowProblems(rows[0]).some((p) => /AWB|Order reference/.test(p)));
+});
+
+test("a Ninja Van order keyed in by hand: Reference is the order reference, or the AWB stands in", () => {
+  const withRef = parsePages(
+    [page("Ninja Van\nNVMYEFISB000012797\nReference: LUX-7781\nProducts:\n1x Cavernosil [cave04]", 1)],
+    "Luxana",
+    "",
+  );
+  assert.equal(withRef[0].orderRef, "LUX-7781");
+  assert.deepEqual(rowProblems(withRef[0]), []);
+  const bare = parsePages(
+    [page("Ninja Van\nNVMYEFISB000012804\nProducts:\n1x Cavernosil [cave04]", 1)],
+    "Luxana",
+    "",
+  );
+  assert.equal(bare[0].awb, "NVMYEFISB000012804");
+  assert.equal(bare[0].orderRef, "NVMYEFISB000012804");
+  assert.ok(bare[0].notes.includes("No order reference printed; the AWB stands in as the reference"));
+  assert.deepEqual(rowProblems(bare[0]), []);
+  // Two labels on one page still need review: the AWB cannot stand in for two parcels.
+  const two = parsePages(
+    [page("Ninja Van\nNVMYEFISB000012797\nNVMYEFISB000012799\nProducts:\n1x Cavernosil [cave04]", 1)],
+    "Luxana",
+    "",
+  );
+  assert.equal(two.length, 2);
+  assert.ok(two.every((r) => r.orderRef === ""));
+});
