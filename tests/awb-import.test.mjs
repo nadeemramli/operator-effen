@@ -436,3 +436,23 @@ test("a Ninja Van order keyed in by hand: Reference is the order reference, or t
   assert.equal(two.length, 2);
   assert.ok(two.every((r) => r.orderRef === ""));
 });
+
+test("an SPX Singapore tracking number (SPXSG…) is read like an SPX Malaysia one", () => {
+  const { rows } = parseImport(
+    [
+      page(
+        "Shopee SPX\nSPXSG012345678A\nOrder ID: 2510160SGTEST1\nPacking List\n1 Cavernosil cave04sg 3 Free 1 1 442.00 442.00",
+      ),
+    ],
+    "Shopee",
+    "",
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].awb, "SPXSG012345678A");
+  assert.equal(rows[0].courier, "SPX");
+  assert.equal(rows[0].orderRef, "2510160SGTEST1");
+  assert.equal(rows[0].lines.length, 1);
+  assert.equal(rows[0].lines[0].sku, "cave04sg");
+  assert.equal(rows[0].lines[0].units, 4);
+  assert.deepEqual(rowProblems(rows[0]), []);
+});

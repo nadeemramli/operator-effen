@@ -166,15 +166,29 @@ export type ParsedPage = {
 };
 export const normalizeAwb = (value: string) =>
   value.trim().toUpperCase().replace(/\s+/g, "");
+/** The market a package is sold in: Malaysia, or Singapore (the Luxana SG website). */
+export type SkuMarket = "MY" | "SG";
+export const skuMarkets: readonly SkuMarket[] = ["MY", "SG"];
 /**
- * A package SKU the office admin mapped in the app (Package SKUs), for SKUs the built-in
- * `packageDefaults` do not know yet. Kept for good: a mapping no longer in use is retired,
- * never deleted, so the audit trail and earlier imports still explain themselves.
+ * A record in the site's package SKU catalogue (Package SKUs), kept in `Draft.skuAliases`.
+ * Either a SKU the built-in `packageDefaults` do not know (origin "custom"), or the office
+ * admin's override of a built-in SKU (origin "built-in": same SKU, edited or retired). A
+ * record is kept for good: a SKU no longer in use is retired, never deleted, so the audit
+ * trail and earlier imports still explain themselves.
  */
 export type SkuAlias = {
   id: string;
-  /** Lower-case and trimmed; unique among mappings and never a built-in SKU. */
+  /** Lower-case and trimmed; unique among the records. */
   sku: string;
+  /**
+   * Display name ("Cavernosil Pakej 3 Free 1"). Absent on records saved before the
+   * catalogue existed; read through `packageCatalog`, which fills in the default.
+   */
+  name?: string;
+  /** Absent on records saved before the catalogue existed; defaulted from the SKU. */
+  market?: SkuMarket;
+  /** Whether the record overrides a built-in SKU; the catalogue derives it from the SKU. */
+  origin?: "built-in" | "custom";
   product: string;
   units: number;
   canonical: string;
@@ -190,40 +204,230 @@ export type SkuAlias = {
     recordedBy?: Recorder;
   }[];
 };
-/** Mappings one site may hold. */
+/** Catalogue records one site may hold (custom SKUs and built-in overrides together). */
 export const skuAliasLimit = 500;
+const productLabels: Record<string, string> = {
+  cav: "Cavernosil",
+  gly: "Glycoxil",
+  lip: "Lipidri",
+  syn: "Synovil",
+  nur: "Nurokids",
+  ady: "Adypocide",
+};
+const normSku = (sku: string) => sku.trim().toLowerCase();
+const seedFor = (sku: string) =>
+  packageDefaults.find((p) => p.sku === normSku(sku));
 /**
- * The package a SKU stands for: the built-in defaults first, then the site's active
- * mapped SKUs (`Draft.skuAliases`). A mapping can never shadow a built-in SKU.
+ * The market a package is sold in when no one chose it: Singapore when its package code
+ * carries an SG segment (CAV-SG-PK1, SG-PK4) or its SKU ends in "sg" (with an optional
+ * number, as in adiposg2) or has an "sg" part (lip-sg-8); otherwise Malaysia.
+ */
+export function marketFor(sku: string, canonical = ""): SkuMarket {
+  const s = normSku(sku);
+  return /(?:^|[-_ ])SG(?:[-_ ]|$)/i.test(canonical.trim()) ||
+    /sg\d*$/.test(s) ||
+    /(?:^|[-_])sg(?:[-_]|$)/.test(s)
+    ? "SG"
+    : "MY";
+}
+/**
+ * The display name a package gets when no one named it: the product, "SG" for Singapore
+ * and the package code without its product and market parts. A code that adds up to the
+ * units reads as the shop names it: PK31 for 4 units is "Pakej 3 Free 1", PK2 for 2 units
+ * is "Pakej 2". Without a package code of its own, "<Product> · <sku>".
+ */
+export function defaultPackageName(entry: {
+  sku: string;
+  product: string;
+  units: number;
+  canonical: string;
+  market?: SkuMarket;
+}): string {
+  const product = productLabels[entry.product] ?? entry.product.toUpperCase();
+  const sku = normSku(entry.sku);
+  const canonical = entry.canonical.trim();
+  if (!canonical || canonical.toLowerCase() === sku) return `${product} · ${sku}`;
+  const market = entry.market ?? marketFor(sku, canonical);
+  const code = canonical
+    .toUpperCase()
+    .split("-")
+    .filter((part, i, all) => !(i === 0 && all.length > 1) && part !== "MY" && part !== "SG")
+    .join("-");
+  const pk = code.match(/^PK(\d)(\d)$/);
+  const single = code.match(/^PK(\d+)([A-Z]*)$/);
+  const pakej =
+    pk && Number(pk[1]) + Number(pk[2]) === entry.units
+      ? `Pakej ${pk[1]} Free ${pk[2]}`
+      : single && Number(single[1]) === entry.units
+        ? `Pakej ${single[1]}${single[2]}`
+        : code || canonical;
+  return `${product}${market === "SG" ? " SG" : ""} ${pakej}`;
+}
+/** One SKU in the merged package catalogue: the built-in seed with the site's records on top. */
+export type CatalogEntry = {
+  sku: string;
+  name: string;
+  product: string;
+  market: SkuMarket;
+  units: number;
+  canonical: string;
+  active: boolean;
+  /** "built-in" when the SKU is in `packageDefaults` (edited or not), else "custom". */
+  origin: "built-in" | "custom";
+  /** The built-in starting values, for a built-in SKU. */
+  seed?: PackageDefault;
+  /** The site's record (custom SKU, or override of a built-in), when there is one. */
+  id?: string;
+  /** The record's version; 0 for a built-in SKU nobody has changed yet. */
+  version: number;
+  history: SkuAlias["history"];
+  createdAt?: string;
+  updatedAt?: string;
+};
+/**
+ * The site's record for a SKU: the active one first (records are unique per SKU, but a
+ * stray duplicate must never hide an active SKU), else the most recently updated.
+ */
+function recordFor(sku: string, aliases?: readonly SkuAlias[]) {
+  const key = normSku(sku);
+  let found: SkuAlias | undefined;
+  for (const a of aliases ?? []) {
+    if (a.sku !== key) continue;
+    if (
+      !found ||
+      (a.active && !found.active) ||
+      (a.active === found.active && a.updatedAt > found.updatedAt)
+    )
+      found = a;
+  }
+  return found;
+}
+function entryFrom(
+  sku: string,
+  seed: PackageDefault | undefined,
+  record: SkuAlias | undefined,
+): CatalogEntry {
+  const base = record ?? seed!;
+  const market = record?.market ?? marketFor(sku, base.canonical);
+  return {
+    sku,
+    name:
+      record?.name?.trim() ||
+      defaultPackageName({ ...base, sku, market }),
+    product: base.product,
+    market,
+    units: base.units,
+    canonical: base.canonical,
+    active: record ? record.active : true,
+    origin: seed ? "built-in" : "custom",
+    ...(seed ? { seed } : {}),
+    ...(record
+      ? {
+          id: record.id,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        }
+      : {}),
+    version: record?.version ?? 0,
+    history: record?.history ?? [],
+  };
+}
+/**
+ * The package SKU catalogue: exactly one entry per SKU. Built-in SKUs (`packageDefaults`,
+ * the seed) come first in seed order; a site record with the same SKU overrides the
+ * built-in (edited values, or retired). Then the site's own SKUs, by SKU.
+ */
+export function packageCatalog(
+  source?: readonly SkuAlias[] | { skuAliases?: readonly SkuAlias[] },
+): CatalogEntry[] {
+  const aliases = Array.isArray(source)
+    ? (source as readonly SkuAlias[])
+    : ((source as { skuAliases?: readonly SkuAlias[] } | undefined)
+        ?.skuAliases ?? []);
+  const entries = packageDefaults.map((seed) =>
+    entryFrom(seed.sku, seed, recordFor(seed.sku, aliases)),
+  );
+  const seen = new Set(packageDefaults.map((p) => p.sku));
+  const custom = [...new Set(aliases.map((a) => a.sku))]
+    .filter((sku) => !seen.has(sku))
+    .sort((a, b) => a.localeCompare(b));
+  for (const sku of custom)
+    entries.push(entryFrom(sku, undefined, recordFor(sku, aliases)));
+  return entries;
+}
+/** A catalogue section: one product in one market ("Cavernosil", "Cavernosil SG"). */
+export type CatalogSection = {
+  key: string;
+  product: string;
+  market: SkuMarket;
+  title: string;
+  entries: CatalogEntry[];
+};
+/** Catalogue entries grouped by product and market, in product order, Malaysia first. */
+export function catalogSections(entries: readonly CatalogEntry[]): CatalogSection[] {
+  const sections = new Map<string, CatalogSection>();
+  for (const e of entries) {
+    const key = `${e.product}:${e.market}`;
+    let section = sections.get(key);
+    if (!section) {
+      const name = productLabels[e.product] ?? e.product.toUpperCase();
+      section = {
+        key,
+        product: e.product,
+        market: e.market,
+        title: e.market === "SG" ? `${name} SG` : name,
+        entries: [],
+      };
+      sections.set(key, section);
+    }
+    section.entries.push(e);
+  }
+  const rank = (s: CatalogSection) => {
+    const i = productIds.indexOf(s.product);
+    return (i < 0 ? productIds.length : i) * 2 + (s.market === "SG" ? 1 : 0);
+  };
+  return [...sections.values()].sort(
+    (a, b) => rank(a) - rank(b) || a.product.localeCompare(b.product),
+  );
+}
+/**
+ * The package a SKU stands for, through the catalogue: the site's record for the SKU when
+ * there is one (active: its values; retired: nothing, even for a built-in SKU), otherwise
+ * the built-in default. Retired and unknown SKUs give undefined.
  */
 export function defaultFor(
   sku: string,
   aliases?: readonly SkuAlias[],
 ): PackageDefault | undefined {
-  const key = sku.trim().toLowerCase();
-  const builtIn = packageDefaults.find((p) => p.sku === key);
-  if (builtIn || !aliases?.length) return builtIn;
-  const alias = aliases.find((a) => a.active && a.sku === key);
-  return alias
+  const record = recordFor(sku, aliases);
+  if (!record) return seedFor(sku);
+  return record.active
     ? {
-        sku: alias.sku,
-        product: alias.product,
-        units: alias.units,
-        canonical: alias.canonical,
+        sku: record.sku,
+        product: record.product,
+        units: record.units,
+        canonical: record.canonical,
       }
     : undefined;
 }
+/** Whether the catalogue knows a SKU but it is retired (it then resolves to nothing). */
+export const isRetiredSku = (sku: string, aliases?: readonly SkuAlias[]) =>
+  recordFor(sku, aliases)?.active === false;
 const skuShape =
   /\b[a-z][a-z0-9_-]*\d[a-z0-9_-]*\b|\b[39](?:botol|free3)[a-z]*\b/gi;
 /**
  * SKU candidates in a text, in reading order: the built-in SKU shapes plus the exact text
- * of every active mapped SKU (a mapped SKU need not look like a built-in one).
+ * of every SKU the site's catalogue records (a custom SKU need not look like a built-in
+ * one; a retired one is still found, so the label shows it for review).
  */
 function skuTokens(text: string, aliases?: readonly SkuAlias[]) {
-  const mapped = (aliases ?? [])
-    .filter((a) => a.active && skuAliasProblem(a.sku) === null)
-    .map((a) => a.sku)
-    .sort((a, b) => b.length - a.length);
+  const mapped = [
+    ...new Set(
+      (aliases ?? [])
+        .filter((a) => skuAliasProblem(a.sku) === null)
+        .map((a) => a.sku),
+    ),
+  ].sort((a, b) => b.length - a.length);
   const pattern = mapped.length
     ? new RegExp(`\\b(?:${mapped.join("|")})\\b|${skuShape.source}`, "gi")
     : skuShape;
@@ -279,7 +483,7 @@ export function detectReferences(raw: string, aliases?: readonly SkuAlias[]) {
       upper.match(
         // SPX also prints its number as MY + digits, with or without a trailing letter
         // (MY263140741048F, MY2660933987983).
-        /\b(?:NVMY[A-Z0-9]{7,30}|SPXMY[A-Z0-9]{7,25}|MY\d{10,14}[A-Z]?|SG\d{9,18}[A-Z]?|MYMP[A-Z0-9]{7,25})\b/g,
+        /\b(?:NVMY[A-Z0-9]{7,30}|SPXMY[A-Z0-9]{7,25}|SPXSG[A-Z0-9]{7,25}|MY\d{10,14}[A-Z]?|SG\d{9,18}[A-Z]?|MYMP[A-Z0-9]{7,25})\b/g,
       ) ?? [],
     ),
   ];
@@ -396,7 +600,8 @@ export function parsePages(
 }
 /**
  * Label rows from the pages, plus the pages skipped as non-label (cover, title, …).
- * `aliases` are the site's mapped package SKUs, resolved after the built-in defaults.
+ * `aliases` are the site's package SKU catalogue records (`Draft.skuAliases`), resolved
+ * through the catalogue (see `defaultFor`).
  */
 export function parseImport(
   pages: ParsedPage[],
@@ -441,10 +646,16 @@ export function parseImport(
       .split("\n")
       .map((x) => x.trim())
       .filter(Boolean);
-    // Only known aliases or explicit SKU fields; product names alone never choose a recipe.
+    // Only catalogue SKUs or explicit SKU fields; product names alone never choose a recipe.
+    // A retired catalogue SKU stays on the label as a line without a product, so the
+    // review shows it as an unknown SKU instead of silently dropping it.
     const tokens = skuTokens(text, aliases);
     const skus = [
-      ...new Set(tokens.filter((s) => lookup(s)).map((s) => s.toLowerCase())),
+      ...new Set(
+        tokens
+          .filter((s) => lookup(s) || isRetiredSku(s, aliases))
+          .map((s) => s.toLowerCase()),
+      ),
     ];
     const declared = [
       ...text.matchAll(/(?:Seller\s+SKU|SKU)\s*:\s*([a-z0-9_-]+)/gi),
@@ -918,10 +1129,12 @@ export function applyImportCommand(
   return `Handoff confirmed · ${ready.length} new AWBs · no print, packing or stock movement inferred`;
 }
 /**
- * Package SKU mappings: `sku-alias-save` (a new mapping without `id`, an edit with `id`),
- * `sku-alias-retire` and `sku-alias-reactivate`. A mapping is kept for good (retired, never
- * deleted) with its own history; edits and status changes need a reason. Returns the
- * audit entry for the caller to record.
+ * The package SKU catalogue: `sku-alias-save` (a new SKU, or a change to a catalogue entry:
+ * a custom SKU with its `id`, or a built-in SKU, which creates or updates its override
+ * record), `sku-alias-retire` and `sku-alias-reactivate` (by `id`, or by `sku` for a
+ * built-in SKU nobody has changed yet). A record is kept for good (retired, never deleted)
+ * with its own history; changing an existing entry, built-in or custom, needs a reason.
+ * Returns the audit entry for the caller to record.
  */
 export function applySkuAliasCommand(
   state: Draft,
@@ -939,36 +1152,57 @@ export function applySkuAliasCommand(
     if (value.length > 500) throw new Error("Use a shorter reason.");
     return value;
   };
-  const builtIn = (sku: string) => packageDefaults.find((p) => p.sku === sku);
-  const describe = (a: SkuAlias) =>
-    `${a.sku} · ${a.product.toUpperCase()} · ${a.units} per package · ${a.canonical}`;
+  const stale = () =>
+    new Error(
+      "This SKU was changed by someone else after you opened it. Review it and save again.",
+    );
+  const expected = () => {
+    const raw = input.expectedVersion;
+    return raw === undefined || raw === null || raw === "" ? null : Number(raw);
+  };
+  const describe = (e: CatalogEntry | SkuAlias) =>
+    `${e.sku} · ${"name" in e && e.name ? e.name + " · " : ""}${e.product.toUpperCase()} ${e.market ?? marketFor(e.sku, e.canonical)} · ${e.units} per package · ${e.canonical}`;
+  const entryOf = (record: SkuAlias) =>
+    entryFrom(record.sku, seedFor(record.sku), record);
   const find = () => {
     const alias = aliases.find((a) => a.id === text("id"));
     if (!alias)
       throw new Error(
-        "This SKU mapping could not be found. Refresh and try again.",
+        "This package SKU could not be found. Refresh and try again.",
       );
-    const raw = input.expectedVersion;
-    if (
-      raw !== undefined &&
-      raw !== null &&
-      raw !== "" &&
-      Number(raw) !== alias.version
-    )
-      throw new Error(
-        "This SKU mapping was changed by someone else after you opened it. Review it and save again.",
-      );
+    const version = expected();
+    if (version !== null && version !== alias.version) throw stale();
     return alias;
+  };
+  const room = () => {
+    if (aliases.length >= skuAliasLimit)
+      throw new Error(
+        `This site already has ${skuAliasLimit} package SKU records. Retire unused ones or ask for the SKU to become a built-in default.`,
+      );
+  };
+  /** A new override record for a built-in SKU, starting from its catalogue values. */
+  const override = (seed: PackageDefault): SkuAlias => {
+    const start = entryFrom(seed.sku, seed, undefined);
+    return {
+      id: crypto.randomUUID(),
+      sku: seed.sku,
+      name: start.name,
+      market: start.market,
+      origin: "built-in",
+      product: seed.product,
+      units: seed.units,
+      canonical: seed.canonical,
+      active: true,
+      createdAt: at,
+      updatedAt: at,
+      version: 0,
+      history: [],
+    };
   };
   if (type === "sku-alias-save") {
     const sku = text("sku").toLowerCase();
     const problem = skuAliasProblem(sku);
     if (problem) throw new Error(problem);
-    const fixed = builtIn(sku);
-    if (fixed)
-      throw new Error(
-        `${sku} is a built-in package SKU (${fixed.canonical}, ${fixed.units} per package) and is already recognised.`,
-      );
     const product = text("product");
     if (!productIds.includes(product))
       throw new Error("Choose the product this SKU packs.");
@@ -980,23 +1214,57 @@ export function applySkuAliasCommand(
       );
     const label = text("canonical");
     if (label.length > 60) throw new Error("Use a shorter package label.");
-    const canonical = label || sku.toUpperCase();
-    const editing = text("id") ? find() : undefined;
+    const rawName = text("name").replace(/\s+/g, " ");
+    if (rawName.length > 80) throw new Error("Use a shorter display name.");
+    const rawMarket = text("market").toUpperCase();
+    if (rawMarket && !skuMarkets.includes(rawMarket as SkuMarket))
+      throw new Error("Choose the market: MY or SG.");
+    let editing = text("id") ? find() : undefined;
+    const seed = seedFor(editing?.sku ?? sku);
+    if (editing && editing.sku !== sku) {
+      // The SKU is what a label prints, so a built-in SKU keeps it; a custom SKU cannot
+      // take a built-in one (that SKU has its own entry to edit).
+      if (seedFor(editing.sku))
+        throw new Error(
+          `${editing.sku} is a built-in package SKU and keeps its SKU. Add the new SKU as its own package and retire ${editing.sku} when labels stop printing it.`,
+        );
+      if (seedFor(sku))
+        throw new Error(
+          `${sku} is a built-in package SKU. Edit it in its own row in Package SKUs.`,
+        );
+    }
     const clash = aliases.find((a) => a.sku === sku && a.id !== editing?.id);
-    if (clash)
+    if (clash) {
+      if (!editing && seed && expected() === 0) throw stale();
       throw new Error(
         clash.active
-          ? `${sku} is already mapped. Edit that mapping in Package SKUs.`
-          : `${sku} has a retired mapping. Reactivate or edit it in Package SKUs.`,
+          ? `${sku} is already in the catalogue. Edit it in Package SKUs.`
+          : `${sku} is retired in the catalogue. Reactivate or edit it in Package SKUs.`,
       );
-    if (!editing) {
-      if (aliases.length >= skuAliasLimit)
-        throw new Error(
-          `This site already has ${skuAliasLimit} package SKU mappings. Retire unused ones or ask for the SKU to become a built-in default.`,
-        );
+    }
+    const canonical = label || seed?.canonical || sku.toUpperCase();
+    // A change to an existing entry: a custom SKU, an overridden built-in, or a built-in
+    // nobody has changed yet (its override record is made below).
+    const before = editing
+      ? entryOf(editing)
+      : seed
+        ? entryFrom(seed.sku, seed, undefined)
+        : undefined;
+    // Left blank, the market and name keep what the entry has, or are derived for a new SKU.
+    const market =
+      (rawMarket as SkuMarket) || before?.market || marketFor(sku, canonical);
+    const name =
+      rawName ||
+      before?.name ||
+      defaultPackageName({ sku, product, units, canonical, market });
+    if (!before) {
+      room();
       const alias: SkuAlias = {
         id: crypto.randomUUID(),
         sku,
+        name,
+        market,
+        origin: "custom",
         product,
         units,
         canonical,
@@ -1010,6 +1278,8 @@ export function applySkuAliasCommand(
             at,
             changes: {
               sku: ["", sku],
+              name: ["", name],
+              market: ["", market],
               product: ["", product],
               units: ["", String(units)],
               canonical: ["", canonical],
@@ -1021,19 +1291,33 @@ export function applySkuAliasCommand(
       aliases.push(alias);
       return {
         entity: "sku-alias:" + alias.id,
-        action: "Package SKU mapped",
+        action: "Package SKU added",
         detail: describe(alias),
       };
     }
     const changes: Record<string, [string, string]> = {};
-    const next = { sku, product, units: String(units), canonical };
-    for (const key of ["sku", "product", "units", "canonical"] as const)
-      if (String(editing[key]) !== next[key])
-        changes[key] = [String(editing[key]), next[key]];
+    const next = { sku, name, market, product, units: String(units), canonical };
+    for (const key of ["sku", "name", "market", "product", "units", "canonical"] as const)
+      if (String(before[key]) !== next[key])
+        changes[key] = [String(before[key]), next[key]];
     if (!Object.keys(changes).length)
-      throw new Error("No SKU mapping details changed.");
+      throw new Error("No package SKU details changed.");
     const why = reason();
-    Object.assign(editing, { sku, product, units, canonical, updatedAt: at });
+    if (!editing) {
+      room();
+      editing = override(seed!);
+      aliases.push(editing);
+    }
+    Object.assign(editing, {
+      sku,
+      name,
+      market,
+      origin: seedFor(sku) ? "built-in" : "custom",
+      product,
+      units,
+      canonical,
+      updatedAt: at,
+    });
     editing.version += 1;
     editing.history.push({
       kind: "edited",
@@ -1044,29 +1328,46 @@ export function applySkuAliasCommand(
     });
     return {
       entity: "sku-alias:" + editing.id,
-      action: "Package SKU mapping edited",
+      action: seed ? "Built-in package SKU edited" : "Package SKU edited",
       detail:
+        `${sku} · ` +
         Object.entries(changes)
           .map(([k, [a, b]]) => `${k}: ${a} → ${b}`)
-          .join(" · ") + ` · ${why}`,
+          .join(" · ") +
+        ` · ${why}`,
     };
   }
   if (type !== "sku-alias-retire" && type !== "sku-alias-reactivate")
     throw new Error("Unknown action.");
-  const alias = find();
   const active = type === "sku-alias-reactivate";
-  if (alias.active === active)
+  let alias: SkuAlias | undefined;
+  let seed: PackageDefault | undefined;
+  if (text("id")) alias = find();
+  else {
+    // A built-in SKU nobody has changed yet has no record: it is named by its SKU.
+    seed = seedFor(text("sku"));
+    if (!seed)
+      throw new Error(
+        "This package SKU could not be found. Refresh and try again.",
+      );
+    alias = aliases.find((a) => a.sku === seed!.sku);
+    if (alias && expected() === 0) throw stale();
+  }
+  const current = alias ? alias.active : true;
+  if (current === active)
     throw new Error(
       active
-        ? "This SKU mapping is already active."
-        : "This SKU mapping is already retired.",
-    );
-  if (active && builtIn(alias.sku))
-    throw new Error(
-      `${alias.sku} is now a built-in package SKU; this mapping is no longer needed.`,
+        ? "This package SKU is already active."
+        : "This package SKU is already retired.",
     );
   const why = reason();
+  if (!alias) {
+    room();
+    alias = override(seed!);
+    aliases.push(alias);
+  }
   alias.active = active;
+  alias.origin = seedFor(alias.sku) ? "built-in" : "custom";
   alias.updatedAt = at;
   alias.version += 1;
   alias.history.push({
@@ -1078,9 +1379,7 @@ export function applySkuAliasCommand(
   });
   return {
     entity: "sku-alias:" + alias.id,
-    action: active
-      ? "Package SKU mapping reactivated"
-      : "Package SKU mapping retired",
-    detail: `${describe(alias)} · ${why}`,
+    action: active ? "Package SKU reactivated" : "Package SKU retired",
+    detail: `${describe(entryOf(alias))} · ${why}`,
   };
 }

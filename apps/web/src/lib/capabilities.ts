@@ -129,7 +129,8 @@ export const commandRules: Record<
     capability: "orders.import",
     stateKeys: ["awbImports", "orders", "events"],
   },
-  // Package SKU mappings for AWB imports (20261020090000_operator_sku_aliases.sql).
+  // Package SKU catalogue for AWB imports: custom SKUs and built-in overrides
+  // (20261020090000_operator_sku_aliases.sql; same commands and state key).
   "sku-alias-save": { capability: "orders.import", stateKeys: ["skuAliases", "events"] },
   "sku-alias-retire": { capability: "orders.import", stateKeys: ["skuAliases", "events"] },
   "sku-alias-reactivate": {

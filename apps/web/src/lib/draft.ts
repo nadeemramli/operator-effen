@@ -568,7 +568,10 @@ export interface Draft {
   sortCounts?: SortCount[];
   adypocideReceipts?: AdypocideReceipt[];
   awbImports?: AwbImport[];
-  /** Package SKUs the office admin mapped for AWB imports (see awb-import.ts). */
+  /**
+   * The package SKU catalogue's records: SKUs the office admin added, and overrides of
+   * built-in SKUs (edited or retired). Read through `packageCatalog` (awb-import.ts).
+   */
   skuAliases?: SkuAlias[];
   machines?: Machine[];
   operations?: OperationRecord[];

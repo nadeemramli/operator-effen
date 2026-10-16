@@ -29,6 +29,7 @@ import {
   couriers,
   defaultFor,
   importLimit,
+  isRetiredSku,
   NO_ORDER_REF_NOTE,
   OCR_NOTE,
   pageLimit,
@@ -89,7 +90,9 @@ export function AwbIntake({
       key: string;
       text: string;
       error?: boolean;
-    } | null>(null);
+    } | null>(null),
+    // Optional display names typed beside "Remember this SKU", by label line.
+    [skuNames, setSkuNames] = useState<Record<string, string>>({});
   const [filter, setFilter] = useState("all"),
     [preview, setPreview] = useState<{ file: ImportFile; page: number } | null>(
       null,
@@ -302,15 +305,20 @@ export function AwbIntake({
     setDirty(true);
   }
   /**
-   * Saves an unknown SKU's product and units as a package SKU mapping, then resolves every
-   * line of this upload with that SKU, so the admin types it once and later imports
-   * recognise it.
+   * Adds an unknown SKU to the package SKU catalogue (product, units and an optional
+   * display name), then resolves every line of this upload with that SKU, so the admin
+   * types it once and later imports recognise it.
    */
   async function rememberSku(line: ImportLine, key: string) {
     setSkuMessage(null);
     const saved = await onCommand(
       "sku-alias-save",
-      { sku: line.sku.trim(), product: line.product, units: line.units },
+      {
+        sku: line.sku.trim(),
+        product: line.product,
+        units: line.units,
+        name: skuNames[key] ?? "",
+      },
       { onError: (text) => setSkuMessage({ key, text, error: true }) },
     );
     const def = saved && defaultFor(line.sku, saved.skuAliases);
@@ -349,6 +357,11 @@ export function AwbIntake({
         : current,
     );
     setDirty(true);
+    setSkuNames((names) => {
+      const rest = { ...names };
+      delete rest[key];
+      return rest;
+    });
     setSkuMessage({
       key,
       text: t(
@@ -1134,11 +1147,18 @@ export function AwbIntake({
                             !defaultFor(line.sku, state.skuAliases) && (
                               <div className="awb-sku-hint">
                                 <span>
-                                  {t(
-                                    "Unknown SKU — map it once so future labels resolve automatically.",
-                                    "SKU tidak dikenali — petakan sekali supaya label akan datang dikenal pasti secara automatik.",
-                                  )}{" "}
-                                  {skuAliasProblem(line.sku)
+                                  {isRetiredSku(line.sku, state.skuAliases)
+                                    ? t(
+                                        "Unknown SKU — this SKU is retired in Package SKUs. Reactivate it there, or enter the product and units here.",
+                                        "SKU tidak dikenali — SKU ini telah dihentikan dalam SKU pakej. Aktifkan semula di sana, atau masukkan produk dan unit di sini.",
+                                      )
+                                    : t(
+                                        "Unknown SKU — add it to Package SKUs once so future labels resolve automatically.",
+                                        "SKU tidak dikenali — tambah ke SKU pakej sekali supaya label akan datang dikenal pasti secara automatik.",
+                                      )}{" "}
+                                  {isRetiredSku(line.sku, state.skuAliases)
+                                    ? null
+                                    : skuAliasProblem(line.sku)
                                     ? t(
                                         "This SKU cannot be remembered: use 3 to 40 letters, digits, - or _, with a letter.",
                                         "SKU ini tidak boleh diingat: gunakan 3 hingga 40 huruf, digit, - atau _, dengan sekurang-kurangnya satu huruf.",
@@ -1154,7 +1174,30 @@ export function AwbIntake({
                                         )
                                       : null}
                                 </span>
-                                {canMapSkus && (
+                                {canMapSkus && !isRetiredSku(line.sku, state.skuAliases) && (
+                                  <Input
+                                    className="awb-sku-name"
+                                    value={skuNames[`${row.id}:${i}`] ?? ""}
+                                    maxLength={80}
+                                    autoComplete="off"
+                                    disabled={busy}
+                                    aria-label={t(
+                                      "Display name for the catalogue (optional)",
+                                      "Nama paparan untuk katalog (pilihan)",
+                                    )}
+                                    placeholder={t(
+                                      "Display name (optional)",
+                                      "Nama paparan (pilihan)",
+                                    )}
+                                    onChange={(e) =>
+                                      setSkuNames((names) => ({
+                                        ...names,
+                                        [`${row.id}:${i}`]: e.target.value,
+                                      }))
+                                    }
+                                  />
+                                )}
+                                {canMapSkus && !isRetiredSku(line.sku, state.skuAliases) && (
                                   <Button
                                     size="sm"
                                     variant="outline"

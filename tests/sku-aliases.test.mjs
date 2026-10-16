@@ -1,5 +1,6 @@
-// Package SKU mappings: the office admin maps a new SKU once and later AWB imports resolve
-// it like a built-in default. Synthetic SKUs and labels only.
+// Package SKU catalogue records: the office admin adds a new SKU once and later AWB imports
+// resolve it like a built-in default. Synthetic SKUs and labels only (see also
+// package-catalog.test.mjs for built-in overrides and the catalogue view).
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -55,9 +56,9 @@ test("an admin maps a new SKU once; a label with that SKU then parses completely
   assert.equal(alias.active, true);
   assert.equal(alias.version, 1);
   assert.equal(alias.history[0].kind, "created");
-  assert.equal(s.events[0].action, "Package SKU mapped");
+  assert.equal(s.events[0].action, "Package SKU added");
   assert.equal(s.events[0].entity, "sku-alias:" + alias.id);
-  // Built-ins first, then the mapping.
+  // The catalogue: built-ins, plus the site's own SKUs.
   assert.equal(defaultFor("8botolsg"), undefined);
   assert.equal(defaultFor("8BotolSG", s.skuAliases).units, 8);
   assert.equal(defaultFor("cave01", s.skuAliases).canonical, "CAV-MY-PK1");
@@ -146,9 +147,14 @@ test("a retired mapping no longer resolves; reactivating it restores it", () => 
   assert.equal(s.skuAliases.length, 1, "retired mappings are kept");
   assert.equal(s.skuAliases[0].active, false);
   assert.equal(s.skuAliases[0].version, 2);
-  assert.equal(s.events[0].action, "Package SKU mapping retired");
+  assert.equal(s.events[0].action, "Package SKU retired");
   assert.equal(defaultFor("8botolsg", s.skuAliases), undefined);
-  assert.deepEqual(parseImport([page(synLabel())], "Luxana", "", s.skuAliases).rows[0].lines, []);
+  // The retired SKU stays on the label as a line without a product, for review.
+  const retired = parseImport([page(synLabel())], "Luxana", "", s.skuAliases).rows[0];
+  assert.deepEqual(retired.lines, [
+    { sku: "8botolsg", product: "", packages: 2, units: null, originalUnits: null, canonical: "Manual mapping" },
+  ]);
+  assert.match(rowProblems(retired).join(), /Complete product, SKU and package quantities/);
   // A declared SKU stays visible for review, without a product.
   const declared = parseImport(
     [page("AWB: TEST-RETIRED1\nOrder ID: TEST-R1\nSKU: 8botolsg Qty: 1")],
@@ -161,7 +167,7 @@ test("a retired mapping no longer resolves; reactivating it restores it", () => 
   assert.throws(() => run(s, "sku-alias-retire", { id, reason: "again" }), /already retired/);
   assert.throws(
     () => run(s, "sku-alias-save", { sku: "8botolsg", product: "syn", units: 8 }),
-    /retired mapping/,
+    /retired in the catalogue/,
   );
   s = run(s, "sku-alias-reactivate", { id, reason: "Back in the catalogue" });
   assert.equal(defaultFor("8botolsg", s.skuAliases).units, 8);
@@ -171,13 +177,19 @@ test("a retired mapping no longer resolves; reactivating it restores it", () => 
   );
 });
 
-test("built-in SKUs, unknown products, invalid units and unsafe SKUs are refused", () => {
+test("unknown products, invalid units and unsafe SKUs are refused; a built-in SKU is edited with a reason", () => {
   const s = createDraft();
   const save = (input) =>
     run(s, "sku-alias-save", { sku: "lip09sg", product: "lip", units: 9, ...input });
-  assert.throws(() => save({ sku: " CAVE01 " }), /built-in package SKU/);
+  // Saving a built-in SKU edits it (an override record), so it needs a reason like any edit.
+  assert.throws(() => save({ sku: " CAVE01 " }), /reason/);
   for (const p of packageDefaults.slice(0, 5))
-    assert.throws(() => save({ sku: p.sku }), /built-in/);
+    assert.throws(() => save({ sku: p.sku }), /reason/);
+  const edited = save({ sku: " CAVE01 ", product: "cav", units: 2, reason: "Box count changed" });
+  assert.equal(edited.skuAliases.length, 1);
+  assert.equal(edited.skuAliases[0].sku, "cave01");
+  assert.equal(edited.skuAliases[0].origin, "built-in");
+  assert.equal(defaultFor("cave01", edited.skuAliases).units, 2);
   assert.throws(() => save({ product: "nurokids" }), /Choose the product/);
   assert.throws(() => save({ product: "" }), /Choose the product/);
   for (const units of [0, -1, 1001, 2.5, "", null, "abc"])
@@ -195,7 +207,7 @@ test("built-in SKUs, unknown products, invalid units and unsafe SKUs are refused
   const once = save({});
   assert.throws(
     () => run(once, "sku-alias-save", { sku: "LIP09SG", product: "lip", units: 9 }),
-    /already mapped/,
+    /already in the catalogue/,
   );
 });
 
@@ -224,7 +236,7 @@ test("an edit needs a reason, records history and refuses a stale version", () =
   assert.throws(() => run(s, "sku-alias-save", edit), /reason/);
   assert.throws(
     () => run(s, "sku-alias-save", { ...edit, units: 8, reason: "x" }),
-    /No SKU mapping details changed/,
+    /No package SKU details changed/,
   );
   s = run(s, "sku-alias-save", { ...edit, canonical: "ADI-MY-PK9", reason: "Box count confirmed" });
   const alias = s.skuAliases[0];
@@ -237,17 +249,17 @@ test("an edit needs a reason, records history and refuses a stale version", () =
   });
   assert.equal(alias.history[1].reason, "Box count confirmed");
   assert.equal(alias.history[1].recordedBy.role, "admin");
-  assert.equal(s.events[0].action, "Package SKU mapping edited");
+  assert.equal(s.events[0].action, "Package SKU edited");
   assert.match(s.events[0].detail, /units: 8 → 9/);
   assert.throws(
     () => run(s, "sku-alias-save", { ...edit, units: 7, reason: "late", expectedVersion: 1 }),
     /changed by someone else/,
   );
-  // Renaming onto another mapping's SKU or onto a built-in is refused.
+  // Renaming onto another catalogue SKU or onto a built-in is refused.
   s = run(s, "sku-alias-save", { sku: "ady09sg", product: "ady", units: 9 });
   assert.throws(
     () => run(s, "sku-alias-save", { id, sku: "ady09sg", product: "ady", units: 9, reason: "x" }),
-    /already mapped/,
+    /already in the catalogue/,
   );
   assert.throws(
     () => run(s, "sku-alias-save", { id, sku: "adipocyde8", product: "ady", units: 9, reason: "x" }),
