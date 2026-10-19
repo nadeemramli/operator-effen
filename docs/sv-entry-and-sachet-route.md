@@ -185,8 +185,12 @@ author, site, optional record reference and time, and never edits operational re
   stock-in". `receive-ady` and `stock-in-ady` therefore carry `batches` in their scope; the
   database transfer gate checks the factory stages for every newly sent batch regardless of
   the command. **Receive sachets for boxing** lists every sachet batch whose factory stages
-  are done, sent or not. Production's **Send to warehouse** is unchanged and still the
-  normal path.
+  are done, sent or not. Since the same day, stock-in's first warehouse-stage record or
+  skip (`machine`, `stage-skip`) also marks the batch as sent when that gate allows (the
+  stage's PIC, or the recorder for a skip, as `transferPic`); when it does not, the stage
+  still saves and the transfer is recorded at the receipt or count. Production's own
+  warehouse-stage records never send. Production's **Send to warehouse** is unchanged and
+  still the normal path.
 - **Stage rows (2026-10-19).** Each stage shows one status pill (Next, Open, Completed,
   Skipped, Not recorded) and one main action: a large **Record completion** button (or
   **Record completion + box count** on the Shrink machine), plus **Not needed – skip** on an

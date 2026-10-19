@@ -356,3 +356,30 @@ test("a receipt before the transfer marks the batch as sent; a combined Shrink e
   assert.ok(t.batches[0].transferredAt);
   assert.equal(t.cartons.filter((c) => c.batchId === id2)[0].qty, 9);
 });
+
+test("stock-in's first warehouse stage record marks the batch as sent once mixing and filling have a PIC", () => {
+  let s = planned();
+  const id = s.batches[0].id;
+  s = record(s, "production", id, "mixing");
+  // Factory gate not met yet: the stage saves, the batch stays unsent.
+  s = record(s, "intake", id, "batching");
+  assert.equal(s.batches[0].transferredAt, undefined);
+  s = record(s, "production", id, "filling");
+  assert.equal(s.batches[0].transferredAt, undefined);
+  // Production's own warehouse record never sends; stock-in's does.
+  let p = record(s, "production", id, "hologram", "Helmi");
+  assert.equal(p.batches[0].transferredAt, undefined);
+  const before = s;
+  s = as(s, "intake", "stage-skip", { id, stage: "hologram", reason: "No hologram" });
+  assert.deepEqual(outOfScopeKeys("stage-skip", before, s), []);
+  assert.ok(s.batches[0].transferredAt);
+  assert.equal(s.batches[0].transferPic, "Synthetic intake");
+  assert.ok(s.events.some((e) => e.action === "Batch sent to warehouse" && /Hologram machine skip by stock-in/.test(e.detail)));
+  let t = planned();
+  const id2 = t.batches[0].id;
+  for (const stage of ["mixing", "filling"]) t = record(t, "production", id2, stage);
+  t = record(t, "intake", id2, "wrapping", "Munirah");
+  assert.ok(t.batches[0].transferredAt);
+  assert.equal(t.batches[0].transferPic, "Munirah");
+  assert.throws(() => as(t, "production", "transfer", { id: id2, pic: "Helmi" }), /already been sent/);
+});

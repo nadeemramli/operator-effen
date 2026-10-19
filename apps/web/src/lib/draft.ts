@@ -1539,16 +1539,25 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
    * itself, under the same factory gate production has (mixing and filling with a PIC;
    * legacy routes reviewed). The database checks that gate for every newly sent batch.
    */
-  const ensureSent = (batch: Batch, pic: string, where: string) => {
+  const ensureSent = (
+    batch: Batch,
+    pic: string,
+    where: string,
+    required = true,
+  ) => {
     if (batchTransferred(batch)) return;
-    if (batchRoute(batch).status === "needs-review")
+    if (batchRoute(batch).status === "needs-review") {
+      if (!required) return;
       throw new Error(
         `This batch was started before the five-stage route. Production must review its route before the ${where}.`,
       );
-    if (!factoryStagesDone(batch))
+    }
+    if (!factoryStagesDone(batch)) {
+      if (!required) return;
       throw new Error(
         `Production must record the mixing and filling stages with a PIC before the ${where}.`,
       );
+    }
     batch.transferredAt = at;
     batch.transferPic = pic;
     log(
@@ -1939,7 +1948,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error("Machine-only records are for sachet products.");
       const stage = resolveStage(b);
       warehouseOnly(stage);
-      completeStage(b, stage);
+      const record = completeStage(b, stage);
+      // Stock-in recording a warehouse stage means the batch is at the warehouse: it is
+      // marked as sent when production's factory gate allows, else at the box count.
+      if (cmd.role === "intake" && !isFactoryStage(stage.id))
+        ensureSent(b, record.pic, stage.en + " record", false);
       break;
     }
     case "stage-skip": {
@@ -1979,6 +1992,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (previous) b.steps[b.steps.indexOf(previous)] = record;
       else b.steps.push(record);
       log(b.id, "Stage skipped", `${b.code} · ${stage.en} · ${reason}`);
+      if (cmd.role === "intake") ensureSent(b, recorder.name, stage.en + " skip", false);
       break;
     }
     case "wrapping-count": {

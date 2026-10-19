@@ -103,8 +103,10 @@ test("every operational command stays inside its database scope", () => {
   run("production", "machine-update", { id: m.id, name: "Holo 2", expectedVersion: m.version });
   run("production", "machine-deactivate", { id: m.id, reason: "x", expectedVersion: m.version + 1 });
   run("production", "machine-reactivate", { id: m.id, reason: "x", expectedVersion: m.version + 2 });
+  // Production records every stage here (a stock-in record would already mark the batch as
+  // sent, closing the factory-stage rework below); the second batch covers stock-in's records.
   for (const stage of ["mixing", "filling", "batching", "hologram", "wrapping"])
-    run(stage === "hologram" ? "intake" : "production", "machine", { id, stage, pic: "P" });
+    run("production", "machine", { id, stage, pic: "P" });
   run("production", "stage-rework", { id, stage: "mixing", pic: "P", reason: "redo" });
   run("intake", "change-step-pic", { id, stage: "mixing", kind: "correction", pic: "Q", reason: "x" });
   run("intake", "stage-correct", {

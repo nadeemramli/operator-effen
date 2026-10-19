@@ -135,9 +135,10 @@ box count. The Shrink machine is recorded together with the finished box count i
 (**Record completion + box count**) once batching and hologram are recorded or skipped; the
 receipt's **Finalize box count** and **Enter total boxes** remain for a stage recorded on its
 own (migration `20261022090000_operator_optional_stages.sql`). Stock-in no longer waits for
-production's **Send to warehouse**: once mixing and filling have a PIC, the batch can be
-received for boxing or counted, and that receipt or count records the transfer itself under
-the stock-in supervisor's name (migration `20261023090000_operator_stock_in_sends.sql`). Each stage row shows one status
+production's **Send to warehouse**: once mixing and filling have a PIC, the first warehouse
+stage stock-in records or skips, the receipt, or the box count marks the batch as sent itself
+(migration `20261023090000_operator_stock_in_sends.sql`); if the factory stages are still
+open, the stage saves anyway and the transfer is recorded at the count. Each stage row shows one status
 (Next, Completed, Skipped) and one main button; corrections and PIC history sit under
 "Corrections & history". See
 [role-based entry and the five-stage route](docs/sv-entry-and-sachet-route.md).
