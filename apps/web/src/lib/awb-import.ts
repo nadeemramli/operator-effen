@@ -197,12 +197,16 @@ export type SkuAlias = {
   updatedAt: string;
   version: number;
   history: {
-    kind: "created" | "edited" | "retired" | "reactivated";
+    kind: "created" | "edited" | "retired" | "reactivated" | "renamed";
     at: string;
     changes: Record<string, [string, string]>;
     reason?: string;
     recordedBy?: Recorder;
   }[];
+  /** Set on a retired built-in record whose package now goes by a new SKU. */
+  renamedTo?: string;
+  /** Set on the record that took over a renamed built-in's package. */
+  renamedFrom?: string;
 };
 /** Catalogue records one site may hold (custom SKUs and built-in overrides together). */
 export const skuAliasLimit = 500;
@@ -283,6 +287,8 @@ export type CatalogEntry = {
   history: SkuAlias["history"];
   createdAt?: string;
   updatedAt?: string;
+  renamedTo?: string;
+  renamedFrom?: string;
 };
 /**
  * The site's record for a SKU: the active one first (records are unique per SKU, but a
@@ -326,6 +332,8 @@ function entryFrom(
           id: record.id,
           createdAt: record.createdAt,
           updatedAt: record.updatedAt,
+          ...(record.renamedTo ? { renamedTo: record.renamedTo } : {}),
+          ...(record.renamedFrom ? { renamedFrom: record.renamedFrom } : {}),
         }
       : {}),
     version: record?.version ?? 0,
@@ -1220,14 +1228,26 @@ export function applySkuAliasCommand(
     if (rawMarket && !skuMarkets.includes(rawMarket as SkuMarket))
       throw new Error("Choose the market: MY or SG.");
     let editing = text("id") ? find() : undefined;
-    const seed = seedFor(editing?.sku ?? sku);
-    if (editing && editing.sku !== sku) {
-      // The SKU is what a label prints, so a built-in SKU keeps it; a custom SKU cannot
-      // take a built-in one (that SKU has its own entry to edit).
-      if (seedFor(editing.sku))
-        throw new Error(
-          `${editing.sku} is a built-in package SKU and keeps its SKU. Add the new SKU as its own package and retire ${editing.sku} when labels stop printing it.`,
-        );
+    // Editing a built-in nobody has changed yet names it by `fromSku` (it has no record).
+    const fromSku = normSku(text("fromSku"));
+    const renamingSeed =
+      !editing && fromSku && fromSku !== sku ? seedFor(fromSku) : undefined;
+    if (fromSku && fromSku !== sku && !editing && !renamingSeed)
+      throw new Error(
+        "This package SKU could not be found. Refresh and try again.",
+      );
+    if (!editing && renamingSeed) {
+      // The built-in may already have a record (edited or retired here).
+      editing = aliases.find((a) => a.sku === renamingSeed.sku);
+      if (editing && expected() === 0) throw stale();
+    }
+    const seed = seedFor(editing?.sku ?? renamingSeed?.sku ?? sku);
+    const renamedSeed =
+      (editing && editing.sku !== sku ? seedFor(editing.sku) : undefined) ??
+      renamingSeed;
+    if ((editing && editing.sku !== sku) || renamingSeed) {
+      // The SKU is what a label prints. A custom SKU cannot take a built-in one (that
+      // SKU has its own entry to edit); a renamed built-in is handled below.
       if (seedFor(sku))
         throw new Error(
           `${sku} is a built-in package SKU. Edit it in its own row in Package SKUs.`,
@@ -1235,7 +1255,9 @@ export function applySkuAliasCommand(
     }
     const clash = aliases.find((a) => a.sku === sku && a.id !== editing?.id);
     if (clash) {
-      if (!editing && seed && expected() === 0) throw stale();
+      // An untouched built-in that already has a record was changed by someone else;
+      // a rename landing on another SKU's record is a plain clash.
+      if (!editing && seed && !renamingSeed && expected() === 0) throw stale();
       throw new Error(
         clash.active
           ? `${sku} is already in the catalogue. Edit it in Package SKUs.`
@@ -1257,6 +1279,61 @@ export function applySkuAliasCommand(
       rawName ||
       before?.name ||
       defaultPackageName({ sku, product, units, canonical, market });
+    if (renamedSeed) {
+      // A built-in SKU the shop renamed: the new SKU takes over the package as its own
+      // record, and the old code is kept as a retired record linked to it, so labels still
+      // printing the old code go to review (reactivate it to accept both for a while).
+      const why = reason();
+      room();
+      const old = editing ?? override(renamedSeed);
+      if (!editing) aliases.push(old);
+      const oldEntry = entryOf(old);
+      old.active = false;
+      old.renamedTo = sku;
+      old.updatedAt = at;
+      old.version += 1;
+      old.history.push({
+        kind: "renamed",
+        at,
+        changes: { sku: [old.sku, sku], active: ["true", "false"] },
+        reason: why,
+        recordedBy,
+      });
+      const alias: SkuAlias = {
+        id: crypto.randomUUID(),
+        sku,
+        name: rawName || oldEntry.name,
+        market: (rawMarket as SkuMarket) || oldEntry.market,
+        origin: "custom",
+        product,
+        units,
+        canonical: label || oldEntry.canonical,
+        active: true,
+        createdAt: at,
+        updatedAt: at,
+        version: 1,
+        renamedFrom: old.sku,
+        history: [
+          {
+            kind: "renamed",
+            at,
+            changes: {
+              sku: [old.sku, sku],
+              product: [oldEntry.product, product],
+              units: [String(oldEntry.units), String(units)],
+            },
+            reason: why,
+            recordedBy,
+          },
+        ],
+      };
+      aliases.push(alias);
+      return {
+        entity: "sku-alias:" + alias.id,
+        action: "Package SKU renamed",
+        detail: `${old.sku} → ${sku} · ${describe(entryOf(alias))} · ${old.sku} retired · ${why}`,
+      };
+    }
     if (!before) {
       room();
       const alias: SkuAlias = {

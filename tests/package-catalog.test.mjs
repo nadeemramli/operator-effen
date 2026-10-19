@@ -132,17 +132,45 @@ test("editing a built-in's units creates an override, and labels with that SKU p
   });
   assert.equal(defaultFor("syn04", s.skuAliases).canonical, "SYN-MY-PK6");
   assert.equal(entry(s, "syn04")[0].name, "Synovil Pakej 6");
-  assert.throws(
-    () =>
-      run(s, "sku-alias-save", {
-        id: record.id,
-        sku: "syn6new",
-        product: "syn",
-        units: 6,
-        reason: "renamed",
-      }),
-    /keeps its SKU/,
-  );
+  // Renaming the built-in: the new SKU takes over, the old code is kept retired and linked.
+  s = run(s, "sku-alias-save", {
+    id: record.id,
+    expectedVersion: 2,
+    sku: "syn6new",
+    product: "syn",
+    units: 6,
+    reason: "Shop renamed the SKU",
+  });
+  assert.equal(defaultFor("syn6new", s.skuAliases).units, 6);
+  assert.equal(defaultFor("syn6new", s.skuAliases).canonical, "SYN-MY-PK6");
+  assert.equal(defaultFor("syn04", s.skuAliases), undefined);
+  const [oldEntry] = entry(s, "syn04"), [newEntry] = entry(s, "syn6new");
+  assert.equal(oldEntry.active, false);
+  assert.equal(oldEntry.renamedTo, "syn6new");
+  assert.equal(newEntry.renamedFrom, "syn04");
+  assert.equal(newEntry.name, "Synovil Pakej 6");
+  assert.equal(oldEntry.history.at(-1).kind, "renamed");
+  assert.equal(s.events[0].action, "Package SKU renamed");
+});
+
+test("a built-in nobody changed yet can be renamed straight from the catalogue", () => {
+  // The page names an untouched built-in by fromSku; a reason is required.
+  const input = { fromSku: "cave04", expectedVersion: 0, sku: "cav-pk4", product: "cav", units: 4 };
+  assert.throws(() => run(createDraft(), "sku-alias-save", input), /reason/);
+  let s = run(createDraft(), "sku-alias-save", { ...input, reason: "Shop renamed it" });
+  assert.equal(parse(s, label("cav-pk4")).lines[0].units, 4);
+  assert.deepEqual(rowProblems(parse(s, label("cav-pk4"))), []);
+  assert.equal(parse(s, label("cave04")).lines[0].product, "");
+  const cav = catalogSections(packageCatalog(s)).find((x) => x.key === "cav:MY");
+  assert.ok(cav.entries.some((e) => e.sku === "cav-pk4" && e.active && e.renamedFrom === "cave04"));
+  assert.ok(cav.entries.some((e) => e.sku === "cave04" && !e.active && e.renamedTo === "cav-pk4"));
+  // The old code can be accepted again while old labels are still printing it.
+  s = run(s, "sku-alias-reactivate", { id: entry(s, "cave04")[0].id, reason: "Old labels still printing" });
+  assert.equal(defaultFor("cave04", s.skuAliases).units, 4);
+  // A rename cannot land on another built-in or an existing record, and a wrong fromSku fails.
+  assert.throws(() => run(s, "sku-alias-save", { fromSku: "cave02", expectedVersion: 0, sku: "cave01", product: "cav", units: 1, reason: "x" }), /built-in package SKU/);
+  assert.throws(() => run(s, "sku-alias-save", { fromSku: "cave02", expectedVersion: 0, sku: "cav-pk4", product: "cav", units: 4, reason: "x" }), /already in the catalogue/);
+  assert.throws(() => run(s, "sku-alias-save", { fromSku: "nope99", expectedVersion: 0, sku: "cav-pk5", product: "cav", units: 5, reason: "x" }), /could not be found/);
 });
 
 test("an edited built-in flows through review and release with its new units", () => {

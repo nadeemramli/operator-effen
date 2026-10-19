@@ -175,6 +175,8 @@ export function SkuAliasPanel({
     e.id
       ? { id: e.id, expectedVersion: e.version }
       : { sku: e.sku, expectedVersion: 0 };
+  // Editing names the entry by its current SKU too, so a built-in can be renamed.
+  const editTarget = (e: CatalogEntry) => ({ ...target(e), fromSku: e.sku });
   async function save() {
     if (!editor) return;
     const { form } = editor;
@@ -183,7 +185,7 @@ export function SkuAliasPanel({
     const ok = await run(
       "sku-alias-save",
       {
-        ...(editing ? target(editing) : {}),
+        ...(editing ? editTarget(editing) : {}),
         sku,
         name: form.name,
         product: form.product,
@@ -192,7 +194,12 @@ export function SkuAliasPanel({
         canonical: form.canonical,
         ...(editing ? { reason: form.reason } : {}),
       },
-      editing
+      editing && editing.sku !== sku
+        ? t(
+            `${editing.sku} renamed to ${sku}. ${editing.sku} is kept as retired; labels still printing it go to review.`,
+            `${editing.sku} ditukar nama kepada ${sku}. ${editing.sku} disimpan sebagai dihentikan; label yang masih mencetaknya masuk semakan.`,
+          )
+        : editing
         ? t(
             `${sku} updated. Labels read from now on use the new details.`,
             `${sku} dikemas kini. Label yang dibaca selepas ini menggunakan butiran baharu.`,
@@ -260,16 +267,20 @@ export function SkuAliasPanel({
               maxLength={40}
               required
               autoComplete="off"
-              disabled={editing?.origin === "built-in"}
               placeholder={t("As printed on the label", "Seperti pada label")}
               onChange={(e) => set({ sku: e.target.value })}
             />
-            {editing?.origin === "built-in" && (
+            {editing && (
               <small className="sku-field-note">
-                {t(
-                  "A built-in SKU keeps its SKU. If the shop renamed it, add the new SKU and retire this one.",
-                  "SKU terbina dalam mengekalkan SKU-nya. Jika kedai menukar namanya, tambah SKU baharu dan hentikan yang ini.",
-                )}
+                {editing.origin === "built-in"
+                  ? t(
+                      `Renaming keeps ${editing.sku} as a retired code with its history. Labels still printing it go to review until you reactivate it.`,
+                      `Menukar nama menyimpan ${editing.sku} sebagai kod dihentikan bersama sejarahnya. Label yang masih mencetaknya masuk semakan sehingga anda mengaktifkannya semula.`,
+                    )
+                  : t(
+                      "Change the SKU here if the shop renamed it; labels printing the old code will no longer match.",
+                      "Tukar SKU di sini jika kedai menukar namanya; label yang mencetak kod lama tidak lagi sepadan.",
+                    )}
               </small>
             )}
           </label>
@@ -421,6 +432,8 @@ export function SkuAliasPanel({
         t("Built-in values", "Nilai terbina dalam"),
         `${productName(e.seed.product)} · ${unitsText(e.seed.units)} · ${e.seed.canonical}`,
       ]);
+    if (e.renamedTo) rows.push([t("Renamed to", "Ditukar nama kepada"), e.renamedTo]);
+    if (e.renamedFrom) rows.push([t("Renamed from", "Ditukar nama daripada"), e.renamedFrom]);
     if (e.createdAt) rows.push([t("Record created", "Rekod dicipta"), when(e.createdAt, lang)]);
     if (e.updatedAt) rows.push([t("Last updated", "Kemas kini terakhir"), when(e.updatedAt, lang)]);
     const kind = (k: string) =>
@@ -429,6 +442,7 @@ export function SkuAliasPanel({
         edited: t("Edited", "Disunting"),
         retired: t("Retired", "Dihentikan"),
         reactivated: t("Reactivated", "Diaktifkan semula"),
+        renamed: t("Renamed", "Ditukar nama"),
       })[k] ?? k;
     return (
       <div className="sku-detail">
