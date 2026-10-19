@@ -171,6 +171,14 @@ export const currentSachetRoute = "sachet-v2";
  */
 export const factoryStages = ["mixing", "filling"];
 export const isFactoryStage = (key: string) => factoryStages.includes(key);
+/**
+ * Optional stages: not every sachet batch needs them (owner decision 2026-10-19: hologram).
+ * The supervisor may skip one with a reason instead of recording a PIC; a skipped stage
+ * satisfies the box-count gate. Mirrored in SQL by operator_private.optional_stage(text)
+ * (a test keeps them identical).
+ */
+export const optionalStages = ["hologram"];
+export const isOptionalStage = (key: string) => optionalStages.includes(key);
 // Labels for historical records created before the fixed sachet route.
 export const sachetSteps = [
   ["Filling & sealing", "Pengisian & pengedapan"],
@@ -217,6 +225,12 @@ export interface StageOccurrence {
   recordedBy?: Recorder;
   reason: string;
 }
+/** An optional stage the supervisor skipped for this batch, instead of recording a PIC. */
+export interface StageSkip {
+  at: string;
+  reason: string;
+  recordedBy?: Recorder;
+}
 export interface Step {
   picHistory?: PicChange[];
   sachetStage?: string;
@@ -229,6 +243,8 @@ export interface Step {
   version?: number;
   corrections?: StageCorrection[];
   occurrences?: StageOccurrence[];
+  /** Set while an optional stage is skipped; cleared by a later completion record. */
+  skipped?: StageSkip;
   pic: string;
   qty: number | null;
   start: string;
@@ -646,10 +662,23 @@ export const routeStages = (b: Batch) =>
  */
 export const isQcStep = (b: Pick<Batch, "product" | "steps">, index: number) =>
   !isSachet(b.product) && index === b.steps.length - 1;
+/** An optional stage the supervisor skipped for this batch (no completion recorded). */
+export const stageSkipped = (b: Batch, key: string) => {
+  const step = stageStep(b, key);
+  return !step?.done && !!step?.skipped;
+};
+/** The stage no longer blocks the batch: completed with a PIC, or skipped with a reason. */
+export const stageSatisfied = (b: Batch, key: string) =>
+  stageDone(b, key) || stageSkipped(b, key);
+/** The last stage of the route when it is a warehouse stage: the Shrink machine, whose completion carries the finished box count. */
+export const lastWarehouseStage = (b: Batch) => {
+  const last = batchRoute(b).stages.at(-1);
+  return last && !isFactoryStage(last) ? last : undefined;
+};
 export const batchComplete = (b: Batch) => {
   if (!isSachet(b.product)) return b.steps.every((step) => step.done);
   const { stages } = batchRoute(b);
-  return !!stages.length && stages.every((key) => stageDone(b, key));
+  return !!stages.length && stages.every((key) => stageSatisfied(b, key));
 };
 /** The batch's route stages recorded in the factory (mixing, filling). */
 export const factoryStagesOf = (b: Batch) =>
@@ -661,8 +690,9 @@ export const factoryStagesDone = (b: Batch) => {
   const stages = factoryStagesOf(b);
   return !!stages.length && stages.every((key) => stageDone(b, key));
 };
+/** Every warehouse stage completed with a PIC or (optional stages only) skipped. */
 export const warehouseStagesDone = (b: Batch) =>
-  warehouseStages(b).every((key) => stageDone(b, key));
+  warehouseStages(b).every((key) => stageSatisfied(b, key));
 export const batchRevised = (b: Batch) => !!b.revisions?.length;
 export const batchTransferred = (b: Batch) => !!b.transferredAt || b.sent > 0;
 /**
@@ -1450,6 +1480,110 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
     return machine;
   };
+  /**
+   * Records the first completion of a sachet stage: the actual PIC, optionally the machine
+   * and the actual time. A skipped optional stage can still be completed; the skip is
+   * cleared and noted in the audit entry. Shared by `machine` and `wrapping-count`.
+   */
+  const completeStage = (b: Batch, stage: SachetStage) => {
+    // Factory stages close at transfer; warehouse stages are recorded after it.
+    if (batchTransferred(b) && isFactoryStage(stage.id))
+      throw new Error("This batch has already been sent to the warehouse.");
+    const previous = stageStep(b, stage.id);
+    if (previous?.done)
+      throw new Error(
+        "This process already has a recorded PIC. Use a correction or record rework.",
+      );
+    expectVersion(previous, `${b.code} · ${stage.en}`, false, () => ({
+      pic: previous?.pic,
+    }));
+    const pic = str("pic");
+    if (previous?.pic && previous.pic !== pic)
+      throw new Error(
+        "Use Edit PIC or Shift handover to change the assigned person first.",
+      );
+    const machine = pickMachine(stage.id);
+    const occurredAt = occurrence("occurredAt", b.date);
+    const { skipped, ...kept } = previous ?? blankStep();
+    const record: Step = {
+      ...kept,
+      machine: stage.machine,
+      sachetStage: stage.id,
+      pic,
+      done: true,
+      occurredAt,
+      recordedAt: at,
+      recordedBy: recorder,
+      ...(machine ? { machineId: machine.id, machineName: machine.name } : {}),
+    };
+    bump(record);
+    if (previous) b.steps[b.steps.indexOf(previous)] = record;
+    else b.steps.push(record);
+    log(
+      b.id,
+      "Machine responsibility recorded",
+      b.code +
+        " · " +
+        stage.en +
+        (machine ? " · " + machine.name : "") +
+        " · " +
+        pic +
+        (skipped ? " · recorded after being skipped" : ""),
+      { performer: pic, occurredAt },
+    );
+    return record;
+  };
+  /**
+   * The sachet box stock-in: finalizes the batch's receipt awaiting boxing (or records one
+   * with the count) and creates the box carton on its rack. Batches planned with a route
+   * need every warehouse stage completed or skipped first; the factory stages were already
+   * required at transfer. Historical batches without a route snapshot are not re-checked.
+   */
+  const countBoxes = (
+    batch: Batch,
+    awaiting: AdypocideReceipt | undefined,
+    pic: string,
+  ) => {
+    if (batch.route && !warehouseStagesDone(batch))
+      throw new Error(
+        "Record the warehouse stages (batching, hologram, wrapping) with their PICs, or skip an optional stage, before finalizing the box count.",
+      );
+    const boxes = num("boxes"),
+      rack = str("rack"),
+      ref = batch.code;
+    let receipt = awaiting;
+    if (!receipt) {
+      receipt = { id: id(), ref, batchId: batch.id, pic, at };
+      (s.adypocideReceipts ??= []).unshift(receipt);
+      log(
+        batch.id,
+        "Sachet cartons received for boxing",
+        ref + " · " + pic + " · recorded at the box count",
+      );
+    }
+    const carton: Carton = {
+      id: id(),
+      ref,
+      batchId: receipt.batchId,
+      product: batch.product,
+      unit: batchUnit(batch),
+      qty: boxes,
+      rack,
+      pic,
+      at,
+    };
+    s.cartons.unshift(carton);
+    const finalized = { ...receipt, stockedAt: at, stockCartonId: carton.id };
+    s.adypocideReceipts ??= [];
+    const index = s.adypocideReceipts.findIndex((r) => r.id === finalized.id);
+    if (index < 0) s.adypocideReceipts.unshift(finalized);
+    else s.adypocideReceipts[index] = finalized;
+    log(
+      receipt.batchId,
+      "Sachet box count finalized",
+      receipt.ref + " · " + boxes + " boxes · " + pic,
+    );
+  };
   // Changes after transfer are flagged as revisions, except warehouse-stage records made
   // before the box count: those stages are recorded at stock-in by design.
   const isRevision = (b: Batch, stage: string) =>
@@ -1780,48 +1914,79 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error("Machine-only records are for sachet products.");
       const stage = resolveStage(b);
       warehouseOnly(stage);
-      // Factory stages close at transfer; warehouse stages are recorded after it.
-      if (batchTransferred(b) && isFactoryStage(stage.id))
-        throw new Error("This batch has already been sent to the warehouse.");
+      completeStage(b, stage);
+      break;
+    }
+    case "stage-skip": {
+      // An optional stage this batch does not need: skipped with a reason instead of a PIC.
+      allow("production", "intake");
+      const b = liveBatch();
+      if (!isSachet(b.product))
+        throw new Error("Only sachet route stages can be skipped.");
+      const stage = resolveStage(b);
+      warehouseOnly(stage);
+      if (!isOptionalStage(stage.id))
+        throw new Error(
+          `${stage.en} is required for every batch and cannot be skipped. Record its PIC instead.`,
+        );
+      if (adypocideReceipts(s).some((r) => r.batchId === b.id && !!r.stockedAt))
+        throw new Error(
+          "The box count is already finalized for this batch; its stages are closed.",
+        );
       const previous = stageStep(b, stage.id);
       if (previous?.done)
         throw new Error(
-          "This process already has a recorded PIC. Use a correction or record rework.",
+          "This stage already has a recorded PIC. Use a correction if it was recorded by mistake.",
         );
+      if (previous?.skipped)
+        throw new Error("This stage is already skipped for this batch.");
       expectVersion(previous, `${b.code} · ${stage.en}`, false, () => ({
         pic: previous?.pic,
       }));
-      const pic = str("pic");
-      if (previous?.pic && previous.pic !== pic)
-        throw new Error(
-          "Use Edit PIC or Shift handover to change the assigned person first.",
-        );
-      const machine = pickMachine(stage.id);
-      const occurredAt = occurrence("occurredAt", b.date);
+      const reason = str("reason");
       const record: Step = {
         ...(previous ?? blankStep()),
         machine: stage.machine,
         sachetStage: stage.id,
-        pic,
-        done: true,
-        occurredAt,
-        recordedAt: at,
-        recordedBy: recorder,
-        ...(machine ? { machineId: machine.id, machineName: machine.name } : {}),
+        skipped: { at, reason, recordedBy: recorder },
       };
       bump(record);
       if (previous) b.steps[b.steps.indexOf(previous)] = record;
       else b.steps.push(record);
-      log(
-        b.id,
-        "Machine responsibility recorded",
-        b.code +
-          " · " +
-          stage.en +
-          (machine ? " · " + machine.name : "") +
-          " · " +
-          pic,
-        { performer: pic, occurredAt },
+      log(b.id, "Stage skipped", `${b.code} · ${stage.en} · ${reason}`);
+      break;
+    }
+    case "wrapping-count": {
+      // Stock-in records the Shrink machine (the last warehouse stage) and the finished box
+      // count in one entry: the stage completion, then the same box stock-in as stock-in-ady.
+      allow("intake");
+      const b = liveBatch();
+      if (!isSachet(b.product) || !batchTransferred(b))
+        throw new Error("Choose a sachet batch sent to the warehouse.");
+      const stage = resolveStage(b);
+      if (stage.id !== lastWarehouseStage(b))
+        throw new Error(
+          "The box count is entered with the last warehouse stage (Shrink machine).",
+        );
+      if (stageStep(b, stage.id)?.done)
+        throw new Error(
+          "This stage is already recorded. Enter the box count from the receipt awaiting boxing instead.",
+        );
+      const open = warehouseStages(b).filter(
+        (key) => key !== stage.id && !stageSatisfied(b, key),
+      );
+      if (open.length)
+        throw new Error(
+          "Record " +
+            open.map((key) => sachetStage(key)!.en).join(" and ") +
+            " (or skip an optional stage) before the Shrink machine and box count.",
+        );
+      const pic = str("pic");
+      completeStage(b, stage);
+      countBoxes(
+        b,
+        adypocideReceipts(s).find((r) => r.batchId === b.id && !r.stockedAt),
+        pic,
       );
       break;
     }
@@ -2209,48 +2374,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           (r) => r.batchId === sent.id && !r.stockedAt,
         );
       }
-      // Batches planned with a route need their warehouse stages recorded before box stock
-      // exists; the factory stages were already required at transfer. Historical batches
-      // without a route snapshot are not re-checked.
-      if (batch.route && !warehouseStagesDone(batch))
-        throw new Error(
-          "Record the warehouse stages (batching, hologram, wrapping) with their PICs before finalizing the box count.",
-        );
-      const boxes = num("boxes"),
-        pic = str("pic"),
-        rack = str("rack"),
-        ref = batch.code;
-      if (!receipt) {
-        receipt = { id: id(), ref, batchId: batch.id, pic, at };
-        (s.adypocideReceipts ??= []).unshift(receipt);
-        log(
-          batch.id,
-          "Sachet cartons received for boxing",
-          ref + " · " + pic + " · recorded at the box count",
-        );
-      }
-      const carton: Carton = {
-        id: id(),
-        ref,
-        batchId: receipt.batchId,
-        product: batch.product,
-        unit: batchUnit(batch),
-        qty: boxes,
-        rack,
-        pic,
-        at,
-      };
-      s.cartons.unshift(carton);
-      const finalized = { ...receipt, stockedAt: at, stockCartonId: carton.id };
-      s.adypocideReceipts ??= [];
-      const index = s.adypocideReceipts.findIndex((r) => r.id === finalized.id);
-      if (index < 0) s.adypocideReceipts.unshift(finalized);
-      else s.adypocideReceipts[index] = finalized;
-      log(
-        receipt.batchId,
-        "Sachet box count finalized",
-        receipt.ref + " · " + boxes + " boxes · " + pic,
-      );
+      countBoxes(batch, receipt, str("pic"));
       break;
     }
     case "box": {

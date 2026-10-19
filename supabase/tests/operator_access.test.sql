@@ -802,6 +802,76 @@ do $$ begin
     raise exception 'FAIL: factory_stage split'; end if;
 end $$;
 
+-- 9b. Optional stages (20261022090000). Hologram may be skipped with a reason by the
+--     signed-in supervisor; a skipped optional stage satisfies the box-count gate. Required
+--     stages cannot be skipped; a skip is only removed by a completion.
+\set X '''10000000-0000-4000-8000-0000000000c2'''
+insert into public.operator_workspaces (id, site_id, name, state) values
+  (:X, 'site-x', 'Synthetic site X', $${
+    "version":1,
+    "batches":[{"id":"x1","code":"SYN-X-1","product":"ady","date":"2026-10-01","target":0,"actual":0,"sent":0,
+      "transferredAt":"2026-10-04T00:00:00Z","transferPic":"F",
+      "route":{"id":"sachet-v2","stages":["mixing","filling","batching","hologram","wrapping"],"at":"t"},
+      "steps":[
+        {"sachetStage":"mixing","pic":"P1","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"filling","pic":"P2","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"batching","pic":"P3","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"hologram","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"wrapping","pic":"P5","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"}]},
+      {"id":"x2","code":"SYN-X-2","product":"ady","date":"2026-10-01","target":0,"actual":0,"sent":0,
+      "transferredAt":"2026-10-04T00:00:00Z","transferPic":"F",
+      "route":{"id":"sachet-v2","stages":["mixing","filling","batching","hologram","wrapping"],"at":"t"},
+      "steps":[
+        {"sachetStage":"mixing","pic":"P1","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"filling","pic":"P2","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"batching","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"hologram","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"wrapping","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"}]}],
+    "cartons":[],"adypocideReceipts":[],"orders":[],"issues":[],"boxing":[],"counts":[],"adjustments":[],
+    "events":[],"notes":[],"closedDays":[]}$$::jsonb);
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values
+  (:X, '00000000-0000-4000-8000-000000000001', 'production', 'SV X', 'site'),
+  (:X, '00000000-0000-4000-8000-000000000006', 'intake', 'SI X', 'site');
+create function pg_temp.skip(p_state jsonb, p_batch int, p_pos int, p_reason text, p_uid text) returns jsonb language sql as $$
+  select jsonb_set(p_state, array['batches',p_batch::text,'steps',p_pos::text,'skipped'],
+    jsonb_build_object('at', 't', 'reason', p_reason, 'recordedBy', jsonb_build_object('userId', p_uid))) $$;
+create function pg_temp.boxed_x(p_state jsonb) returns jsonb language sql as $$
+  select jsonb_set(p_state, '{cartons}', '[{"id":"cx1","ref":"SYN-X-1","batchId":"x1","product":"ady","unit":"box","qty":12,"rack":"B","pic":"SI","at":"t"}]') $$;
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :X, 'stock-in-ady',
+  pg_temp.boxed_x(pg_temp.state(:X))), '23514', 'box carton with Hologram neither recorded nor skipped');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :X, 'stage-skip',
+  pg_temp.skip(pg_temp.state(:X), 1, 2, 'No batching this run', '00000000-0000-4000-8000-000000000006')),
+  '23514', 'skip a required stage (batching)');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :X, 'stage-skip',
+  pg_temp.skip(pg_temp.state(:X), 0, 3, 'No hologram for this product', '00000000-0000-4000-8000-000000000001')),
+  '23514', 'skip attributed to another user');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :X, 'stage-skip',
+  pg_temp.skip(pg_temp.state(:X), 0, 3, '', '00000000-0000-4000-8000-000000000006')),
+  '23514', 'skip without a reason');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :X, 'stage-skip',
+  jsonb_set(pg_temp.state(:X), '{batches,0,steps,3,skipped}', '"yes"')), '23514', 'skip that is not an object');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :X, 'stage-skip',
+  pg_temp.skip(pg_temp.state(:X), 0, 3, 'No hologram for this product', '00000000-0000-4000-8000-000000000006')),
+  'ok', 'stock-in skips Hologram with a reason');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :X, 'stage-skip',
+  pg_temp.state(:X) #- '{batches,0,steps,3,skipped}'), '23514', 'remove a skip without a completion');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :X, 'stock-in-ady',
+  pg_temp.boxed_x(pg_temp.state(:X))), 'ok', 'box carton with Hologram skipped');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000001', :X, 'machine',
+  jsonb_set(jsonb_set(pg_temp.state(:X) #- '{batches,0,steps,3,skipped}', '{batches,0,steps,3,pic}', '"P4"'),
+    '{batches,0,steps,3,done}', 'true')), 'ok', 'a completion replaces the skip');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000006', :X, 'wrapping-count',
+  jsonb_set(pg_temp.skip(pg_temp.state(:X), 1, 3, 'No hologram', '00000000-0000-4000-8000-000000000006'),
+    '{cartons}', (pg_temp.state(:X) -> 'cartons')
+      || '[{"id":"cx2","ref":"SYN-X-2","batchId":"x2","product":"ady","unit":"box","qty":5,"rack":"B","pic":"SI","at":"t"}]')),
+  '23514', 'wrapping-count with batching and wrapping still open');
+do $$ begin
+  if not operator_private.optional_stage('hologram') or operator_private.optional_stage('mixing')
+    or operator_private.optional_stage('filling') or operator_private.optional_stage('batching')
+    or operator_private.optional_stage('wrapping') then
+    raise exception 'FAIL: optional_stage split'; end if;
+end $$;
+
 -- 10. Stock returns (20261009090002): append-only, attributed, into an existing carton.
 \set SI '''00000000-0000-4000-8000-000000000006'''
 create function pg_temp.ret(p_id text, p_carton text, p_qty jsonb, p_uid text) returns jsonb language sql as $$
@@ -1138,6 +1208,8 @@ do $$ begin
     or not exists (select 1 from jsonb_array_elements(pg_temp.state() -> 'batches') b
       where b ->> 'id' = 'x-ady' and b -> 'cancelled' ->> 'reason' = 'Recorded with the wrong date') then
     raise exception 'FAIL: expected the corrected date and the cancelled batch kept in the document'; end if;
+end $$;
+
 -- 12e. Package SKU mappings (20261020090000). Only the import capability (the office admin)
 --      maps, edits, retires or reactivates a SKU; the mappings are a new top-level key that
 --      only these commands change, and these commands change nothing else.

@@ -179,3 +179,131 @@ test("historical batches without a route snapshot are not re-gated at the box co
   const next = as(s, "intake", "stock-in-ady", { receiptId: "r-old", boxes: 2, rack: "B", pic: "SV" });
   assert.equal(next.cartons[0].qty, 2);
 });
+
+// Optional stages (20261022090000): Hologram may be skipped with a reason; the Shrink machine
+// is recorded together with the finished box count.
+import {
+  isOptionalStage,
+  optionalStages,
+  stageSatisfied,
+  stageSkipped,
+} from "../apps/web/src/lib/draft.ts";
+
+const atWarehouse = () => {
+  let s = planned();
+  const id = s.batches[0].id;
+  s = record(s, "production", id, "mixing");
+  s = record(s, "production", id, "filling");
+  s = as(s, "production", "transfer", { id, pic: "F" });
+  return { s, id };
+};
+
+test("the optional stages match the database function", () => {
+  const sql = readFileSync(
+    new URL("../supabase/migrations/20261022090000_operator_optional_stages.sql", import.meta.url),
+    "utf8",
+  );
+  const start = sql.indexOf("create function operator_private.optional_stage");
+  const body = sql.slice(start, sql.indexOf("$$;", start));
+  const listed = /p_stage in \(([^)]*)\)/.exec(body)[1].match(/'([^']+)'/g).map((x) => x.slice(1, -1));
+  assert.deepEqual(listed, optionalStages);
+  assert.equal(isOptionalStage("hologram"), true);
+  for (const stage of ["mixing", "filling", "batching", "wrapping"]) assert.equal(isOptionalStage(stage), false);
+});
+
+test("Hologram can be skipped with a reason and then counts for the box count", () => {
+  let { s, id } = atWarehouse();
+  s = as(s, "intake", "receive-ady", { batchId: id, pic: "Receiver" });
+  const receiptId = s.adypocideReceipts[0].id;
+  s = record(s, "intake", id, "batching");
+  s = record(s, "intake", id, "wrapping");
+  assert.throws(
+    () => as(s, "intake", "stock-in-ady", { receiptId, boxes: 10, rack: "B-1", pic: "Nurul" }),
+    /or skip an optional stage/,
+  );
+  // Required stages cannot be skipped; a reason is required.
+  assert.throws(() => as(s, "intake", "stage-skip", { id, stage: "batching", reason: "x" }), /cannot be skipped/);
+  assert.throws(() => as(s, "intake", "stage-skip", { id, stage: "hologram" }), /reason/i);
+  const before = s;
+  s = as(s, "intake", "stage-skip", { id, stage: "hologram", reason: "Plain pack, no hologram" });
+  assert.deepEqual(outOfScopeKeys("stage-skip", before, s), []);
+  const step = stageStep(s.batches[0], "hologram");
+  assert.equal(step.done, false);
+  assert.equal(step.skipped.reason, "Plain pack, no hologram");
+  assert.equal(step.skipped.recordedBy.userId, "u-intake");
+  assert.equal(stageSkipped(s.batches[0], "hologram"), true);
+  assert.equal(stageSatisfied(s.batches[0], "hologram"), true);
+  assert.equal(warehouseStagesDone(s.batches[0]), true);
+  assert.equal(batchComplete(s.batches[0]), true);
+  assert.equal(s.batches[0].revisions, undefined);
+  assert.match(s.events[0].action, /skipped/);
+  assert.throws(() => as(s, "intake", "stage-skip", { id, stage: "hologram", reason: "again" }), /already skipped/);
+  // Rework and corrections still need a completion.
+  assert.throws(() => as(s, "intake", "stage-rework", { id, stage: "hologram", pic: "P", reason: "x" }), /first completion/);
+  s = as(s, "intake", "stock-in-ady", { receiptId, boxes: 10, rack: "B-1", pic: "Nurul" });
+  assert.equal(s.cartons[0].qty, 10);
+  // Stages are closed once the box count is finalized.
+  assert.throws(() => as(s, "intake", "stage-skip", { id, stage: "hologram", reason: "x" }), /already/);
+});
+
+test("a skipped stage can still be completed later; the skip is cleared", () => {
+  let { s, id } = atWarehouse();
+  s = as(s, "intake", "stage-skip", { id, stage: "hologram", reason: "Thought not needed" });
+  s = record(s, "intake", id, "hologram", "Holo PIC");
+  const step = stageStep(s.batches[0], "hologram");
+  assert.equal(step.done, true);
+  assert.equal(step.pic, "Holo PIC");
+  assert.equal(step.skipped, undefined);
+  assert.match(s.events[0].detail, /after being skipped/);
+  assert.throws(() => as(s, "intake", "stage-skip", { id, stage: "hologram", reason: "x" }), /already has a recorded PIC/);
+});
+
+test("the Shrink machine is recorded with the finished box count in one entry", () => {
+  let { s, id } = atWarehouse();
+  const count = (state, extra = {}) =>
+    as(state, "intake", "wrapping-count", { id, stage: "wrapping", pic: "Nurul", boxes: 24, rack: "B-2", ...extra });
+  // Earlier warehouse stages first (hologram may be skipped).
+  assert.throws(() => count(s), /Record Inkjet printer \(batching\) and Hologram machine \(or skip/);
+  s = record(s, "intake", id, "batching");
+  assert.throws(() => count(s), /Record Hologram machine \(or skip/);
+  s = as(s, "intake", "stage-skip", { id, stage: "hologram", reason: "No hologram" });
+  // Only the last warehouse stage carries the count; only stock-in enters it.
+  assert.throws(() => count(s, { stage: "batching" }), /last warehouse stage/);
+  assert.throws(
+    () => as(s, "production", "wrapping-count", { id, stage: "wrapping", pic: "P", boxes: 1, rack: "B" }),
+    /intake|role|allowed/i,
+  );
+  const before = s;
+  s = count(s);
+  assert.deepEqual(outOfScopeKeys("wrapping-count", before, s), []);
+  const wrap = stageStep(s.batches[0], "wrapping");
+  assert.equal(wrap.done, true);
+  assert.equal(wrap.pic, "Nurul");
+  assert.equal(wrap.recordedBy.userId, "u-intake");
+  // The receipt is recorded with the count and finalized; one box carton on the rack.
+  const receipts = s.adypocideReceipts.filter((r) => r.batchId === id);
+  assert.equal(receipts.length, 1);
+  assert.ok(receipts[0].stockedAt);
+  assert.equal(s.cartons.filter((c) => c.batchId === id).length, 1);
+  assert.equal(s.cartons[0].qty, 24);
+  assert.equal(s.cartons[0].unit, "box");
+  assert.equal(s.cartons[0].rack, "B-2");
+  assert.equal(s.cartons[0].batchId, id);
+  assert.equal(s.batches[0].revisions, undefined);
+  // A second count goes through the ordinary box stock-in; the stage is not recorded twice.
+  assert.throws(() => count(s), /already recorded/);
+  s = as(s, "intake", "stock-in-ady", { batchId: id, boxes: 6, rack: "B-2", pic: "Nurul" });
+  assert.equal(s.cartons.filter((c) => c.batchId === id).length, 2);
+});
+
+test("the combined entry uses the receipt awaiting boxing when there is one", () => {
+  let { s, id } = atWarehouse();
+  s = as(s, "intake", "receive-ady", { batchId: id, pic: "Receiver" });
+  s = record(s, "intake", id, "batching");
+  s = record(s, "intake", id, "hologram");
+  s = as(s, "intake", "wrapping-count", { id, stage: "wrapping", pic: "Nurul", boxes: 3, rack: "B" });
+  const receipts = s.adypocideReceipts.filter((r) => r.batchId === id);
+  assert.equal(receipts.length, 1);
+  assert.equal(receipts[0].pic, "Receiver");
+  assert.equal(receipts[0].stockCartonId, s.cartons[0].id);
+});

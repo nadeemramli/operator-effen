@@ -93,6 +93,8 @@ test("a sachet supervisor cannot change a bottle batch with any production comma
     ["route-review", { id, decision: "upgrade", reason: "x" }],
     ["batch-cancel", { id, reason: "x", pic: "P" }],
     ["batch-correct", { id, field: "date", date: "2026-10-06", reason: "x", pic: "P" }],
+    ["stage-skip", { id, stage: "hologram", reason: "x" }],
+    ["wrapping-count", { id, stage: "wrapping", pic: "P", boxes: 1, rack: "R" }],
   ];
   for (const [type, input] of attempts) {
     const result = save(s, "sachet", type, input);

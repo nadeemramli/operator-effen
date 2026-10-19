@@ -4,7 +4,9 @@ import { useState } from "react";
 import {
   AlertTriangle,
   ArrowUpRight,
+  Check,
   ChevronRight,
+  CircleSlash,
   Plus,
   Search,
   Settings,
@@ -29,14 +31,17 @@ import {
   batchRoute,
   batchTransferred,
   isFactoryStage,
+  isOptionalStage,
   isSachet,
+  lastWarehouseStage,
   product,
   recorderLabel,
   routeStages,
   sachetProcesses,
   sachetRoutes,
   sachetStage,
-  stageDone,
+  stageSatisfied,
+  stageSkipped,
   stageStep,
   stepNames,
   toMyt,
@@ -48,6 +53,7 @@ import {
   type Lang,
   type Machine,
   type Role,
+  type SachetStage,
   type Step,
 } from "@/lib/draft";
 
@@ -406,6 +412,7 @@ export function StageRecords({
   role,
   stageFilter,
   onBoxCount,
+  canCountBoxes,
 }: {
   batch: Batch;
   state: Draft;
@@ -417,9 +424,15 @@ export function StageRecords({
   stageFilter?: "factory" | "warehouse";
   /** Present when the viewer may enter the batch's finished box count (stock.receive). */
   onBoxCount?: (batch: Batch) => void;
+  /**
+   * The viewer may enter the box count (stock.receive): the Shrink machine completion then
+   * takes the finished box count in the same entry. Defaults to the presence of onBoxCount.
+   */
+  canCountBoxes?: boolean;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const editable = !!show && !!pic;
+  const counts = canCountBoxes ?? !!onBoxCount;
   const sent = batchTransferred(b);
   const boxed = adypocideReceipts(state).some(
     (r) => r.batchId === b.id && !!r.stockedAt,
@@ -441,43 +454,88 @@ export function StageRecords({
   const readOnly = (key: string) =>
     isFactoryStage(key) && (role === "intake" || stageFilter === "warehouse");
   // The batch's finished box total belongs to its last warehouse stage (the Shrink machine).
-  const last = route.at(-1);
-  const totalStage = last && !isFactoryStage(last.id) ? last.id : undefined;
+  const totalStage = lastWarehouseStage(b);
   const total = batchBoxTotal(state, b);
   // Batches planned with a route need their warehouse stages before the box count.
   const boxReady = !b.route || warehouseStagesDone(b);
-  const record = (stage: (typeof sachetProcesses)[number], step?: Step) =>
+  // The first stage still open, in route order: the one to do next.
+  const nextStage = route.find(
+    (stage) => !stageSatisfied(b, stage.id) && !closed(stage.id),
+  )?.id;
+  const stageName = (stage: SachetStage) => t(stage.en, stage.ms);
+  const stageFields = (stage: SachetStage, step?: Step): Field[] => [
+    {
+      ...pic!("pic", t("Performed by (PIC)", "Dilakukan oleh (PIC)")),
+      value: step?.pic || undefined,
+    },
+    {
+      name: "machineId",
+      label: t("Machine used", "Mesin digunakan"),
+      type: "select",
+      required: false,
+      options: machineOptions(state, stage.id, lang),
+    },
+    occurredField(lang),
+  ];
+  const record = (stage: SachetStage, step?: Step) =>
     show!({
       type: "machine",
       title: t("Record stage completion", "Rekod penyiapan peringkat"),
-      description: `${b.code} · ${t(stage.en, stage.ms)} · ${t(
+      description: `${b.code} · ${stageName(stage)} · ${t(
         "Enter the person who actually did the work.",
         "Masukkan orang yang sebenarnya melakukan kerja.",
       )}`,
       hidden: { id: b.id, stage: stage.id, expectedVersion: step?.version ?? 0 },
-      fields: [
-        {
-          ...pic!(
-            "pic",
-            t("Performed by (PIC)", "Dilakukan oleh (PIC)"),
-          ),
-          value: step?.pic || undefined,
-        },
-        {
-          name: "machineId",
-          label: t("Machine used", "Mesin digunakan"),
-          type: "select",
-          required: false,
-          options: machineOptions(state, stage.id, lang),
-        },
-        occurredField(lang),
-      ],
+      fields: stageFields(stage, step),
+      submit: t("Save completion", "Simpan penyiapan"),
     });
-  const rework = (stage: (typeof sachetProcesses)[number], step: Step) =>
+  // The Shrink machine and the finished box count, saved together (wrapping-count).
+  const recordWithCount = (stage: SachetStage, step?: Step) =>
+    show!({
+      type: "wrapping-count",
+      title: t(
+        "Record Shrink machine and box count",
+        "Rekod mesin shrink dan kiraan kotak",
+      ),
+      description: `${b.code} · ${stageName(stage)} · ${t(
+        "Enter who ran the machine, then the finished boxes counted after wrapping. One box is one stock unit.",
+        "Masukkan siapa yang mengendalikan mesin, kemudian kotak siap yang dikira selepas balutan. Satu kotak ialah satu unit stok.",
+      )}`,
+      hidden: { id: b.id, stage: stage.id, expectedVersion: step?.version ?? 0 },
+      fields: [
+        ...stageFields(stage, step),
+        {
+          name: "boxes",
+          label: t("Finished boxes counted", "Kotak siap dikira"),
+          type: "number",
+          min: 0,
+        },
+        { name: "rack", label: t("Rack / location", "Rak / lokasi") },
+      ],
+      submit: t("Save stage and box count", "Simpan peringkat dan kiraan kotak"),
+    });
+  const skip = (stage: SachetStage, step?: Step) =>
+    show!({
+      type: "stage-skip",
+      title: t("Skip this stage", "Langkau peringkat ini"),
+      description: `${b.code} · ${stageName(stage)} · ${t(
+        "Only for a batch that does not need this stage. No PIC is recorded; the batch can still be boxed and counted. If the work is done after all, record it later.",
+        "Hanya untuk kelompok yang tidak memerlukan peringkat ini. Tiada PIC direkodkan; kelompok masih boleh dikotakkan dan dikira. Jika kerja dilakukan juga, rekodkan kemudian.",
+      )}`,
+      hidden: { id: b.id, stage: stage.id, expectedVersion: step?.version ?? 0 },
+      fields: [
+        reasonField(
+          lang,
+          t("Why is this stage not needed?", "Mengapa peringkat ini tidak diperlukan?"),
+        ),
+      ],
+      submit: t("Skip stage", "Langkau peringkat"),
+    });
+  const rework = (stage: SachetStage, step: Step) =>
     show!({
       type: "stage-rework",
       title: t("Record rework / repeat run", "Rekod kerja semula"),
-      description: `${b.code} · ${t(stage.en, stage.ms)}`,
+      description: `${b.code} · ${stageName(stage)}`,
       hidden: { id: b.id, stage: stage.id, expectedVersion: step.version ?? 0 },
       fields: [
         pic!("pic", t("Performed by (PIC)", "Dilakukan oleh (PIC)")),
@@ -493,7 +551,7 @@ export function StageRecords({
       ],
     });
   const correct = (
-    stage: (typeof sachetProcesses)[number],
+    stage: SachetStage,
     step: Step,
     field: "machine" | "occurredAt",
   ) =>
@@ -504,7 +562,7 @@ export function StageRecords({
           ? t("Correct machine used", "Betulkan mesin digunakan")
           : t("Correct completion time", "Betulkan masa siap"),
       description:
-        `${b.code} · ${t(stage.en, stage.ms)}` +
+        `${b.code} · ${stageName(stage)}` +
         (revised(stage.id)
           ? " · " +
             t(
@@ -526,13 +584,30 @@ export function StageRecords({
         reasonField(lang, t("Correction reason", "Sebab pembetulan")),
       ],
     });
+  // Warehouse stages still open besides the Shrink machine, for the box-count hints.
+  const openBefore = warehouseStages(b)
+    .filter((key) => key !== totalStage && !stageSatisfied(b, key))
+    .map((key) => stageName(sachetStage(key)!));
+  const openBeforeHint =
+    openBefore.length === 0
+      ? ""
+      : t(
+          `Record ${openBefore.join(" and ")} first` +
+            (openBefore.some((name) => name === stageName(sachetStage("hologram")!))
+              ? " (Hologram can be skipped)."
+              : "."),
+          `Rekod ${openBefore.join(" dan ")} dahulu` +
+            (openBefore.some((name) => name === stageName(sachetStage("hologram")!))
+              ? " (Hologram boleh dilangkau)."
+              : "."),
+        );
   return (
     <div className="table-scroll my-4">
       <table className="machine-records">
         <thead>
           <tr>
             <th>{t("Stage / machine", "Peringkat / mesin")}</th>
-            <th>{t("Performed by (PIC)", "Dilakukan oleh (PIC)")}</th>
+            <th>{t("Status / PIC", "Status / PIC")}</th>
           </tr>
         </thead>
         <tbody>
@@ -540,16 +615,46 @@ export function StageRecords({
             const step = stageStep(b, stage.id);
             const index = step ? b.steps.indexOf(step) : -1;
             const canEdit = editable && !readOnly(stage.id);
+            const done = !!step?.done;
+            const skipped = stageSkipped(b, stage.id);
+            const open = !done && !skipped && !closed(stage.id);
+            // The Shrink machine takes the box count with it once every other warehouse
+            // stage is completed or skipped and no boxes are counted yet.
+            const withCount =
+              stage.id === totalStage &&
+              counts &&
+              sent &&
+              total === null &&
+              openBefore.length === 0;
+            const [tone, label] = done
+              ? ["tone-success", t("Completed", "Selesai")]
+              : skipped
+                ? ["tone-info", t("Skipped", "Dilangkau")]
+                : closed(stage.id)
+                  ? ["tone-muted", t("Not recorded", "Tidak direkod")]
+                  : stage.id === nextStage
+                    ? ["tone-warning", t("Next", "Seterusnya")]
+                    : ["tone-muted", t("Open", "Belum")];
             return (
-              <tr key={stage.id}>
+              <tr key={stage.id} className={stage.id === nextStage ? "stage-next" : undefined}>
                 <td data-label={t("Stage / machine", "Peringkat / mesin")}>
-                  {route.indexOf(stage) + 1}. {t(stage.en, stage.ms)}
-                  {step?.done && (
+                  <span className="stage-name">
+                    {route.indexOf(stage) + 1}. {stageName(stage)}
+                  </span>
+                  {done && (
                     <small>
-                      {step.machineName ??
+                      {step!.machineName ??
                         t("Machine not specified", "Mesin tidak dinyatakan")}
                       {" · "}
-                      {when(step.occurredAt, lang)}
+                      {when(step!.occurredAt, lang)}
+                    </small>
+                  )}
+                  {skipped && (
+                    <small className="stage-skip-note">
+                      {t("Skipped", "Dilangkau")}: {step!.skipped!.reason} ·{" "}
+                      {when(step!.skipped!.at, lang)} ·{" "}
+                      {t("entered by", "direkod oleh")}{" "}
+                      {recorderLabel(step!.skipped!.recordedBy)}
                     </small>
                   )}
                   {readOnly(stage.id) && (
@@ -568,19 +673,26 @@ export function StageRecords({
                     </span>
                   )}
                 </td>
-                <td data-label="PIC">
-                  {step?.pic && (
-                    <PersonBadge
-                      name={step.pic}
-                      lang={lang}
-                      caption={
-                        step.done
-                          ? t("Performed the work", "Melakukan kerja")
-                          : t("Planned PIC (not done)", "PIC dirancang (belum selesai)")
-                      }
-                    />
-                  )}
-                  {step?.recordedBy && (
+                <td data-label={t("Status / PIC", "Status / PIC")}>
+                  <div className="stage-status">
+                    <span className={"status-pill " + tone}>
+                      {done && <Check size={12} />}
+                      {skipped && <CircleSlash size={12} />}
+                      {label}
+                    </span>
+                    {step?.pic && (
+                      <PersonBadge
+                        name={step.pic}
+                        lang={lang}
+                        caption={
+                          done
+                            ? t("Performed the work", "Melakukan kerja")
+                            : t("Planned PIC (not done)", "PIC dirancang (belum selesai)")
+                        }
+                      />
+                    )}
+                  </div>
+                  {done && step?.recordedBy && (
                     <small className="block text-muted-foreground">
                       {t("Entered by", "Direkod oleh")}{" "}
                       {recorderLabel(step.recordedBy)}
@@ -596,61 +708,95 @@ export function StageRecords({
                     </small>
                   ))}
                   <div className="stage-actions">
-                  {canEdit && !step?.done && !closed(stage.id) && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => record(stage, step)}
-                    >
-                      {step?.pic
-                        ? t("Confirm completion", "Sahkan penyiapan")
-                        : t("Record completion", "Rekod penyiapan")}
-                    </Button>
-                  )}
-                  {!canEdit && !step?.done && (
-                    <span className="text-muted-foreground">
-                      {t("Not completed", "Belum selesai")}
-                    </span>
-                  )}
-                  {canEdit && step?.done && (
-                    <span className="flex flex-wrap gap-1">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => correct(stage, step, "machine")}
-                      >
-                        {t("Correct machine", "Betulkan mesin")}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => correct(stage, step, "occurredAt")}
-                      >
-                        {t("Correct time", "Betulkan masa")}
-                      </Button>
-                      {!closed(stage.id) && (
+                    {canEdit && open && (
+                      <>
                         <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => rework(stage, step)}
+                          className="stage-record-button action-primary"
+                          onClick={() =>
+                            withCount ? recordWithCount(stage, step) : record(stage, step)
+                          }
                         >
-                          {t("Rework", "Kerja semula")}
+                          <Check size={16} />
+                          {withCount
+                            ? t("Record completion + box count", "Rekod penyiapan + kiraan kotak")
+                            : step?.pic
+                              ? t("Confirm completion", "Sahkan penyiapan")
+                              : t("Record completion", "Rekod penyiapan")}
                         </Button>
-                      )}
-                    </span>
-                  )}
+                        {isOptionalStage(stage.id) && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => skip(stage, step)}
+                          >
+                            <CircleSlash size={14} />
+                            {t("Not needed – skip", "Tidak perlu – langkau")}
+                          </Button>
+                        )}
+                      </>
+                    )}
+                    {canEdit && skipped && !closed(stage.id) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => record(stage, step)}
+                      >
+                        {t("Record it after all", "Rekodkan juga")}
+                      </Button>
+                    )}
+                    {!canEdit && !done && !skipped && (
+                      <span className="text-muted-foreground">
+                        {t("Not completed", "Belum selesai")}
+                      </span>
+                    )}
+                  </div>
                   {step && canEdit ? (
-                    <ProcessPicTools
-                      batch={b}
-                      index={index}
-                      lang={lang}
-                      show={show!}
-                      pic={pic!}
-                    />
+                    <details className="stage-more">
+                      <summary>
+                        {done
+                          ? t("Corrections & history", "Pembetulan & sejarah")
+                          : t("Planned PIC & history", "PIC dirancang & sejarah")}
+                      </summary>
+                      <div className="stage-more-body">
+                        {done && (
+                          <span className="flex flex-wrap gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => correct(stage, step, "machine")}
+                            >
+                              {t("Correct machine", "Betulkan mesin")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => correct(stage, step, "occurredAt")}
+                            >
+                              {t("Correct time", "Betulkan masa")}
+                            </Button>
+                            {!closed(stage.id) && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => rework(stage, step)}
+                              >
+                                {t("Rework", "Kerja semula")}
+                              </Button>
+                            )}
+                          </span>
+                        )}
+                        <ProcessPicTools
+                          batch={b}
+                          index={index}
+                          lang={lang}
+                          show={show!}
+                          pic={pic!}
+                        />
+                      </div>
+                    </details>
                   ) : (
                     step && <ProcessPicHistory step={step} lang={lang} />
                   )}
-                  </div>
                   {stage.id === totalStage && onBoxCount && !b.cancelled && (
                     <div className="stage-box-count">
                       {!sent ? (
@@ -660,18 +806,18 @@ export function StageRecords({
                             "Jumlah kotak dimasukkan selepas pengeluaran menghantar kelompok.",
                           )}
                         </p>
+                      ) : !done ? (
+                        canEdit && !withCount && openBefore.length > 0 ? (
+                          <p className="field-hint">
+                            {openBeforeHint}{" "}
+                            {t(
+                              "The box count is then entered with this stage.",
+                              "Kiraan kotak kemudian dimasukkan bersama peringkat ini.",
+                            )}
+                          </p>
+                        ) : null
                       ) : !boxReady ? (
-                        <p className="field-hint">
-                          {warehouseStages(b).includes("hologram")
-                            ? t(
-                                "Record batching, hologram and wrapping first.",
-                                "Rekod nombor kelompok, hologram dan balutan dahulu.",
-                              )
-                            : t(
-                                "Record batching and wrapping first.",
-                                "Rekod nombor kelompok dan balutan dahulu.",
-                              )}
-                        </p>
+                        <p className="field-hint">{openBeforeHint}</p>
                       ) : (
                         <Button
                           size="sm"
@@ -1018,7 +1164,7 @@ export function SachetProductionRecords({
             const stages = warehouseView
               ? warehouseStages(b)
               : routeStages(b).map((stage) => stage.id);
-            const done = stages.filter((key) => stageDone(b, key)).length;
+            const done = stages.filter((key) => stageSatisfied(b, key)).length;
             const total = batchBoxTotal(state, b);
             const [tone, status] = warehouseView
               ? !batchTransferred(b)

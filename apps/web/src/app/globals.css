@@ -3327,3 +3327,58 @@ td.actions {
   align-items: center;
   gap: 8px;
 }
+/* Sachet stage records: one clear status and one clear action per stage (2026-10-19). */
+.machine-records .stage-name {
+  font-weight: 600;
+}
+.machine-records tr.stage-next td:first-child {
+  box-shadow: inset 3px 0 0 var(--warning, #d97706);
+}
+.stage-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.stage-status .status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.stage-skip-note {
+  color: var(--foreground);
+}
+.stage-record-button {
+  min-height: 44px;
+  padding: 0 16px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.stage-actions .stage-record-button {
+  margin-left: 10px;
+}
+.stage-more {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.stage-more summary {
+  cursor: pointer;
+  padding: 6px 0;
+}
+.stage-more-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0 8px;
+}
+@media (max-width: 600px) {
+  .stage-actions .stage-record-button {
+    width: 100%;
+    margin-left: 0;
+  }
+  .stage-actions {
+    margin-left: 0;
+  }
+}

@@ -128,7 +128,15 @@ warehouse once both have a PIC; stock-in records batching, hologram and wrapping
 receipt, and the box count can be finalized only when all five stages have a PIC (migration
 `20261009090001_operator_warehouse_stages.sql`). Completed four-stage batches
 keep their historical route; unfinished ones need an explicit route review. Production
-and Stock-in edit the same stage records. See
+and Stock-in edit the same stage records. Since 19 October 2026 the Hologram stage is
+optional: a batch that does not need it is marked **Not needed – skip** with a reason (no PIC
+is recorded, and the stage can still be recorded later), and a skipped stage counts for the
+box count. The Shrink machine is recorded together with the finished box count in one entry
+(**Record completion + box count**) once batching and hologram are recorded or skipped; the
+receipt's **Finalize box count** and **Enter total boxes** remain for a stage recorded on its
+own (migration `20261022090000_operator_optional_stages.sql`). Each stage row shows one status
+(Next, Completed, Skipped) and one main button; corrections and PIC history sit under
+"Corrections & history". See
 [role-based entry and the five-stage route](docs/sv-entry-and-sachet-route.md).
 Historical free-form machine records keep their original labels and PICs; they
 are not automatically mapped to the new stages. A factory handoff and warehouse receipt do not create stock.

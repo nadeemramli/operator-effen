@@ -50,6 +50,7 @@ import {
   isFactoryStage,
   routeStages,
   stageDone,
+  stageSkipped,
   stageStep,
   warehouseStages,
   isQcStep,
@@ -1048,12 +1049,18 @@ function AdypocideProductionCard({
                     <span
                       className={
                         "status-pill " +
-                        (stageDone(b, stage.id) ? "tone-success" : "tone-muted")
+                        (stageDone(b, stage.id)
+                          ? "tone-success"
+                          : stageSkipped(b, stage.id)
+                            ? "tone-info"
+                            : "tone-muted")
                       }
                     >
                       {stageDone(b, stage.id)
                         ? step!.pic
-                        : t("Not yet", "Belum")}
+                        : stageSkipped(b, stage.id)
+                          ? t("Skipped", "Dilangkau")
+                          : t("Not yet", "Belum")}
                     </span>
                   </li>
                 );

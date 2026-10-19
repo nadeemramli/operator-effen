@@ -45,8 +45,11 @@ JSON document per site with one revision (normalized per-record storage is #10).
    batches, custody (transfer) facts and route snapshots are fixed; stage completion is never
    undone and PIC/correction/rework history is append-only; a batch with a route snapshot needs
    its factory stages (mixing, filling) completed with a PIC before transfer, and every route
-   stage completed with a PIC before a box carton is created for it (two gates since
-   2026-10-09, migration `20261009090001`); machines and their history persist.
+   stage completed with a PIC, or skipped with a reason if it is an optional stage, before a
+   box carton is created for it (two gates since 2026-10-09, migration `20261009090001`;
+   skips since 2026-10-19, migration `20261022090000`); a stage skip is an object with a
+   reason on an optional stage, attributed to the caller, and is only removed by a
+   completion; machines and their history persist.
 3. The commit, its audit row and the idempotency record (`operator_commits`) are one
    transaction. A retry with the same operation ID returns the established result; the same ID
    with different input is rejected.
@@ -153,6 +156,30 @@ author, site, optional record reference and time, and never edits operational re
 - Rework is recorded as an additional occurrence on the stage (performer, machine, actual
   time, reason, recorder). Late entry takes an actual Malaysia time; screen order is not
   enforced on timestamps.
+- **Optional stages (since 2026-10-19, owner decision).** Not every batch needs the Hologram
+  machine. `stage-skip` (capability `stage.record`, production or stock-in) marks an optional
+  stage as skipped with a reason: the step keeps `skipped {at, reason, recordedBy}`, no PIC
+  and no completion. A skipped stage satisfies the box-count gate (app and database) but is
+  never shown as completed; QC is still never inferred. Only the stages in `optionalStages`
+  (`hologram`; SQL `operator_private.optional_stage`, a test keeps them identical) can be
+  skipped; batching and wrapping cannot. A skipped stage can still be recorded later with
+  `machine`, which clears the skip and notes it in the audit entry; a skip cannot be removed
+  any other way, and nothing can be skipped once the box count is finalized. The route
+  snapshot is unchanged, so an upgraded or four-stage batch keeps its stages.
+- **Shrink machine with the box count (since 2026-10-19).** `wrapping-count` (capability
+  `stock.receive`, scope `{batches,cartons,adypocideReceipts,events}`) records the last
+  warehouse stage (the Shrink machine: PIC, machine, actual time) and the finished box count
+  (boxes, rack) in one commit, using the batch's receipt awaiting boxing or recording one
+  with the count, exactly as `stock-in-ady` does. It is offered only to stock-in, only while
+  the Shrink stage is open, no boxes are counted yet and every other warehouse stage is
+  completed or skipped; otherwise the stage is recorded on its own and the count follows
+  through **Finalize box count** or **Enter total boxes**. Further deliveries of the same
+  batch still use `stock-in-ady` ("Add boxes to the total").
+- **Stage rows (2026-10-19).** Each stage shows one status pill (Next, Open, Completed,
+  Skipped, Not recorded) and one main action: a large **Record completion** button (or
+  **Record completion + box count** on the Shrink machine), plus **Not needed – skip** on an
+  optional stage. Corrections, rework and PIC tools sit under "Corrections & history"; a
+  planned PIC's reassignment under "Planned PIC & history".
 
 ## Shared machine/PIC records (OPER-5)
 
@@ -414,15 +441,22 @@ commit;
 - `scripts/verify-migrations-local.sh` — applies all migrations to a disposable Postgres with
   stub `auth`/`storage` schemas, runs `supabase/tests/operator_access.test.sql` (bypass,
   signatures, invariants, capabilities, memberships, storage policies, trips, factory scope,
-  packer PINs),
-  rehearses rollback and re-applies.
+  packer PINs, optional stages),
+  rehearses rollback and re-applies. The cluster must run as an unprivileged user (`initdb`
+  refuses root); 2026-10-19 also closed an unterminated `do $$` block in section 12d of the
+  test file that had swallowed every later section.
 - `tests/integration/run-real-stack.sh` — real GoTrue, PostgREST and Storage API on a local
   Postgres behind `router.mjs` (prefix routing and CORS, as Kong does), with the production
   Next.js build and Chromium. Requires the binaries described in the script header.
 
 ## Rollback
 
-Run `supabase/rollback/20261009090003_operator_trip_dropoffs.down.sql`, then
+Run `supabase/rollback/20261022090000_operator_optional_stages.down.sql` first (restores the
+2026-10-09 box-count gate, drops `optional_stage` and removes the `stage-skip` and
+`wrapping-count` rules; a batch with a skipped Hologram stage then needs that stage recorded
+before any further box count), then the later floor migrations in reverse order as
+`scripts/verify-migrations-local.sh` rehearses them, then
+`supabase/rollback/20261009090003_operator_trip_dropoffs.down.sql`, then
 `supabase/rollback/20261009090002_operator_stock_returns.down.sql`, then
 `supabase/rollback/20261009090001_operator_warehouse_stages.down.sql` (restores the
 all-stages transfer gate), then

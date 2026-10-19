@@ -98,7 +98,7 @@ import {
   batchComplete,
   batchTransferred,
   cartonReturned,
-  stageDone,
+  stageSatisfied,
   warehouseStages,
   warehouseStagesDone,
   isQcStep,
@@ -1958,7 +1958,7 @@ export function DraftApp() {
                       const gated = !!batch?.route && !receipt.stockedAt;
                       const stages = batch ? warehouseStages(batch) : [];
                       const recorded = batch
-                        ? stages.filter((k) => stageDone(batch, k)).length
+                        ? stages.filter((k) => stageSatisfied(batch, k)).length
                         : 0;
                       const ready = !gated || warehouseStagesDone(batch!);
                       return (
@@ -2058,8 +2058,8 @@ export function DraftApp() {
                                   className="field-hint block"
                                 >
                                   {t(
-                                    `${recorded} of ${stages.length} warehouse stages recorded. Record the rest below first.`,
-                                    `${recorded} daripada ${stages.length} peringkat gudang direkod. Rekod selebihnya di bawah dahulu.`,
+                                    `${recorded} of ${stages.length} warehouse stages recorded. Record the rest below first (Hologram can be skipped).`,
+                                    `${recorded} daripada ${stages.length} peringkat gudang direkod. Rekod selebihnya di bawah dahulu (Hologram boleh dilangkau).`,
                                   )}
                                 </small>
                               )}
@@ -2078,6 +2078,7 @@ export function DraftApp() {
                               pic={can("stage.record") ? pic : undefined}
                               role={role}
                               stageFilter="warehouse"
+                              canCountBoxes={can("stock.receive")}
                             />
                           </td>
                         </tr>

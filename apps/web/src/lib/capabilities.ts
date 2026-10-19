@@ -93,6 +93,7 @@ export const commandRules: Record<
   "batch-correct": { capability: "production.plan", stateKeys: ["batches", "events"] },
   machine: { capability: "stage.record", stateKeys: ["batches", "events"] },
   "stage-rework": { capability: "stage.record", stateKeys: ["batches", "events"] },
+  "stage-skip": { capability: "stage.record", stateKeys: ["batches", "events"] },
   "change-step-pic": { capability: "stage.correct", stateKeys: ["batches", "events"] },
   "stage-correct": { capability: "stage.correct", stateKeys: ["batches", "events"] },
   "machine-create": { capability: "machines.manage", stateKeys: ["machines", "events"] },
@@ -104,6 +105,10 @@ export const commandRules: Record<
   "stock-in-ady": {
     capability: "stock.receive",
     stateKeys: ["cartons", "adypocideReceipts", "events"],
+  },
+  "wrapping-count": {
+    capability: "stock.receive",
+    stateKeys: ["batches", "cartons", "adypocideReceipts", "events"],
   },
   count: { capability: "stock.receive", stateKeys: ["counts", "events"] },
   return: { capability: "stock.receive", stateKeys: ["returns", "events"] },

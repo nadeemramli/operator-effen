@@ -30,6 +30,7 @@ const later = [
   "20261011090000_operator_remove_awbs",
   "20261019090000_operator_batch_cancel",
   "20261020090000_operator_sku_aliases",
+  "20261022090000_operator_optional_stages",
 ].map(migration);
 const merged = (table) =>
   section(table) +
@@ -116,6 +117,14 @@ test("every operational command stays inside its database scope", () => {
   run("production", "transfer", { id, pic: "F" });
   run("intake", "receive-ady", { batchId: id, pic: "R" });
   run("intake", "stock-in-ady", { receiptId: s.adypocideReceipts[0].id, boxes: 3, rack: "R", pic: "R" });
+  // A second sachet batch: Hologram skipped, Shrink machine recorded with the box count.
+  run("production", "batch", { product: "ady", code: "COV-2", date: "2026-10-01" });
+  const second = s.batches[0].id;
+  for (const stage of ["mixing", "filling"]) run("production", "machine", { id: second, stage, pic: "P" });
+  run("production", "transfer", { id: second, pic: "F" });
+  run("intake", "machine", { id: second, stage: "batching", pic: "P" });
+  run("intake", "stage-skip", { id: second, stage: "hologram", reason: "No hologram for this product" });
+  run("intake", "wrapping-count", { id: second, stage: "wrapping", pic: "R", boxes: 2, rack: "R" });
   run("production", "batch", { product: "cav", code: "COV-B", date: "2026-10-01", target: 2 });
   const bottle = s.batches[0].id;
   for (let i = 0; i < 4; i++) run("production", "step", { id: bottle, step: i, pic: "P", ...(i === 3 ? { qty: 2, qc: "not-recorded" } : {}) });

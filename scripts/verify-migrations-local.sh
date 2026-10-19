@@ -16,6 +16,9 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261022090000_operator_optional_stages.down.sql"
+"${psql[@]}" -At -c "select count(*) from public.operator_command_rules where command in ('stage-skip', 'wrapping-count')" | grep -qx 0
+"${psql[@]}" -At -c "select to_regprocedure('operator_private.optional_stage(text)') is null" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261021090000_operator_nurokids.down.sql"
 "${psql[@]}" -At -c "select operator_private.product_factory('nur') is null and operator_private.product_factory('cav') = 'bottle'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261020090000_operator_sku_aliases.down.sql"
