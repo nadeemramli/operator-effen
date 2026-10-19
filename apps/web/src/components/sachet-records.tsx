@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -207,19 +207,24 @@ export function ProcessPicHistory({ step, lang }: { step: Step; lang: Lang }) {
   );
 }
 
-/** PIC change tools shared by bottle steps and sachet stages. */
+/**
+ * PIC change tools shared by bottle steps and sachet stages: one row of small actions
+ * (any `children` first, then the PIC ones) with the step's history underneath.
+ */
 export function ProcessPicTools({
   batch: b,
   index,
   lang,
   show,
   pic,
+  children,
 }: {
   batch: Batch;
   index: number;
   lang: Lang;
   show: Show;
   pic: Pic;
+  children?: ReactNode;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms),
     step = b.steps[index];
@@ -266,28 +271,24 @@ export function ProcessPicTools({
   }
   return (
     <div className="process-pic-tools">
-      {step.pic && !step.done ? (
-        <Button size="sm" variant="ghost" onClick={() => change("reassignment")}>
-          {t("Reassign", "Tugaskan semula")}
+      <div className="process-pic-actions">
+        {children}
+        {step.pic && !step.done ? (
+          <Button size="sm" variant="ghost" onClick={() => change("reassignment")}>
+            {t("Reassign", "Tugaskan semula")}
+          </Button>
+        ) : null}
+        <Button size="sm" variant="ghost" onClick={() => change("correction")}>
+          {step.pic
+            ? t("Correct PIC", "Betulkan PIC")
+            : t("Assign PIC", "Tetapkan PIC")}
         </Button>
-      ) : null}
-      <Button size="sm" variant="ghost" onClick={() => change("correction")}>
-        {step.pic
-          ? t("Correct PIC", "Betulkan PIC")
-          : t("Assign PIC", "Tetapkan PIC")}
-      </Button>
-      {step.pic && !batchTransferred(b) && (
-        <details className="pic-more">
-          <summary>{t("More", "Lagi")}</summary>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => change("handover")}
-          >
+        {step.pic && !batchTransferred(b) && (
+          <Button size="sm" variant="ghost" onClick={() => change("handover")}>
             {t("Shift handover", "Serahan syif")}
           </Button>
-        </details>
-      )}
+        )}
+      </div>
       <ProcessPicHistory step={step} lang={lang} />
     </div>
   );
@@ -758,40 +759,41 @@ export function StageRecords({
                           : t("Planned PIC & history", "PIC dirancang & sejarah")}
                       </summary>
                       <div className="stage-more-body">
-                        {done && (
-                          <span className="flex flex-wrap gap-1">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => correct(stage, step, "machine")}
-                            >
-                              {t("Correct machine", "Betulkan mesin")}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => correct(stage, step, "occurredAt")}
-                            >
-                              {t("Correct time", "Betulkan masa")}
-                            </Button>
-                            {!closed(stage.id) && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => rework(stage, step)}
-                              >
-                                {t("Rework", "Kerja semula")}
-                              </Button>
-                            )}
-                          </span>
-                        )}
                         <ProcessPicTools
                           batch={b}
                           index={index}
                           lang={lang}
                           show={show!}
                           pic={pic!}
-                        />
+                        >
+                          {done && (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => correct(stage, step, "machine")}
+                              >
+                                {t("Correct machine", "Betulkan mesin")}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => correct(stage, step, "occurredAt")}
+                              >
+                                {t("Correct time", "Betulkan masa")}
+                              </Button>
+                              {!closed(stage.id) && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => rework(stage, step)}
+                                >
+                                  {t("Rework", "Kerja semula")}
+                                </Button>
+                              )}
+                            </>
+                          )}
+                        </ProcessPicTools>
                       </div>
                     </details>
                   ) : (

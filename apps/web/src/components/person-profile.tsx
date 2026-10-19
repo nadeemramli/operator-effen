@@ -21,6 +21,12 @@ const colorIndex = (name: string) => {
   return hash;
 };
 
+/** The short mark in the avatar corner: a trailing initial such as "A" or "A.", else the first letter of the last word. */
+export const avatarMark = (name: string) => {
+  const last = name.trim().split(/\s+/).at(-1) || "?";
+  return last.length <= 2 ? last : last[0].toUpperCase();
+};
+
 /** Illustrative avatars (initial and colour), never staff photos. */
 export function PersonAvatar({ name }: { name: string }) {
   const index = colorIndex(name);
@@ -59,7 +65,7 @@ export function PersonAvatar({ name }: { name: string }) {
           strokeLinecap="round"
         />
       </svg>
-      <span className="pic-avatar-mark">{name.split(" ").at(-1) || "?"}</span>
+      <span className="pic-avatar-mark">{avatarMark(name)}</span>
     </span>
   );
 }

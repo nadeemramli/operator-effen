@@ -1280,6 +1280,8 @@ td small {
   border: 1px solid var(--border);
   color: var(--foreground);
   font: 9px var(--font-geist-mono);
+  overflow: hidden;
+  white-space: nowrap;
 }
 .pic-identity {
   display: block;
@@ -2931,10 +2933,12 @@ td small {
 .production-date-banner strong { font-size:22px; line-height:1.35; }
 .production-date-banner label { display:grid; gap:6px; font-size:12px; color:var(--muted-foreground); }
 .plan-pic-field { display:grid; gap:6px; margin-left:auto; min-width:210px; font-size:12px; color:var(--muted-foreground); }
-.process-pic-tools { display:flex; flex-wrap:wrap; gap:8px; align-items:start; padding:4px 0 12px; }
-.pic-more, .pic-history { font-size:12px; color:var(--muted-foreground); }
-.pic-more summary, .pic-history summary { cursor:pointer; padding:8px 0; }
-.pic-history { width:100%; white-space:normal; }
+/* PIC tools: one row of small actions, then the history block underneath. */
+.process-pic-tools { display:grid; gap:2px; width:100%; padding:4px 0 8px; }
+.process-pic-actions { display:flex; flex-wrap:wrap; align-items:center; gap:4px; }
+.process-pic-actions:empty { display:none; }
+.pic-history { font-size:12px; color:var(--muted-foreground); width:100%; white-space:normal; }
+.pic-history summary { cursor:pointer; padding:6px 0; }
 .pic-history p { margin:8px 0; line-height:1.65; }
 @media (max-width:600px) {
  .production-date-banner { flex-direction:column; align-items:stretch; padding:18px; }
@@ -3104,7 +3108,11 @@ td.actions {
   display: none;
 }
 .stage-actions > .process-pic-tools {
-  display: contents;
+  flex: 1 1 100%;
+  padding-top: 0;
+}
+.stage-actions > .process-pic-tools > .pic-history {
+  margin-left: 10px;
 }
 .stage-box-total {
   display: block;
@@ -3367,11 +3375,14 @@ td.actions {
   padding: 6px 0;
 }
 .stage-more-body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 0 8px;
+  padding: 2px 0 4px;
+}
+.stage-more-body > .process-pic-tools {
+  padding-top: 0;
+}
+/* Ghost buttons carry 10px of side padding: pull the row out so labels align with the text above. */
+.stage-more-body .process-pic-actions {
+  margin-left: -10px;
 }
 @media (max-width: 600px) {
   .stage-actions .stage-record-button {
