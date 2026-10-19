@@ -175,6 +175,18 @@ author, site, optional record reference and time, and never edits operational re
   completed or skipped; otherwise the stage is recorded on its own and the count follows
   through **Finalize box count** or **Enter total boxes**. Further deliveries of the same
   batch still use `stock-in-ady` ("Add boxes to the total").
+- **The receipt and the box count record the transfer (since 2026-10-19, migration
+  `20261023090000`).** Production was not pressing **Send to warehouse**, so receipts and
+  counts were blocked for batches the warehouse already had. `receive-ady`, `stock-in-ady`
+  and `wrapping-count` now set `transferredAt` and `transferPic` (the receiver's or
+  counter's PIC) on an unsent batch, under production's own gate: mixing and filling with a
+  PIC, legacy routes reviewed; otherwise they refuse with a message naming production. The
+  audit entry reads "Batch sent to warehouse … recorded at the receipt/box count by
+  stock-in". `receive-ady` and `stock-in-ady` therefore carry `batches` in their scope; the
+  database transfer gate checks the factory stages for every newly sent batch regardless of
+  the command. **Receive sachets for boxing** lists every sachet batch whose factory stages
+  are done, sent or not. Production's **Send to warehouse** is unchanged and still the
+  normal path.
 - **Stage rows (2026-10-19).** Each stage shows one status pill (Next, Open, Completed,
   Skipped, Not recorded) and one main action: a large **Record completion** button (or
   **Record completion + box count** on the Shrink machine), plus **Not needed – skip** on an
@@ -452,6 +464,18 @@ commit;
   first stored it under the day's timestamp, corrected the same minute).
 - Commit ec0603d pushed to `main` right after; no data was changed.
 
+## Stock-in sends rollout (2026-10-19, owner-approved)
+
+- Migration `20261023090000_operator_stock_in_sends` (re-seeds the `receive-ady` and
+  `stock-in-ady` rules with `batches` in scope; no function or data change) applied to
+  `operator-effen` on 2026-10-19 through the Supabase MCP connection, before the commit
+  reached `main`. The tool holds a `delete` for an interactive confirmation this session
+  cannot give (as at go-live), so the two rows were brought to the same end state with two
+  `update` statements in one transaction and the history row inserted under the repository
+  version with the file's statements. Between the two, the live app never wrote batches
+  from those commands, so the wider scope was unused. Verified afterwards: both rules carry
+  the new scope, 54 rules in total, history recorded under `20261023090000`.
+
 ## Verification
 
 - `pnpm test` — domain, capability-parity and command-scope tests.
@@ -468,7 +492,9 @@ commit;
 
 ## Rollback
 
-Run `supabase/rollback/20261022090000_operator_optional_stages.down.sql` first (restores the
+Run `supabase/rollback/20261023090000_operator_stock_in_sends.down.sql` first (restores the
+receipt and box-count scopes without `batches`), then
+`supabase/rollback/20261022090000_operator_optional_stages.down.sql` (restores the
 2026-10-09 box-count gate, drops `optional_stage` and removes the `stage-skip` and
 `wrapping-count` rules; a batch with a skipped Hologram stage then needs that stage recorded
 before any further box count), then the later floor migrations in reverse order as

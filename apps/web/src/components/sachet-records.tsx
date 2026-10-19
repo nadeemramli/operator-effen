@@ -30,6 +30,7 @@ import {
   batchComplete,
   batchRoute,
   batchTransferred,
+  factoryStagesDone,
   isFactoryStage,
   isOptionalStage,
   isSachet,
@@ -434,6 +435,9 @@ export function StageRecords({
   const editable = !!show && !!pic;
   const counts = canCountBoxes ?? !!onBoxCount;
   const sent = batchTransferred(b);
+  // The box count needs the factory stages (it records the transfer itself if production
+  // has not), not the "Send to warehouse" press.
+  const factoryDone = factoryStagesDone(b) && batchRoute(b).status !== "needs-review";
   const boxed = adypocideReceipts(state).some(
     (r) => r.batchId === b.id && !!r.stockedAt,
   );
@@ -623,7 +627,7 @@ export function StageRecords({
             const withCount =
               stage.id === totalStage &&
               counts &&
-              sent &&
+              factoryDone &&
               total === null &&
               openBefore.length === 0;
             const [tone, label] = done
@@ -799,11 +803,11 @@ export function StageRecords({
                   )}
                   {stage.id === totalStage && onBoxCount && !b.cancelled && (
                     <div className="stage-box-count">
-                      {!sent ? (
+                      {!factoryDone ? (
                         <p className="field-hint">
                           {t(
-                            "Total boxes are entered after production sends the batch.",
-                            "Jumlah kotak dimasukkan selepas pengeluaran menghantar kelompok.",
+                            "Total boxes are entered once production has recorded mixing and filling.",
+                            "Jumlah kotak dimasukkan setelah pengeluaran merekod pengadunan dan pengisian.",
                           )}
                         </p>
                       ) : !done ? (
@@ -1167,10 +1171,10 @@ export function SachetProductionRecords({
             const done = stages.filter((key) => stageSatisfied(b, key)).length;
             const total = batchBoxTotal(state, b);
             const [tone, status] = warehouseView
-              ? !batchTransferred(b)
-                ? ["tone-muted", t("In production", "Dalam pengeluaran")]
-                : total !== null
-                  ? ["tone-success", t("Boxes counted", "Kotak dikira")]
+              ? total !== null
+                ? ["tone-success", t("Boxes counted", "Kotak dikira")]
+                : !factoryStagesDone(b)
+                  ? ["tone-muted", t("In production", "Dalam pengeluaran")]
                   : !b.route || warehouseStagesDone(b)
                     ? ["tone-info", t("Ready for box count", "Sedia untuk kiraan kotak")]
                     : ["tone-warning", t("Warehouse stages open", "Peringkat gudang belum selesai")]

@@ -31,6 +31,7 @@ const later = [
   "20261019090000_operator_batch_cancel",
   "20261020090000_operator_sku_aliases",
   "20261022090000_operator_optional_stages",
+  "20261023090000_operator_stock_in_sends",
 ].map(migration);
 const merged = (table) =>
   section(table) +

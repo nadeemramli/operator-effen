@@ -1534,6 +1534,30 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     return record;
   };
   /**
+   * The warehouse may receive or count a sachet batch production has not pressed "Send to
+   * warehouse" for: the cartons are there. The receipt or count then records the transfer
+   * itself, under the same factory gate production has (mixing and filling with a PIC;
+   * legacy routes reviewed). The database checks that gate for every newly sent batch.
+   */
+  const ensureSent = (batch: Batch, pic: string, where: string) => {
+    if (batchTransferred(batch)) return;
+    if (batchRoute(batch).status === "needs-review")
+      throw new Error(
+        `This batch was started before the five-stage route. Production must review its route before the ${where}.`,
+      );
+    if (!factoryStagesDone(batch))
+      throw new Error(
+        `Production must record the mixing and filling stages with a PIC before the ${where}.`,
+      );
+    batch.transferredAt = at;
+    batch.transferPic = pic;
+    log(
+      batch.id,
+      "Batch sent to warehouse",
+      `${batch.code} · ${pic} · recorded at the ${where} by stock-in`,
+    );
+  };
+  /**
    * The sachet box stock-in: finalizes the batch's receipt awaiting boxing (or records one
    * with the count) and creates the box carton on its rack. Batches planned with a route
    * need every warehouse stage completed or skipped first; the factory stages were already
@@ -1548,6 +1572,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       throw new Error(
         "Record the warehouse stages (batching, hologram, wrapping) with their PICs, or skip an optional stage, before finalizing the box count.",
       );
+    ensureSent(batch, pic, "box count");
     const boxes = num("boxes"),
       rack = str("rack"),
       ref = batch.code;
@@ -1961,8 +1986,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       // count in one entry: the stage completion, then the same box stock-in as stock-in-ady.
       allow("intake");
       const b = liveBatch();
-      if (!isSachet(b.product) || !batchTransferred(b))
-        throw new Error("Choose a sachet batch sent to the warehouse.");
+      if (!isSachet(b.product)) throw new Error("Choose a sachet batch.");
       const stage = resolveStage(b);
       if (stage.id !== lastWarehouseStage(b))
         throw new Error(
@@ -2324,8 +2348,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "receive-ady": {
       allow("intake");
       const batch = liveBatch("batchId");
-      if (!isSachet(batch.product) || !batchTransferred(batch))
-        throw new Error("Choose a sachet batch sent to the warehouse.");
+      if (!isSachet(batch.product)) throw new Error("Choose a sachet batch.");
       const ref = batch.code;
       if (
         adypocideReceipts(s).some((r) => r.batchId === batch.id && !r.stockedAt)
@@ -2333,11 +2356,13 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error(
           "This batch already has a receipt awaiting boxing. Finalize that receipt first.",
         );
+      const receiver = str("pic");
+      ensureSent(batch, receiver, "receipt");
       const receipt: AdypocideReceipt = {
         id: id(),
         ref,
         batchId: batch.id,
-        pic: str("pic"),
+        pic: receiver,
         at,
       };
       (s.adypocideReceipts ??= []).unshift(receipt);
@@ -2367,8 +2392,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         if (batch.cancelled) throw new Error(`Batch ${batch.code} was cancelled.`);
       } else {
         const sent = liveBatch("batchId");
-        if (!isSachet(sent.product) || !batchTransferred(sent))
-          throw new Error("Choose a sachet batch sent to the warehouse.");
+        if (!isSachet(sent.product)) throw new Error("Choose a sachet batch.");
         batch = sent;
         receipt = adypocideReceipts(s).find(
           (r) => r.batchId === sent.id && !r.stockedAt,

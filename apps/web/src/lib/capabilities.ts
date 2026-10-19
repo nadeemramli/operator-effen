@@ -101,10 +101,13 @@ export const commandRules: Record<
   "machine-deactivate": { capability: "machines.manage", stateKeys: ["machines", "events"] },
   "machine-reactivate": { capability: "machines.manage", stateKeys: ["machines", "events"] },
   receive: { capability: "stock.receive", stateKeys: ["cartons", "events"] },
-  "receive-ady": { capability: "stock.receive", stateKeys: ["adypocideReceipts", "events"] },
+  "receive-ady": {
+    capability: "stock.receive",
+    stateKeys: ["batches", "adypocideReceipts", "events"],
+  },
   "stock-in-ady": {
     capability: "stock.receive",
-    stateKeys: ["cartons", "adypocideReceipts", "events"],
+    stateKeys: ["batches", "cartons", "adypocideReceipts", "events"],
   },
   "wrapping-count": {
     capability: "stock.receive",

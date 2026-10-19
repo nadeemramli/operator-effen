@@ -151,13 +151,14 @@ test("a second box count for the batch adds a second receipt and carton to the t
 });
 
 test("the box count by batch is refused for unsent, cancelled, bottle and unfinished batches", () => {
-  // Not sent yet.
+  // Not sent yet and the factory stages incomplete: the count cannot record the transfer.
   let s = planned();
   const id = s.batches[0].id;
-  for (const stage of ["mixing", "filling"]) s = record(s, "production", id, stage);
+  s = record(s, "production", id, "mixing");
+  for (const stage of ["batching", "hologram", "wrapping"]) s = record(s, "intake", id, stage);
   assert.throws(
     () => as(s, "intake", "stock-in-ady", { batchId: id, ...count }),
-    /sent to the warehouse/,
+    /mixing and filling stages with a PIC before the box count/,
   );
   // Warehouse stages incomplete.
   let open = sent();
@@ -186,7 +187,7 @@ test("the box count by batch is refused for unsent, cancelled, bottle and unfini
   assert.ok(bottle, "the sandbox seed has a sent bottle batch");
   assert.throws(
     () => as(createDraft(), "intake", "stock-in-ady", { batchId: bottle.id, ...count }),
-    /Choose a sachet batch sent to the warehouse/,
+    /Choose a sachet batch/,
   );
   // Only stock-in finalizes box counts.
   const ready = shrunk();

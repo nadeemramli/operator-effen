@@ -78,8 +78,9 @@ export function factoryDenial(
   if (!commandRules[type]?.stateKeys.includes("batches")) return null;
   if (type === "batch")
     return productFactory(input.product) === factory ? null : denial;
-  // An unknown batch is reported by the domain rules ("could not be found").
-  const batch = batches.find((b) => b.id === input.id);
+  // An unknown batch is reported by the domain rules ("could not be found"). Stock-in
+  // commands name the batch as batchId.
+  const batch = batches.find((b) => b.id === (input.id ?? input.batchId));
   return !batch || productFactory(batch.product) === factory ? null : denial;
 }
 

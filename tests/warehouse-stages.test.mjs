@@ -307,3 +307,52 @@ test("the combined entry uses the receipt awaiting boxing when there is one", ()
   assert.equal(receipts[0].pic, "Receiver");
   assert.equal(receipts[0].stockCartonId, s.cartons[0].id);
 });
+
+// 20261023090000: the receipt and the box count record the transfer when production has not.
+test("stock-in can receive or count a batch production has not sent, once mixing and filling have a PIC", () => {
+  let s = planned();
+  const id = s.batches[0].id;
+  s = record(s, "production", id, "mixing");
+  // Warehouse stages may already be recorded; the factory gate still holds.
+  s = record(s, "intake", id, "batching");
+  s = as(s, "intake", "stage-skip", { id, stage: "hologram", reason: "No hologram" });
+  s = record(s, "intake", id, "wrapping");
+  assert.throws(
+    () => as(s, "intake", "stock-in-ady", { batchId: id, boxes: 5, rack: "B", pic: "Nurul" }),
+    /mixing and filling stages with a PIC before the box count/,
+  );
+  assert.throws(
+    () => as(s, "intake", "receive-ady", { batchId: id, pic: "Nurul" }),
+    /mixing and filling stages with a PIC before the receipt/,
+  );
+  s = record(s, "production", id, "filling");
+  assert.equal(s.batches[0].transferredAt, undefined);
+  const before = s;
+  s = as(s, "intake", "stock-in-ady", { batchId: id, boxes: 5, rack: "B", pic: "Nurul" });
+  assert.deepEqual(outOfScopeKeys("stock-in-ady", before, s), []);
+  assert.ok(s.batches[0].transferredAt);
+  assert.equal(s.batches[0].transferPic, "Nurul");
+  assert.ok(s.events.some((e) => e.action === "Batch sent to warehouse" && /by stock-in/.test(e.detail)));
+  assert.equal(s.cartons.filter((c) => c.batchId === id)[0].qty, 5);
+  // Production can no longer send it again.
+  assert.throws(() => as(s, "production", "transfer", { id, pic: "Helmi" }), /already been sent/);
+});
+
+test("a receipt before the transfer marks the batch as sent; a combined Shrink entry too", () => {
+  let s = planned();
+  const id = s.batches[0].id;
+  for (const stage of ["mixing", "filling"]) s = record(s, "production", id, stage);
+  const before = s;
+  s = as(s, "intake", "receive-ady", { batchId: id, pic: "Receiver" });
+  assert.deepEqual(outOfScopeKeys("receive-ady", before, s), []);
+  assert.ok(s.batches[0].transferredAt);
+  assert.equal(s.batches[0].transferPic, "Receiver");
+  let t = planned();
+  const id2 = t.batches[0].id;
+  for (const stage of ["mixing", "filling"]) t = record(t, "production", id2, stage);
+  t = record(t, "intake", id2, "batching");
+  t = record(t, "intake", id2, "hologram");
+  t = as(t, "intake", "wrapping-count", { id: id2, stage: "wrapping", pic: "Nurul", boxes: 9, rack: "B" });
+  assert.ok(t.batches[0].transferredAt);
+  assert.equal(t.cartons.filter((c) => c.batchId === id2)[0].qty, 9);
+});

@@ -105,7 +105,7 @@ test("Adypocide records machines and PICs, then creates stock only from warehous
         ref: "ADY-IN",
         pic: "Receiver",
       }),
-    /sent to the warehouse/,
+    /mixing and filling stages with a PIC before the receipt/,
   );
   assert.equal(s.batches[0].steps.length, 5);
   assert.deepEqual(s.batches[0].route.stages, [

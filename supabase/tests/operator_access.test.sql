@@ -872,6 +872,48 @@ do $$ begin
     raise exception 'FAIL: optional_stage split'; end if;
 end $$;
 
+-- 9c. The receipt and the box count record the transfer (20261023090000). A sachet batch
+--     production has not sent can be received or counted once mixing and filling have a PIC;
+--     the database transfer gate still refuses it otherwise.
+\set SI '''00000000-0000-4000-8000-000000000006'''
+\set Y '''10000000-0000-4000-8000-0000000000c3'''
+insert into public.operator_workspaces (id, site_id, name, state) values
+  (:Y, 'site-y', 'Synthetic site Y', $${
+    "version":1,
+    "batches":[{"id":"y1","code":"SYN-Y-1","product":"ady","date":"2026-10-01","target":0,"actual":0,"sent":0,
+      "route":{"id":"sachet-v2","stages":["mixing","filling","batching","hologram","wrapping"],"at":"t"},
+      "steps":[
+        {"sachetStage":"mixing","pic":"P1","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"filling","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"batching","pic":"P3","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"hologram","pic":"P4","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"wrapping","pic":"P5","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"}]}],
+    "cartons":[],"adypocideReceipts":[],"orders":[],"issues":[],"boxing":[],"counts":[],"adjustments":[],
+    "events":[],"notes":[],"closedDays":[]}$$::jsonb);
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values
+  (:Y, '00000000-0000-4000-8000-000000000001', 'production', 'SV Y', 'site'),
+  (:Y, '00000000-0000-4000-8000-000000000006', 'intake', 'SI Y', 'site');
+create function pg_temp.sent_y(p_state jsonb) returns jsonb language sql as $$
+  select jsonb_set(jsonb_set(p_state, '{batches,0,transferredAt}', '"2026-10-04T00:00:00Z"'),
+    '{batches,0,transferPic}', '"SI"') $$;
+create function pg_temp.boxed_y(p_state jsonb) returns jsonb language sql as $$
+  select jsonb_set(p_state, '{cartons}', '[{"id":"cy1","ref":"SYN-Y-1","batchId":"y1","product":"ady","unit":"box","qty":7,"rack":"B","pic":"SI","at":"t"}]') $$;
+select pg_temp.expect(pg_temp.commit_as(:SI, :Y, 'stock-in-ady', pg_temp.boxed_y(pg_temp.sent_y(pg_temp.state(:Y)))),
+  '23514', 'stock-in counts and sends a batch whose filling has no PIC');
+select pg_temp.expect(pg_temp.commit_as(:SI, :Y, 'receive-ady',
+  jsonb_set(pg_temp.sent_y(pg_temp.state(:Y)), '{adypocideReceipts}',
+    '[{"id":"ry1","ref":"SYN-Y-1","batchId":"y1","pic":"SI","at":"t"}]')),
+  '23514', 'stock-in receives and sends a batch whose filling has no PIC');
+select pg_temp.expect(pg_temp.commit_as(:SV, :Y, 'machine', pg_temp.done(pg_temp.state(:Y), 1, 'P2')),
+  'ok', 'production records filling');
+select pg_temp.expect(pg_temp.commit_as(:SI, :Y, 'stock-in-ady', pg_temp.boxed_y(pg_temp.sent_y(pg_temp.state(:Y)))),
+  'ok', 'stock-in counts the boxes and records the transfer in one commit');
+do $$ begin
+  if not exists (select 1 from jsonb_array_elements(pg_temp.state('10000000-0000-4000-8000-0000000000c3') -> 'batches') b
+      where b ->> 'id' = 'y1' and b ->> 'transferredAt' = '2026-10-04T00:00:00Z' and b ->> 'transferPic' = 'SI') then
+    raise exception 'FAIL: expected the batch marked as sent by the box count'; end if;
+end $$;
+
 -- 10. Stock returns (20261009090002): append-only, attributed, into an existing carton.
 \set SI '''00000000-0000-4000-8000-000000000006'''
 create function pg_temp.ret(p_id text, p_carton text, p_qty jsonb, p_uid text) returns jsonb language sql as $$
