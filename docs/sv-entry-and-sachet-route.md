@@ -435,6 +435,23 @@ commit;
 - Between each migration and its PR's deployment the live app was stricter than the database
   (it still required all five stages before transfer), so no live record was affected.
 
+## Optional stages rollout (2026-10-19, owner-approved)
+
+- Migration `20261022090000_operator_optional_stages` applied to `operator-effen` on
+  2026-10-19 (UTC morning) under the owner's instruction, run unchanged in one transaction
+  through the Supabase MCP connection, before the commit reached `main` (the live app was
+  stricter than the database in between: it still required a Hologram PIC).
+- Pre-checks: the live `assert_core_transition` body was byte-identical to `20261009090002`
+  (the version this migration replaces and the rollback restores); no `optional_stage`
+  function and no `stage-skip` or `wrapping-count` rule existed; one site (`operator`) at
+  revision 364.
+- Verified afterwards: the function body is identical to the migration (one overload);
+  `optional_stage('hologram')` is true and the other stages false; neither function is
+  callable by signed-in or anonymous users; both rules exist with the expected capability and
+  scope (54 rules); the history row was recorded under the repository version (the tool had
+  first stored it under the day's timestamp, corrected the same minute).
+- Commit ec0603d pushed to `main` right after; no data was changed.
+
 ## Verification
 
 - `pnpm test` — domain, capability-parity and command-scope tests.
