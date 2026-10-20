@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   OCR_NOTE,
   detectReferences,
+  fileLimit,
   importLimit,
   isLabelPage,
   pageLimit,
@@ -284,6 +285,7 @@ test("an OCR-read label with no other issue is ready without a check or a note",
 test("upload limits: 300 labels and 600 pages per upload, enforced by the validator", () => {
   assert.equal(importLimit, 300);
   assert.equal(pageLimit, 600);
+  assert.equal(fileLimit, 30);
   const big = batch(
     Array.from({ length: importLimit + 1 }, (_, i) =>
       page(ninja(`NVMYBIG${String(i).padStart(7, "0")}`, `BIG-${i}`), i + 1),
@@ -291,7 +293,7 @@ test("upload limits: 300 labels and 600 pages per upload, enforced by the valida
   );
   big.files = [{ ...file, pages: importLimit + 1 }];
   assert.equal(big.rows.length, importLimit + 1);
-  assert.throws(() => validateImport(big), /Use up to 10 PDFs and 300 labels/);
+  assert.throws(() => validateImport(big), /Use up to 30 PDFs and 300 labels/);
   big.rows.pop();
   validateImport(big);
   const wide = batch([page(ninja())]);
@@ -299,6 +301,18 @@ test("upload limits: 300 labels and 600 pages per upload, enforced by the valida
   assert.throws(() => validateImport(wide), /Invalid source file/);
   wide.files = [{ ...file, pages: pageLimit }];
   validateImport(wide);
+  // A day's labels often arrive as one small PDF per order: 30 files are accepted, 31 not.
+  const many = batch([page(ninja())]);
+  const extra = (n) =>
+    Array.from({ length: n }, (_, i) => ({
+      ...file,
+      id: String(i).padStart(64, "0"),
+      path: `w/${String(i).padStart(64, "0")}.pdf`,
+    }));
+  many.files = [file, ...extra(fileLimit - 1)];
+  validateImport(many);
+  many.files = [file, ...extra(fileLimit)];
+  assert.throws(() => validateImport(many), /Use up to 30 PDFs/);
 });
 
 // Shopee and TikTok prints often carry the order reference and products as text while the

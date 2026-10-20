@@ -28,6 +28,7 @@ import {
   channels,
   couriers,
   defaultFor,
+  fileLimit,
   importLimit,
   isRetiredSku,
   NO_ORDER_REF_NOTE,
@@ -154,11 +155,11 @@ export function AwbIntake({
   );
   async function upload() {
     setError("");
-    if (!files.length || files.length > 10 || !date) {
+    if (!files.length || files.length > fileLimit || !date) {
       setError(
         t(
-          "Choose up to 10 PDFs and a work date.",
-          "Pilih sehingga 10 PDF dan tarikh kerja.",
+          `Choose up to ${fileLimit} PDFs and a work date.`,
+          `Pilih sehingga ${fileLimit} PDF dan tarikh kerja.`,
         ),
       );
       return;
@@ -507,8 +508,8 @@ export function AwbIntake({
               </strong>
               <span>
                 {t(
-                  `or choose files · up to 10 PDFs, 20 MB each, ${pageLimit} pages and ${importLimit} labels in total`,
-                  `atau pilih fail · sehingga 10 PDF, 20 MB setiap satu, ${pageLimit} halaman dan ${importLimit} label keseluruhan`,
+                  `or choose files · up to ${fileLimit} PDFs, 20 MB each, ${pageLimit} pages and ${importLimit} labels in total`,
+                  `atau pilih fail · sehingga ${fileLimit} PDF, 20 MB setiap satu, ${pageLimit} halaman dan ${importLimit} label keseluruhan`,
                 )}
               </span>
               <input

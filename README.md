@@ -165,9 +165,11 @@ are never converted into box inventory. Previously counted boxes remain stock.
   PDF upload the same way, which removes every AWB it released, as long as none of them
   has stock, packing or handover records. The audit log lists what was removed and why;
   source PDFs stay in storage.
-  One upload takes up to 10 PDFs, 600 pages and 300 labels (raised from 200 pages and 200
-  labels on 12 October 2026); oversized uploads are refused before any page is read, and a
-  day's labels can go in as several uploads. A site workspace holds up to 1,000 AWBs and
+  One upload takes up to 30 PDFs, 600 pages and 300 labels (raised from 200 pages and 200
+  labels on 12 October 2026, and from 10 PDFs on 20 October 2026); each PDF is read and
+  stored on its own, so the file count only has to fit the page and label limits.
+  Oversized uploads are refused before any page is read, and a day's labels can go in as
+  several uploads. A site workspace holds up to 1,000 AWBs and
   3,000 audit entries within its 2 MB document.
   Since 9 October 2026 PDF intake reads text first and runs OCR automatically on any page
   whose text has no AWB and no order reference ("Force OCR on every page" remains as a slow,

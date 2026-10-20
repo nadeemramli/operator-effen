@@ -6,6 +6,9 @@ export const couriers = ["Ninja Van", "SPX", "J&T", "LEX", "Other"];
 export const importLimit = 300;
 /** PDF pages one upload may hold across its files, read in the browser before review. */
 export const pageLimit = 600;
+/** PDF files one upload may hold. Each file is read and stored on its own, so the count
+ *  is bounded by review ergonomics, not by request size; pages and labels cap the work. */
+export const fileLimit = 30;
 export type PackageDefault = {
   sku: string;
   product: string;
@@ -935,11 +938,13 @@ export function validateImport(value: unknown): AwbImport {
     !text(b.name) ||
     !/^\d{4}-\d{2}-\d{2}$/.test(b.date) ||
     !Array.isArray(b.files) ||
-    b.files.length > 10 ||
+    b.files.length > fileLimit ||
     !Array.isArray(b.rows) ||
     b.rows.length > importLimit
   )
-    throw new Error(`Use up to 10 PDFs and ${importLimit} labels per batch.`);
+    throw new Error(
+      `Use up to ${fileLimit} PDFs and ${importLimit} labels per batch.`,
+    );
   if (
     new Set(b.files.map((f) => f.id)).size !== b.files.length ||
     new Set(b.rows.map((r) => r.id)).size !== b.rows.length
