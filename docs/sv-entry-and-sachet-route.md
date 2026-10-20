@@ -45,9 +45,10 @@ JSON document per site with one revision (normalized per-record storage is #10).
    batches, custody (transfer) facts and route snapshots are fixed; stage completion is never
    undone and PIC/correction/rework history is append-only; a batch with a route snapshot needs
    its factory stages (mixing, filling) completed with a PIC before transfer, and every route
-   stage completed with a PIC, or skipped with a reason if it is an optional stage, before a
-   box carton is created for it (two gates since 2026-10-09, migration `20261009090001`;
-   skips since 2026-10-19, migration `20261022090000`); a stage skip is an object with a
+   warehouse stage completed with a PIC, or skipped with a reason if it is an optional
+   stage, before a box carton is created for it (two gates since 2026-10-09, migration
+   `20261009090001`; skips since 2026-10-19, migration `20261022090000`; warehouse stages
+   only since 2026-10-20, migration `20261024090000`); a stage skip is an object with a
    reason on an optional stage, attributed to the caller, and is only removed by a
    completion; machines and their history persist.
 3. The commit, its audit row and the idempotency record (`operator_commits`) are one
@@ -191,6 +192,16 @@ author, site, optional record reference and time, and never edits operational re
   still saves and the transfer is recorded at the receipt or count. Production's own
   warehouse-stage records never send. Production's **Send to warehouse** is unchanged and
   still the normal path.
+- **The box count needs the warehouse stages only (since 2026-10-20, migration
+  `20261024090000`).** Batches sat "In production" because mixing or filling had no PIC
+  while the warehouse had finished. The box-count gate, in the app (`countBoxes`) and in the
+  database, now checks the warehouse stages of the route only. A batch counted with open
+  factory stages is not marked as sent (the transfer gate is unchanged: mixing and filling
+  with a PIC); production can still record those stages, and the next stock-in entry after
+  that (a stage record, skip, receipt or count) records the transfer, or production presses
+  **Send to warehouse** itself. The records list shows a **Factory stages open** pill on such
+  batches and the audit entry of the count notes it. **Receive sachets for boxing** lists
+  every sachet batch with a route.
 - **Stage rows (2026-10-19).** Each stage shows one status pill (Next, Open, Completed,
   Skipped, Not recorded) and one main action: a large **Record completion** button (or
   **Record completion + box count** on the Shrink machine), plus **Not needed – skip** on an
@@ -496,7 +507,9 @@ commit;
 
 ## Rollback
 
-Run `supabase/rollback/20261023090000_operator_stock_in_sends.down.sql` first (restores the
+Run `supabase/rollback/20261024090000_operator_warehouse_count.down.sql` first (restores the
+box-count gate over every route stage), then
+`supabase/rollback/20261023090000_operator_stock_in_sends.down.sql` (restores the
 receipt and box-count scopes without `batches`), then
 `supabase/rollback/20261022090000_operator_optional_stages.down.sql` (restores the
 2026-10-09 box-count gate, drops `optional_stage` and removes the `stage-skip` and

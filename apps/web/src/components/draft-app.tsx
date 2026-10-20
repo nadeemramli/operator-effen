@@ -98,7 +98,6 @@ import {
   batchComplete,
   batchRoute,
   batchTransferred,
-  factoryStagesDone,
   cartonReturned,
   stageSatisfied,
   warehouseStages,
@@ -896,7 +895,7 @@ export function DraftApp() {
       type: "receive-ady",
       title: t("Receive sachets for boxing", "Terima sachet untuk pengkotakan"),
       description: t(
-        "Select the factory batch; its number is used for the cartons too. A batch production has not sent yet is marked as sent by this receipt. Finished boxes are counted after boxing.",
+        "Select the factory batch; its number is used for the cartons too. Production's send is not needed: a batch whose mixing and filling have a PIC is marked as sent by this receipt. Finished boxes are counted after boxing.",
         "Pilih kelompok kilang; nombornya digunakan untuk karton juga. Kelompok yang belum dihantar oleh pengeluaran ditanda sebagai dihantar oleh penerimaan ini. Kotak siap akan dikira selepas pengkotakan.",
       ),
       fields: [
@@ -909,8 +908,7 @@ export function DraftApp() {
               (b) =>
                 !b.cancelled &&
                 isSachet(b.product) &&
-                (batchTransferred(b) ||
-                  (factoryStagesDone(b) && batchRoute(b).status !== "needs-review")) &&
+                (batchTransferred(b) || batchRoute(b).status !== "needs-review") &&
                 !receipts.some((r) => r.batchId === b.id && !r.stockedAt),
             )
             .map((b) => ({

@@ -435,9 +435,9 @@ export function StageRecords({
   const editable = !!show && !!pic;
   const counts = canCountBoxes ?? !!onBoxCount;
   const sent = batchTransferred(b);
-  // The box count needs the factory stages (it records the transfer itself if production
-  // has not), not the "Send to warehouse" press.
-  const factoryDone = factoryStagesDone(b) && batchRoute(b).status !== "needs-review";
+  // The box count needs the warehouse stages only; production's factory stages and its
+  // "Send to warehouse" press are not a condition. A legacy route still needs its review.
+  const countable = batchRoute(b).status !== "needs-review";
   const boxed = adypocideReceipts(state).some(
     (r) => r.batchId === b.id && !!r.stockedAt,
   );
@@ -627,7 +627,7 @@ export function StageRecords({
             const withCount =
               stage.id === totalStage &&
               counts &&
-              factoryDone &&
+              countable &&
               total === null &&
               openBefore.length === 0;
             const [tone, label] = done
@@ -803,11 +803,11 @@ export function StageRecords({
                   )}
                   {stage.id === totalStage && onBoxCount && !b.cancelled && (
                     <div className="stage-box-count">
-                      {!factoryDone ? (
+                      {!countable ? (
                         <p className="field-hint">
                           {t(
-                            "Total boxes are entered once production has recorded mixing and filling.",
-                            "Jumlah kotak dimasukkan setelah pengeluaran merekod pengadunan dan pengisian.",
+                            "Production must review this batch's route before the box count.",
+                            "Pengeluaran mesti menyemak laluan kelompok ini sebelum kiraan kotak.",
                           )}
                         </p>
                       ) : !done ? (
@@ -1173,11 +1173,11 @@ export function SachetProductionRecords({
             const [tone, status] = warehouseView
               ? total !== null
                 ? ["tone-success", t("Boxes counted", "Kotak dikira")]
-                : !factoryStagesDone(b)
-                  ? ["tone-muted", t("In production", "Dalam pengeluaran")]
-                  : !b.route || warehouseStagesDone(b)
-                    ? ["tone-info", t("Ready for box count", "Sedia untuk kiraan kotak")]
-                    : ["tone-warning", t("Warehouse stages open", "Peringkat gudang belum selesai")]
+                : !b.route || warehouseStagesDone(b)
+                  ? ["tone-info", t("Ready for box count", "Sedia untuk kiraan kotak")]
+                  : done > 0 || batchTransferred(b)
+                    ? ["tone-warning", t("Warehouse stages open", "Peringkat gudang belum selesai")]
+                    : ["tone-muted", t("In production", "Dalam pengeluaran")]
               : batchTransferred(b)
                 ? ["tone-success", t("Sent to warehouse", "Dihantar ke gudang")]
                 : batchComplete(b)
@@ -1203,6 +1203,17 @@ export function SachetProductionRecords({
                     {!!b.revisions?.length && (
                       <span className="status-pill tone-warning">
                         {t("Revised", "Disemak semula")}
+                      </span>
+                    )}
+                    {!factoryStagesDone(b) && (done > 0 || total !== null) && (
+                      <span
+                        className="status-pill tone-warning"
+                        title={t(
+                          "Production has not recorded mixing and filling for this batch yet.",
+                          "Pengeluaran belum merekod pengadunan dan pengisian bagi kelompok ini.",
+                        )}
+                      >
+                        {t("Factory stages open", "Peringkat kilang belum direkod")}
                       </span>
                     )}
                     <span className={"status-pill " + tone}>{status}</span>

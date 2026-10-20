@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261024090000_operator_warehouse_count.down.sql"
+"${psql[@]}" -At -c "select prosrc not like '%warehouse stages only%' from pg_proc where proname = 'assert_core_transition'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261023090000_operator_stock_in_sends.down.sql"
 "${psql[@]}" -At -c "select state_keys::text from public.operator_command_rules where command = 'stock-in-ady'" | grep -qx '{cartons,adypocideReceipts,events}'
 "${psql[@]}" -At -c "select state_keys::text from public.operator_command_rules where command = 'receive-ady'" | grep -qx '{adypocideReceipts,events}'

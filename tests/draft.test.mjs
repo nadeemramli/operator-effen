@@ -98,14 +98,11 @@ test("Adypocide records machines and PICs, then creates stock only from warehous
     () => run(s, "production", "transfer", { id: batchId, pic: "Factory PIC" }),
     /machine and PIC/,
   );
+  // A receipt never needs production's records; a bottle batch is refused.
+  const bottleBatch = s.batches.find((b) => b.product !== "ady");
   assert.throws(
-    () =>
-      run(s, "intake", "receive-ady", {
-        batchId,
-        ref: "ADY-IN",
-        pic: "Receiver",
-      }),
-    /mixing and filling stages with a PIC before the receipt/,
+    () => run(s, "intake", "receive-ady", { batchId: bottleBatch.id, pic: "Receiver" }),
+    /Choose a sachet batch/,
   );
   assert.equal(s.batches[0].steps.length, 5);
   assert.deepEqual(s.batches[0].route.stages, [

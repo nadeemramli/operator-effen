@@ -151,15 +151,14 @@ test("a second box count for the batch adds a second receipt and carton to the t
 });
 
 test("the box count by batch is refused for unsent, cancelled, bottle and unfinished batches", () => {
-  // Not sent yet and the factory stages incomplete: the count cannot record the transfer.
+  // Not sent and the factory stages incomplete: the count works but does not mark it sent.
   let s = planned();
   const id = s.batches[0].id;
   s = record(s, "production", id, "mixing");
   for (const stage of ["batching", "hologram", "wrapping"]) s = record(s, "intake", id, stage);
-  assert.throws(
-    () => as(s, "intake", "stock-in-ady", { batchId: id, ...count }),
-    /mixing and filling stages with a PIC before the box count/,
-  );
+  s = as(s, "intake", "stock-in-ady", { batchId: id, ...count });
+  assert.equal(s.batches[0].transferredAt, undefined);
+  assert.ok(s.cartons.some((c) => c.batchId === id));
   // Warehouse stages incomplete.
   let open = sent();
   open.s = record(open.s, "intake", open.id, "batching");

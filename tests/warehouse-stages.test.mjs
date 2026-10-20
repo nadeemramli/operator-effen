@@ -309,32 +309,31 @@ test("the combined entry uses the receipt awaiting boxing when there is one", ()
 });
 
 // 20261023090000: the receipt and the box count record the transfer when production has not.
-test("stock-in can receive or count a batch production has not sent, once mixing and filling have a PIC", () => {
+test("stock-in counts a batch production has not finished recording; the transfer follows once it has", () => {
   let s = planned();
   const id = s.batches[0].id;
   s = record(s, "production", id, "mixing");
-  // Warehouse stages may already be recorded; the factory gate still holds.
   s = record(s, "intake", id, "batching");
   s = as(s, "intake", "stage-skip", { id, stage: "hologram", reason: "No hologram" });
   s = record(s, "intake", id, "wrapping");
-  assert.throws(
-    () => as(s, "intake", "stock-in-ady", { batchId: id, boxes: 5, rack: "B", pic: "Nurul" }),
-    /mixing and filling stages with a PIC before the box count/,
-  );
-  assert.throws(
-    () => as(s, "intake", "receive-ady", { batchId: id, pic: "Nurul" }),
-    /mixing and filling stages with a PIC before the receipt/,
-  );
-  s = record(s, "production", id, "filling");
-  assert.equal(s.batches[0].transferredAt, undefined);
+  // Filling has no PIC: the count works, the batch is not marked as sent.
   const before = s;
   s = as(s, "intake", "stock-in-ady", { batchId: id, boxes: 5, rack: "B", pic: "Nurul" });
   assert.deepEqual(outOfScopeKeys("stock-in-ady", before, s), []);
+  assert.equal(s.batches[0].transferredAt, undefined);
+  assert.equal(s.cartons.filter((c) => c.batchId === id)[0].qty, 5);
+  assert.match(s.events[0].detail, /factory stages \(mixing, filling\) still open/);
+  // A receipt for the next delivery works the same way.
+  s = as(s, "intake", "receive-ady", { batchId: id, pic: "Nurul" });
+  assert.equal(s.batches[0].transferredAt, undefined);
+  // Production can still record filling (the batch is not sent) and then send it itself…
+  s = record(s, "production", id, "filling");
+  assert.equal(s.batches[0].transferredAt, undefined);
+  // …or stock-in's next entry records the transfer on its behalf.
+  s = as(s, "intake", "stock-in-ady", { receiptId: s.adypocideReceipts.find((r) => r.batchId === id && !r.stockedAt).id, boxes: 2, rack: "B", pic: "Nurul" });
   assert.ok(s.batches[0].transferredAt);
   assert.equal(s.batches[0].transferPic, "Nurul");
   assert.ok(s.events.some((e) => e.action === "Batch sent to warehouse" && /by stock-in/.test(e.detail)));
-  assert.equal(s.cartons.filter((c) => c.batchId === id)[0].qty, 5);
-  // Production can no longer send it again.
   assert.throws(() => as(s, "production", "transfer", { id, pic: "Helmi" }), /already been sent/);
 });
 

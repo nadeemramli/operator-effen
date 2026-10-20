@@ -137,8 +137,11 @@ receipt's **Finalize box count** and **Enter total boxes** remain for a stage re
 own (migration `20261022090000_operator_optional_stages.sql`). Stock-in no longer waits for
 production's **Send to warehouse**: once mixing and filling have a PIC, the first warehouse
 stage stock-in records or skips, the receipt, or the box count marks the batch as sent itself
-(migration `20261023090000_operator_stock_in_sends.sql`); if the factory stages are still
-open, the stage saves anyway and the transfer is recorded at the count. Each stage row shows one status
+(migration `20261023090000_operator_stock_in_sends.sql`). Since 20 October 2026 the box
+count itself needs only the warehouse stages (migration
+`20261024090000_operator_warehouse_count.sql`): a batch whose mixing or filling has no PIC
+can still be counted and shows "Factory stages open" until production records them, and the
+transfer is recorded by the next stock-in entry after that. Each stage row shows one status
 (Next, Completed, Skipped) and one main button; corrections and PIC history sit under
 "Corrections & history". See
 [role-based entry and the five-stage route](docs/sv-entry-and-sachet-route.md).

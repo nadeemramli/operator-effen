@@ -1539,25 +1539,14 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
    * itself, under the same factory gate production has (mixing and filling with a PIC;
    * legacy routes reviewed). The database checks that gate for every newly sent batch.
    */
-  const ensureSent = (
-    batch: Batch,
-    pic: string,
-    where: string,
-    required = true,
-  ) => {
+  const ensureSent = (batch: Batch, pic: string, where: string) => {
     if (batchTransferred(batch)) return;
-    if (batchRoute(batch).status === "needs-review") {
-      if (!required) return;
-      throw new Error(
-        `This batch was started before the five-stage route. Production must review its route before the ${where}.`,
-      );
-    }
-    if (!factoryStagesDone(batch)) {
-      if (!required) return;
-      throw new Error(
-        `Production must record the mixing and filling stages with a PIC before the ${where}.`,
-      );
-    }
+    // Production's own gate: the batch is marked as sent only once mixing and filling have
+    // a PIC (and a legacy route is reviewed). Until then the warehouse still works on it;
+    // its receipts, stage records and box cartons stand on their own, and the next
+    // stock-in entry after production catches up records the transfer.
+    if (batchRoute(batch).status === "needs-review" || !factoryStagesDone(batch))
+      return;
     batch.transferredAt = at;
     batch.transferPic = pic;
     log(
@@ -1582,6 +1571,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         "Record the warehouse stages (batching, hologram, wrapping) with their PICs, or skip an optional stage, before finalizing the box count.",
       );
     ensureSent(batch, pic, "box count");
+    const factoryOpen = !factoryStagesDone(batch);
     const boxes = num("boxes"),
       rack = str("rack"),
       ref = batch.code;
@@ -1615,7 +1605,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     log(
       receipt.batchId,
       "Sachet box count finalized",
-      receipt.ref + " · " + boxes + " boxes · " + pic,
+      receipt.ref +
+        " · " +
+        boxes +
+        " boxes · " +
+        pic +
+        (factoryOpen ? " · factory stages (mixing, filling) still open at production" : ""),
     );
   };
   // Changes after transfer are flagged as revisions, except warehouse-stage records made
@@ -1952,7 +1947,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       // Stock-in recording a warehouse stage means the batch is at the warehouse: it is
       // marked as sent when production's factory gate allows, else at the box count.
       if (cmd.role === "intake" && !isFactoryStage(stage.id))
-        ensureSent(b, record.pic, stage.en + " record", false);
+        ensureSent(b, record.pic, stage.en + " record");
       break;
     }
     case "stage-skip": {
@@ -1992,7 +1987,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       if (previous) b.steps[b.steps.indexOf(previous)] = record;
       else b.steps.push(record);
       log(b.id, "Stage skipped", `${b.code} · ${stage.en} · ${reason}`);
-      if (cmd.role === "intake") ensureSent(b, recorder.name, stage.en + " skip", false);
+      if (cmd.role === "intake") ensureSent(b, recorder.name, stage.en + " skip");
       break;
     }
     case "wrapping-count": {

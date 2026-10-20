@@ -914,6 +914,38 @@ do $$ begin
     raise exception 'FAIL: expected the batch marked as sent by the box count'; end if;
 end $$;
 
+-- 9d. The box count needs the warehouse stages only (20261024090000). A batch whose mixing
+--     or filling has no PIC can be counted once batching, hologram (or its skip) and
+--     wrapping are recorded; marking it as sent still needs the factory stages.
+\set Z '''10000000-0000-4000-8000-0000000000c4'''
+insert into public.operator_workspaces (id, site_id, name, state) values
+  (:Z, 'site-z', 'Synthetic site Z', $${
+    "version":1,
+    "batches":[{"id":"z1","code":"SYN-Z-1","product":"ady","date":"2026-10-01","target":0,"actual":0,"sent":0,
+      "route":{"id":"sachet-v2","stages":["mixing","filling","batching","hologram","wrapping"],"at":"t"},
+      "steps":[
+        {"sachetStage":"mixing","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"filling","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"batching","pic":"P3","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"},
+        {"sachetStage":"hologram","pic":"","qty":null,"start":"","end":"","done":false,"qc":"not-recorded"},
+        {"sachetStage":"wrapping","pic":"P5","qty":null,"start":"","end":"","done":true,"qc":"not-recorded"}]}],
+    "cartons":[],"adypocideReceipts":[],"orders":[],"issues":[],"boxing":[],"counts":[],"adjustments":[],
+    "events":[],"notes":[],"closedDays":[]}$$::jsonb);
+insert into public.operator_memberships (workspace_id, user_id, role, display_name, scope) values
+  (:Z, '00000000-0000-4000-8000-000000000006', 'intake', 'SI Z', 'site');
+create function pg_temp.boxed_z(p_state jsonb) returns jsonb language sql as $$
+  select jsonb_set(p_state, '{cartons}', '[{"id":"cz1","ref":"SYN-Z-1","batchId":"z1","product":"ady","unit":"box","qty":3,"rack":"B","pic":"SI","at":"t"}]') $$;
+select pg_temp.expect(pg_temp.commit_as(:SI, :Z, 'stock-in-ady', pg_temp.boxed_z(pg_temp.state(:Z))),
+  '23514', 'box carton with Hologram neither recorded nor skipped (factory stages open)');
+select pg_temp.expect(pg_temp.commit_as(:SI, :Z, 'stage-skip',
+  pg_temp.skip(pg_temp.state(:Z), 0, 3, 'No hologram', '00000000-0000-4000-8000-000000000006')),
+  'ok', 'stock-in skips Hologram on an unsent batch');
+select pg_temp.expect(pg_temp.commit_as(:SI, :Z, 'stock-in-ady',
+  jsonb_set(pg_temp.boxed_z(pg_temp.state(:Z)), '{batches,0,transferredAt}', '"2026-10-04T00:00:00Z"')),
+  '23514', 'the count marks the batch as sent while filling has no PIC');
+select pg_temp.expect(pg_temp.commit_as(:SI, :Z, 'stock-in-ady', pg_temp.boxed_z(pg_temp.state(:Z))),
+  'ok', 'box carton with the warehouse stages done and the factory stages open');
+
 -- 10. Stock returns (20261009090002): append-only, attributed, into an existing carton.
 \set SI '''00000000-0000-4000-8000-000000000006'''
 create function pg_temp.ret(p_id text, p_carton text, p_qty jsonb, p_uid text) returns jsonb language sql as $$
