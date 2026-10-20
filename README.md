@@ -165,6 +165,9 @@ are never converted into box inventory. Previously counted boxes remain stock.
   PDF upload the same way, which removes every AWB it released, as long as none of them
   has stock, packing or handover records. The audit log lists what was removed and why;
   source PDFs stay in storage.
+  Labels are recognised from Ninja Van, SPX, J&T, LEX and, since 20 October 2026, GDEX
+  (Shopee or Lazada orders shipped with GD Express: MY + 11 digits, AP + 10 digits or a
+  bare 13-digit consignment number); any other courier can be picked in the review.
   One upload takes up to 30 PDFs, 600 pages and 300 labels (raised from 200 pages and 200
   labels on 12 October 2026, and from 10 PDFs on 20 October 2026); each PDF is read and
   stored on its own, so the file count only has to fit the page and label limits.

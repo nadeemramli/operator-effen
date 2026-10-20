@@ -57,6 +57,38 @@ test("native label package count expands defaults including free bottles, retain
   assert.equal(defaultFor("adipocyde1").product, "ady");
   assert.equal(defaultFor("lip02").units, 2);
 });
+test("a Shopee order shipped with GDEX is read with courier GDEX and its MY or AP number", () => {
+  const b = batch([
+    page(
+      "Shopee\nGDEX Express\nMY37098562226\nOrder ID: 2410081234ABCD\nPacking List\n1 Cavernosil cave04 Cavernosil 1 196.00 196.00",
+    ),
+    page(
+      "Shopee\nGD Express\nAP1234567890\nOrder ID: 2410081234ABCE\nPacking List\n1 Cavernosil cave02 Cavernosil 1 120.00 120.00",
+      2,
+    ),
+    page(
+      "Shopee\nGDex\n7730120000123\n7730120000123\nOrder ID: 2410081234ABCF\nPacking List\n1 Cavernosil cave01 Cavernosil 1 60.00 60.00",
+      3,
+    ),
+  ]);
+  assert.equal(b.rows.length, 3);
+  assert.deepEqual(
+    b.rows.map((r) => [r.awb, r.courier, r.channel, r.orderRef]),
+    [
+      ["MY37098562226", "GDEX", "Shopee", "2410081234ABCD"],
+      ["AP1234567890", "GDEX", "Shopee", "2410081234ABCE"],
+      ["7730120000123", "GDEX", "Shopee", "2410081234ABCF"],
+    ],
+  );
+  for (const r of b.rows) assert.deepEqual(rowProblems(r), []);
+  // An OCR read of a GDEX image label contributes the courier name to the text layer.
+  const merged = mergeOcrText("Order ID: 2410081234ABCD\ncave04 1", "Shopee GDEX\nMY37098562226");
+  assert.match(merged, /GDEX/);
+  assert.match(merged, /MY37098562226/);
+  // An SPX label with a similar MY number still reads as SPX.
+  const spx = batch([page("SPX Shopee\nMY2660933987983\nOrder ID: 0000123456\ncave04 1")]);
+  assert.equal(spx.rows[0].courier, "SPX");
+});
 test("Shopee table quantity is separate from 3 free 1 variation", () => {
   const b = batch([
     page(

@@ -1,7 +1,7 @@
 import type { Draft, Order, Recorder } from "./draft";
 
 export const channels = ["Luxana", "Shopee", "TikTok", "Lazada"];
-export const couriers = ["Ninja Van", "SPX", "J&T", "LEX", "Other"];
+export const couriers = ["Ninja Van", "SPX", "J&T", "LEX", "GDEX", "Other"];
 /** Label records one upload may hold (released AWBs are counted in the workspace ceiling). */
 export const importLimit = 300;
 /** PDF pages one upload may hold across its files, read in the browser before review. */
@@ -475,6 +475,8 @@ export function skuAliasProblem(raw: string): string | null {
 }
 const whole = (n: unknown, min = 1): n is number =>
   typeof n === "number" && Number.isSafeInteger(n) && n >= min && n <= 1000000;
+// GDEX prints its name as GDEX, GDex or GD Express (Shopee and Lazada both ship with it).
+const gdex = /GDEX|GD\s*EXPRESS/i;
 // Ninja Van orders keyed in by hand print a "Reference" instead of an order number.
 const refPattern =
   /(?:Order\s*(?:ID|No\.?|Number)?\s*[:#]|O\/N\s*:|Ref(?:erence)?\s*(?:No\.?|Number)?\s*[:#])\s*#?\s*([A-Z0-9-]+)/gi;
@@ -493,8 +495,9 @@ export function detectReferences(raw: string, aliases?: readonly SkuAlias[]) {
     ...new Set(
       upper.match(
         // SPX also prints its number as MY + digits, with or without a trailing letter
-        // (MY263140741048F, MY2660933987983).
-        /\b(?:NVMY[A-Z0-9]{7,30}|SPXMY[A-Z0-9]{7,25}|SPXSG[A-Z0-9]{7,25}|MY\d{10,14}[A-Z]?|SG\d{9,18}[A-Z]?|MYMP[A-Z0-9]{7,25})\b/g,
+        // (MY263140741048F, MY2660933987983). GDEX consignment numbers are MY + 11 digits
+        // (MY37098562226), covered by the same MY pattern, or AP + 10 digits.
+        /\b(?:NVMY[A-Z0-9]{7,30}|SPXMY[A-Z0-9]{7,25}|SPXSG[A-Z0-9]{7,25}|MY\d{10,14}[A-Z]?|SG\d{9,18}[A-Z]?|MYMP[A-Z0-9]{7,25}|AP\d{10})\b/g,
       ) ?? [],
     ),
   ];
@@ -514,7 +517,9 @@ export function detectReferences(raw: string, aliases?: readonly SkuAlias[]) {
   for (const [n, c] of counts)
     if (c >= 3 && !orderRefs.includes(n) && !tracking.includes(n))
       tracking.push(n);
-  if (/J\s*&\s*T/i.test(text)) {
+  // J&T and GDEX also print bare numeric consignment numbers (12 to 15 digits; a phone
+  // number is shorter).
+  if (/J\s*&\s*T/i.test(text) || gdex.test(text)) {
     const nums = upper.match(/\b\d{12,15}\b/g) ?? [];
     nums
       .filter((n) => !orderRefs.includes(n))
@@ -570,6 +575,7 @@ const markers: [RegExp, string][] = [
   [/NINJA/i, "Ninja Van"],
   [/J\s*&\s*T/i, "J&T"],
   [/\bLEX\b/i, "LEX"],
+  [gdex, "GDEX"],
 ];
 /**
  * Adds what OCR found on a page that already had readable text: its tracking numbers and
@@ -639,18 +645,22 @@ export function parseImport(
           : /NINJA|NVMY/i.test(text)
             ? "Luxana"
             : channel;
+    // GDEX is checked before SPX: a Shopee order shipped with GDEX names Shopee on the
+    // label, and its MY + 11 digit number looks like an SPX one.
     const courier = /NINJA|NVMY/i.test(text)
       ? "Ninja Van"
-      : /SPX/i.test(text)
-        ? "SPX"
-        : /J\s*&\s*T/i.test(text)
-          ? "J&T"
-          : /\bLEX\b|MYMP/i.test(text)
-            ? "LEX"
-            : // A bare repeated tracking number (TikTok) names no courier.
-              tracking.some((t) => /^\d+$/.test(t))
-              ? "Other"
-              : "";
+      : gdex.test(text)
+        ? "GDEX"
+        : /SPX/i.test(text)
+          ? "SPX"
+          : /J\s*&\s*T/i.test(text)
+            ? "J&T"
+            : /\bLEX\b|MYMP/i.test(text)
+              ? "LEX"
+              : // A bare repeated tracking number (TikTok) names no courier.
+                tracking.some((t) => /^\d+$/.test(t))
+                ? "Other"
+                : "";
     const lines: ImportLine[] = [];
     const warnings: string[] = [];
     const rawLines = text
