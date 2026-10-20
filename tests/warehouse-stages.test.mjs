@@ -183,6 +183,9 @@ test("historical batches without a route snapshot are not re-gated at the box co
 // Optional stages (20261022090000): Hologram may be skipped with a reason; the Shrink machine
 // is recorded together with the finished box count.
 import {
+  available,
+  batchBoxHistory,
+  batchBoxTotal,
   isOptionalStage,
   optionalStages,
   stageSatisfied,
@@ -381,4 +384,64 @@ test("stock-in's first warehouse stage record marks the batch as sent once mixin
   assert.ok(t.batches[0].transferredAt);
   assert.equal(t.batches[0].transferPic, "Munirah");
   assert.throws(() => as(t, "production", "transfer", { id: id2, pic: "Helmi" }), /already been sent/);
+});
+
+// 20261025090000: a recount replaces the batch total and keeps the earlier total as a version.
+test("a recount replaces the box total; the history keeps every version", () => {
+  let s = planned();
+  const id = s.batches[0].id;
+  for (const stage of ["mixing", "filling"]) s = record(s, "production", id, stage);
+  s = record(s, "intake", id, "batching");
+  s = as(s, "intake", "stage-skip", { id, stage: "hologram", reason: "No hologram" });
+  s = as(s, "intake", "wrapping-count", { id, stage: "wrapping", pic: "Nurul", boxes: 350, rack: "B" });
+  const batch = () => s.batches.find((b) => b.id === id);
+  assert.equal(batchBoxTotal(s, batch()), 350);
+  assert.throws(
+    () => as(s, "intake", "recount-ady", { batchId: id, total: 350, reason: "Same", pic: "Nurul" }),
+    /already 350/,
+  );
+  assert.throws(
+    () => as(s, "intake", "recount-ady", { batchId: id, total: 550, pic: "Nurul" }),
+    /reason/i,
+  );
+  assert.throws(
+    () => as(s, "production", "recount-ady", { batchId: id, total: 550, reason: "x", pic: "Helmi" }),
+    /does not permit|intake|role/i,
+  );
+  const before = s;
+  s = as(s, "intake", "recount-ady", { batchId: id, total: 550, reason: "Second count after stacking", pic: "Nurul" });
+  assert.deepEqual(outOfScopeKeys("recount-ady", before, s), []);
+  assert.equal(batchBoxTotal(s, batch()), 550);
+  const carton = s.cartons.find((c) => c.batchId === id);
+  assert.equal(carton.qty, 350, "the received carton is never rewritten");
+  assert.equal(available(s, carton), 550, "the rack balance follows the recount");
+  const adj = s.adjustments.find((a) => a.cartonId === carton.id);
+  assert.equal(adj.kind, "recount");
+  assert.equal(adj.delta, 200);
+  assert.equal(adj.from, 350);
+  assert.equal(adj.to, 550);
+  assert.equal(adj.recordedBy.userId, "u-intake");
+  assert.match(s.events[0].detail, /350 → 550 boxes/);
+  // A further delivery still adds a carton; the history shows every version in order.
+  s = as(s, "intake", "stock-in-ady", { batchId: id, boxes: 20, rack: "B", pic: "Nurul" });
+  assert.equal(batchBoxTotal(s, batch()), 570);
+  assert.deepEqual(
+    batchBoxHistory(s, batch()).map((v) => [v.kind, v.change, v.total]),
+    [["count", 350, 350], ["recount", 200, 550], ["add", 20, 570]],
+  );
+  // A lower recount is limited to what is still on the racks.
+  s = as(s, "intake", "recount-ady", { batchId: id, total: 560, reason: "Ten damaged", pic: "Nurul" });
+  assert.equal(batchBoxTotal(s, batch()), 560);
+  assert.throws(
+    () => as(s, "intake", "recount-ady", { batchId: id, total: -1, reason: "x", pic: "Nurul" }),
+    /at least|0|number/i,
+  );
+  const order = s.orders.find((o) => o.product === "ady" && o.reviewState !== "pending" && !o.dispatched);
+  if (order) {
+    s = as(s, "outbound", "issue", { cartonId: carton.id, orderId: order.id, qty: 540, pic: "SO" });
+    assert.throws(
+      () => as(s, "intake", "recount-ady", { batchId: id, total: 10, reason: "x", pic: "Nurul" }),
+      /still on the racks/,
+    );
+  }
 });

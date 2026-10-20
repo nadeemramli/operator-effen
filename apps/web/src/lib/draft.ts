@@ -449,6 +449,12 @@ export interface Adjustment {
   delta: number;
   reason: string;
   at: string;
+  /** A sachet box recount (`recount-ady`): the batch total moved from `from` to `to`. */
+  kind?: "recount";
+  from?: number;
+  to?: number;
+  pic?: string;
+  recordedBy?: Recorder;
 }
 export interface Event {
   id: string;
@@ -958,8 +964,50 @@ export const batchReceived = (s: Draft, b: Batch) =>
  */
 export const batchBoxTotal = (s: Draft, b: Batch): number | null =>
   s.cartons.some((c) => c.batchId === b.id && c.unit === batchUnit(b))
-    ? batchReceived(s, b)
+    ? batchReceived(s, b) + batchRecounted(s, b)
     : null;
+/** Net change to a sachet batch's box total from recounts (not from other adjustments). */
+export const batchRecounted = (s: Draft, b: Batch) => {
+  const ids = new Set(
+    s.cartons.filter((c) => c.batchId === b.id && c.unit === batchUnit(b)).map((c) => c.id),
+  );
+  return s.adjustments
+    .filter((a) => a.kind === "recount" && ids.has(a.cartonId))
+    .reduce((n, a) => n + a.delta, 0);
+};
+export interface BoxTotalVersion {
+  kind: "count" | "add" | "recount";
+  /** The batch total after this entry. */
+  total: number;
+  change: number;
+  at: string;
+  pic: string;
+  reason?: string;
+  recordedBy?: Recorder;
+}
+/** The versions of a sachet batch's box total, oldest first: counts, added deliveries, recounts. */
+export const batchBoxHistory = (s: Draft, b: Batch): BoxTotalVersion[] => {
+  const cartons = s.cartons.filter((c) => c.batchId === b.id && c.unit === batchUnit(b));
+  const ids = new Set(cartons.map((c) => c.id));
+  const entries: Omit<BoxTotalVersion, "total">[] = [
+    ...cartons.map((c) => ({ kind: "add" as const, change: c.qty, at: c.at, pic: c.pic })),
+    ...s.adjustments
+      .filter((a) => a.kind === "recount" && ids.has(a.cartonId))
+      .map((a) => ({
+        kind: "recount" as const,
+        change: a.delta,
+        at: a.at,
+        pic: a.pic ?? "",
+        reason: a.reason,
+        recordedBy: a.recordedBy,
+      })),
+  ].sort((x, y) => x.at.localeCompare(y.at));
+  let total = 0;
+  return entries.map((e, i) => {
+    total += e.change;
+    return { ...e, kind: i === 0 && e.kind === "add" ? "count" : e.kind, total };
+  });
+};
 export const id = () => crypto.randomUUID();
 const blankStep = (): Step => ({
   pic: "",
@@ -3133,6 +3181,63 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           count.actual +
           " · " +
           count.pic,
+      );
+      break;
+    }
+    case "recount-ady": {
+      // A fresh count of a sachet batch's finished boxes replaces the total: the difference
+      // is recorded as a recount adjustment on the batch's stock carton(s), so the rack
+      // balance, the daily inventory and the audit log all move with it, and the earlier
+      // total stays as a version in the history.
+      allow("intake");
+      const batch = liveBatch("batchId");
+      if (!isSachet(batch.product)) throw new Error("Choose a sachet batch.");
+      const current = batchBoxTotal(s, batch);
+      if (current === null)
+        throw new Error("Enter the first box count before recounting.");
+      const total = num("total"),
+        reason = str("reason"),
+        pic = str("pic");
+      if (total === current)
+        throw new Error(
+          `The total is already ${current} boxes. Enter the recounted total if it differs.`,
+        );
+      let delta = total - current;
+      const cartons = s.cartons
+        .filter((c) => c.batchId === batch.id && c.unit === batchUnit(batch))
+        .sort((x, y) => y.at.localeCompare(x.at));
+      if (delta < 0) {
+        const onRack = cartons.reduce((n, c) => n + available(s, c), 0);
+        if (-delta > onRack)
+          throw new Error(
+            `Only ${onRack} boxes of ${batch.code} are still on the racks; the rest were issued. The total cannot go below ${current - onRack}.`,
+          );
+      }
+      const entry = (carton: Carton, change: number): Adjustment => ({
+        id: id(),
+        cartonId: carton.id,
+        delta: change,
+        reason: "Recount: " + reason,
+        at,
+        kind: "recount",
+        from: current,
+        to: total,
+        pic,
+        recordedBy: recorder,
+      });
+      if (delta > 0) s.adjustments.unshift(entry(cartons[0], delta));
+      else
+        for (const carton of cartons) {
+          if (delta === 0) break;
+          const take = Math.min(available(s, carton), -delta);
+          if (take <= 0) continue;
+          s.adjustments.unshift(entry(carton, -take));
+          delta += take;
+        }
+      log(
+        batch.id,
+        "Sachet box total recounted",
+        `${batch.code} · ${current} → ${total} boxes · ${reason} · ${pic}`,
       );
       break;
     }

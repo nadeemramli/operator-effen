@@ -2281,6 +2281,7 @@ export function DraftApp() {
             onTrace={(id) => setTrace(id)}
             machineShow={can("machines.manage") ? show : undefined}
             onBoxCount={can("stock.receive") ? enterBoxTotal : undefined}
+            canRecount={can("stock.adjust")}
           />
           {can("day.close") && (
             <div className="page-actions">

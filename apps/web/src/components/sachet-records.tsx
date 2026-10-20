@@ -26,6 +26,7 @@ import { PersonBadge } from "./person-profile";
 import { Empty, Panel, ProductName, type Field, type FormSpec } from "./draft-primitives";
 import {
   adypocideReceipts,
+  batchBoxHistory,
   batchBoxTotal,
   batchComplete,
   batchRoute,
@@ -414,6 +415,7 @@ export function StageRecords({
   stageFilter,
   onBoxCount,
   canCountBoxes,
+  canRecount,
 }: {
   batch: Batch;
   state: Draft;
@@ -425,6 +427,8 @@ export function StageRecords({
   stageFilter?: "factory" | "warehouse";
   /** Present when the viewer may enter the batch's finished box count (stock.receive). */
   onBoxCount?: (batch: Batch) => void;
+  /** The viewer may recount the batch's total (stock.adjust). */
+  canRecount?: boolean;
   /**
    * The viewer may enter the box count (stock.receive): the Shrink machine completion then
    * takes the finished box count in the same entry. Defaults to the presence of onBoxCount.
@@ -460,6 +464,32 @@ export function StageRecords({
   // The batch's finished box total belongs to its last warehouse stage (the Shrink machine).
   const totalStage = lastWarehouseStage(b);
   const total = batchBoxTotal(state, b);
+  const totalHistory = batchBoxHistory(state, b);
+  // A recount replaces the total; the difference is recorded on the batch's stock carton.
+  const recount = () =>
+    show!({
+      type: "recount-ady",
+      title: t("Recount total boxes", "Kira semula jumlah kotak"),
+      description:
+        b.code +
+        " · " +
+        t(
+          `${total} boxes recorded so far. Enter the recounted total for the whole batch; the difference is recorded as a recount and the earlier total stays in the history.`,
+          `${total} kotak direkod setakat ini. Masukkan jumlah kiraan semula bagi seluruh kelompok; perbezaannya direkod sebagai kiraan semula dan jumlah terdahulu kekal dalam sejarah.`,
+        ),
+      hidden: { batchId: b.id },
+      fields: [
+        {
+          name: "total",
+          label: t("Recounted total boxes", "Jumlah kotak kiraan semula"),
+          type: "number",
+          min: 0,
+        },
+        reasonField(lang, t("Why was the batch recounted?", "Mengapa kelompok dikira semula?")),
+        pic!("pic", t("Counted by (PIC)", "Dikira oleh (PIC)")),
+      ],
+      submit: t("Save recounted total", "Simpan jumlah kiraan semula"),
+    });
   // Batches planned with a route need their warehouse stages before the box count.
   const boxReady = !b.route || warehouseStagesDone(b);
   // The first stage still open, in route order: the one to do next.
@@ -674,6 +704,26 @@ export function StageRecords({
                       ) : (
                         <strong>{total}</strong>
                       )}
+                      {totalHistory.length > 1 && (
+                        <ul className="stage-box-history">
+                          {totalHistory.map((v, i) => (
+                            <li key={i}>
+                              <span className="mono">{v.total}</span>{" "}
+                              {v.kind === "count"
+                                ? t("first count", "kiraan pertama")
+                                : v.kind === "add"
+                                  ? t(`+${v.change} added`, `+${v.change} ditambah`)
+                                  : t(
+                                      `recount (${v.change > 0 ? "+" : ""}${v.change})`,
+                                      `kiraan semula (${v.change > 0 ? "+" : ""}${v.change})`,
+                                    )}
+                              {" · "}
+                              {when(v.at, lang)} · {v.pic}
+                              {v.reason ? " · " + v.reason.replace(/^Recount: /, "") : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                     </span>
                   )}
                 </td>
@@ -823,16 +873,23 @@ export function StageRecords({
                       ) : !boxReady ? (
                         <p className="field-hint">{openBeforeHint}</p>
                       ) : (
-                        <Button
-                          size="sm"
-                          variant={total === null ? "default" : "outline"}
-                          className={total === null ? "action-primary" : undefined}
-                          onClick={() => onBoxCount(b)}
-                        >
-                          {total === null
-                            ? t("Enter total boxes", "Masukkan jumlah kotak")
-                            : t("Add boxes to the total", "Tambah kotak pada jumlah")}
-                        </Button>
+                        <>
+                          <Button
+                            size="sm"
+                            variant={total === null ? "default" : "outline"}
+                            className={total === null ? "action-primary" : undefined}
+                            onClick={() => onBoxCount(b)}
+                          >
+                            {total === null
+                              ? t("Enter total boxes", "Masukkan jumlah kotak")
+                              : t("Add boxes to the total", "Tambah kotak pada jumlah")}
+                          </Button>
+                          {total !== null && canRecount && editable && (
+                            <Button size="sm" variant="outline" onClick={recount}>
+                              {t("Recount total", "Kira semula jumlah")}
+                            </Button>
+                          )}
+                        </>
                       )}
                     </div>
                   )}
@@ -1122,6 +1179,7 @@ export function SachetProductionRecords({
   onTrace,
   machineShow,
   onBoxCount,
+  canRecount,
 }: {
   state: Draft;
   lang: Lang;
@@ -1133,6 +1191,8 @@ export function SachetProductionRecords({
   machineShow?: Show;
   /** Present when the viewer may enter a batch's finished box count. */
   onBoxCount?: (batch: Batch) => void;
+  /** The viewer may recount a batch's total (stock.adjust). */
+  canRecount?: boolean;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
   const [query, setQuery] = useState("");
@@ -1228,6 +1288,7 @@ export function SachetProductionRecords({
                     pic={pic}
                     role={role}
                     onBoxCount={onBoxCount}
+                    canRecount={canRecount}
                   />
                   <Button
                     size="sm"

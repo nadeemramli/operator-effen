@@ -202,6 +202,17 @@ author, site, optional record reference and time, and never edits operational re
   **Send to warehouse** itself. The records list shows a **Factory stages open** pill on such
   batches and the audit entry of the count notes it. **Receive sachets for boxing** lists
   every sachet batch with a route.
+- **Recounting the box total (since 2026-10-20, migration `20261025090000`).**
+  `recount-ady` (capability `stock.adjust`, scope `{adjustments,events}`) takes the
+  recounted total for the whole batch, a reason and the counting PIC, and records the
+  difference as an adjustment with `kind: "recount"`, `from`, `to`, `pic` and `recordedBy`
+  on the batch's newest box carton (a lower recount is taken from the cartons newest-first,
+  and refused beyond what is still on the racks). The received carton is never rewritten;
+  `batchBoxTotal` is the received boxes plus recount deltas, and `batchBoxHistory` lists the
+  versions (first count, added deliveries, recounts) that the Shrink machine row shows under
+  **Total boxes**. The daily inventory shows a recount as an adjustment on its day. The
+  database checks nothing new: adjustments are already append-only and count in the carton
+  balance.
 - **Stage rows (2026-10-19).** Each stage shows one status pill (Next, Open, Completed,
   Skipped, Not recorded) and one main action: a large **Record completion** button (or
   **Record completion + box count** on the Shrink machine), plus **Not needed – skip** on an
@@ -501,6 +512,12 @@ commit;
   overload, not callable by signed-in users); the history row, first stored under the day's
   timestamp by the tool, was corrected to the repository version.
 
+## Box recount rollout (2026-10-20, owner-approved)
+
+- Migration `20261025090000_operator_box_recount` (one new command rule; no function or data
+  change) applied to `operator-effen` on 2026-10-20 through the Supabase MCP connection,
+  before the commit reached `main`; the history row was corrected to the repository version.
+
 ## Verification
 
 - `pnpm test` — domain, capability-parity and command-scope tests.
@@ -517,7 +534,8 @@ commit;
 
 ## Rollback
 
-Run `supabase/rollback/20261024090000_operator_warehouse_count.down.sql` first (restores the
+Run `supabase/rollback/20261025090000_operator_box_recount.down.sql` first (removes the
+recount rule), then `supabase/rollback/20261024090000_operator_warehouse_count.down.sql` (restores the
 box-count gate over every route stage), then
 `supabase/rollback/20261023090000_operator_stock_in_sends.down.sql` (restores the
 receipt and box-count scopes without `batches`), then

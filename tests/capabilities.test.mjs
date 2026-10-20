@@ -32,6 +32,7 @@ const later = [
   "20261020090000_operator_sku_aliases",
   "20261022090000_operator_optional_stages",
   "20261023090000_operator_stock_in_sends",
+  "20261025090000_operator_box_recount",
 ].map(migration);
 const merged = (table) =>
   section(table) +
@@ -128,6 +129,7 @@ test("every operational command stays inside its database scope", () => {
   run("intake", "machine", { id: second, stage: "batching", pic: "P" });
   run("intake", "stage-skip", { id: second, stage: "hologram", reason: "No hologram for this product" });
   run("intake", "wrapping-count", { id: second, stage: "wrapping", pic: "R", boxes: 2, rack: "R" });
+  run("intake", "recount-ady", { batchId: second, total: 5, reason: "Recounted after boxing", pic: "R" });
   run("production", "batch", { product: "cav", code: "COV-B", date: "2026-10-01", target: 2 });
   const bottle = s.batches[0].id;
   for (let i = 0; i < 4; i++) run("production", "step", { id: bottle, step: i, pic: "P", ...(i === 3 ? { qty: 2, qc: "not-recorded" } : {}) });

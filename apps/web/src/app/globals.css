@@ -3382,3 +3382,13 @@ td.actions {
     margin-left: 0;
   }
 }
+.stage-box-history {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.stage-box-history li + li::before {
+  content: "→ ";
+}

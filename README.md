@@ -141,7 +141,12 @@ stage stock-in records or skips, the receipt, or the box count marks the batch a
 count itself needs only the warehouse stages (migration
 `20261024090000_operator_warehouse_count.sql`): a batch whose mixing or filling has no PIC
 can still be counted and shows "Factory stages open" until production records them, and the
-transfer is recorded by the next stock-in entry after that. Each stage row shows one status
+transfer is recorded by the next stock-in entry after that. **Recount total** (same day,
+migration `20261025090000_operator_box_recount.sql`) replaces a batch's total with a fresh
+count (350 counted, 550 on recount: the total is 550): the difference is a recount
+adjustment on the batch's carton, the rack balance follows, and the Shrink machine row lists
+every version of the total with who counted and why. A lower recount cannot go below the
+boxes still on the racks. "Add boxes to the total" remains for a further delivery. Each stage row shows one status
 (Next, Completed, Skipped) and one main button; corrections and PIC history sit under
 "Corrections & history". See
 [role-based entry and the five-stage route](docs/sv-entry-and-sachet-route.md).

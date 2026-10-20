@@ -946,6 +946,22 @@ select pg_temp.expect(pg_temp.commit_as(:SI, :Z, 'stock-in-ady',
 select pg_temp.expect(pg_temp.commit_as(:SI, :Z, 'stock-in-ady', pg_temp.boxed_z(pg_temp.state(:Z))),
   'ok', 'box carton with the warehouse stages done and the factory stages open');
 
+-- 9e. Box recounts (20261025090000): stock.adjust holders record a recount adjustment on a
+--     box carton; the rule is scoped to adjustments and events.
+select pg_temp.expect(pg_temp.commit_as(:SI, :X, 'recount-ady',
+  jsonb_set(pg_temp.state(:X), '{adjustments}', coalesce(pg_temp.state(:X) -> 'adjustments', '[]'::jsonb)
+    || jsonb_build_array(jsonb_build_object('id', 'rc1', 'cartonId', 'cx1', 'delta', 200, 'reason', 'Recount: second count',
+      'at', 't', 'kind', 'recount', 'from', 12, 'to', 212, 'pic', 'SI', 'recordedBy', jsonb_build_object('userId', :SI))))),
+  'ok', 'stock-in records a recount adjustment');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000001', :X, 'recount-ady',
+  jsonb_set(pg_temp.state(:X), '{adjustments}', (pg_temp.state(:X) -> 'adjustments')
+    || jsonb_build_array(jsonb_build_object('id', 'rc2', 'cartonId', 'cx1', 'delta', 1, 'reason', 'Recount: x',
+      'at', 't', 'kind', 'recount')))), '42501', 'production records a recount');
+select pg_temp.expect(pg_temp.commit_as(:SI, :X, 'recount-ady',
+  jsonb_set(pg_temp.state(:X), '{adjustments,0,delta}', '5')), '23514', 'rewrite an existing recount');
+select pg_temp.expect(pg_temp.commit_as(:SI, :X, 'recount-ady',
+  jsonb_set(pg_temp.state(:X), '{batches,0,code}', '"X"')), '42501', 'recount-ady used to edit batches');
+
 -- 10. Stock returns (20261009090002): append-only, attributed, into an existing carton.
 \set SI '''00000000-0000-4000-8000-000000000006'''
 create function pg_temp.ret(p_id text, p_carton text, p_qty jsonb, p_uid text) returns jsonb language sql as $$
