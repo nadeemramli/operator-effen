@@ -491,6 +491,16 @@ commit;
   from those commands, so the wider scope was unused. Verified afterwards: both rules carry
   the new scope, 54 rules in total, history recorded under `20261023090000`.
 
+## Warehouse count rollout (2026-10-20, owner-approved)
+
+- Migration `20261024090000_operator_warehouse_count` (replaces `assert_core_transition`:
+  box-count gate over the warehouse stages only; no rule or data change) applied to
+  `operator-effen` on 2026-10-20 through the Supabase MCP connection, before the commit
+  reached `main`. Pre-check: the live body was byte-identical to `20261022090000`; the site
+  was at revision 402. Verified afterwards: the body is identical to the migration (one
+  overload, not callable by signed-in users); the history row, first stored under the day's
+  timestamp by the tool, was corrected to the repository version.
+
 ## Verification
 
 - `pnpm test` — domain, capability-parity and command-scope tests.
