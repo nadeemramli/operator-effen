@@ -1692,7 +1692,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "import-save":
     case "import-release":
     case "import-receive": {
-      const detail = applyImportCommand(s, cmd.type, v, cmd.role, at);
+      const detail = applyImportCommand(s, cmd.type, v, cmd.role, at, recorder, log);
       log(String(v.id ?? (v.batch as AwbImport)?.id), cmd.type, detail);
       break;
     }
@@ -3091,7 +3091,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "sku-alias-save":
     case "sku-alias-retire":
     case "sku-alias-reactivate": {
-      allow("admin");
+      // Office admin and stock-out hold catalog.edit; the site policy may narrow it.
+      allow("admin", "outbound");
       const entry = applySkuAliasCommand(s, cmd.type, v, at, recorder);
       log(entry.entity, entry.action, entry.detail);
       break;

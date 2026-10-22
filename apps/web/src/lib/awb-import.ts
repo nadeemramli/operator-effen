@@ -824,6 +824,41 @@ export const lineSignature = (lines: ImportLine[]) =>
       .map((l) => [l.sku.toLowerCase(), l.product, l.packages, l.units])
       .sort((a, b) => String(a).localeCompare(String(b))),
   );
+/** A SKU the catalogue does not know, mapped by hand on a label under review. */
+export type SkuToRemember = { sku: string; product: string; units: number };
+/**
+ * The SKUs a release remembers: each SKU on the rows that the catalogue knows nothing
+ * about (not built in, no record, so not retired either) and that a reviewer mapped to a
+ * product and units by hand, with a shape the catalogue accepts. A SKU mapped two ways on
+ * different labels is left out; it still needs a decision in Package SKUs.
+ */
+export function skusToRemember(
+  rows: readonly ImportRow[],
+  aliases?: readonly SkuAlias[],
+): SkuToRemember[] {
+  const found = new Map<string, SkuToRemember | null>();
+  for (const row of rows)
+    for (const line of row.lines) {
+      const sku = normSku(line.sku);
+      if (
+        !sku ||
+        skuAliasProblem(sku) ||
+        recordFor(sku, aliases) ||
+        seedFor(sku) ||
+        !productIds.includes(line.product) ||
+        !whole(line.units) ||
+        Number(line.units) > 1000
+      )
+        continue;
+      const units = Number(line.units);
+      const seen = found.get(sku);
+      if (seen === undefined)
+        found.set(sku, { sku, product: line.product, units });
+      else if (seen && (seen.product !== line.product || seen.units !== units))
+        found.set(sku, null);
+    }
+  return [...found.values()].filter((x): x is SkuToRemember => x !== null);
+}
 export function rowProblems(row: ImportRow): string[] {
   const problems: string[] = [];
   if (!/^[A-Z0-9-]{6,40}$/.test(normalizeAwb(row.awb)))
@@ -1020,6 +1055,8 @@ export function applyImportCommand(
   input: Record<string, unknown>,
   role: string,
   at: string,
+  recordedBy?: Recorder,
+  logEntry?: (entity: string, action: string, detail: string) => void,
 ) {
   state.awbImports ??= [];
   if (type === "import-save") {
@@ -1129,12 +1166,48 @@ export function applyImportCommand(
       at,
     });
   }
+  // The SKUs the reviewer mapped by hand become catalogue records, so the next upload
+  // resolves them without review. The catalogue never blocks a release: a SKU it refuses
+  // (a full catalogue, a record saved meanwhile) is left for Package SKUs.
+  const remembered: string[] = [];
+  for (const entry of skusToRemember(ready, state.skuAliases)) {
+    let saved: { entity: string; action: string; detail: string };
+    try {
+      saved = applySkuAliasCommand(
+        state,
+        "sku-alias-save",
+        { sku: entry.sku, product: entry.product, units: entry.units },
+        at,
+        recordedBy,
+      );
+    } catch {
+      continue;
+    }
+    remembered.push(entry.sku);
+    const detail = `${saved.detail} · remembered from ${batch.name}`;
+    if (logEntry) logEntry(saved.entity, saved.action, detail);
+    else
+      state.events.unshift({
+        id: crypto.randomUUID(),
+        entity: saved.entity,
+        action: saved.action,
+        detail,
+        actor: "Office admin (test view)",
+        at,
+      });
+  }
   // A released batch is read-only; its raw extraction text (about a fifth of the upload's
   // bytes) is no longer reviewed. The source PDF pages stay in storage for checking.
   for (const row of batch.rows) row.original = "";
   batch.confirmedAt = at;
   batch.updatedAt = at;
-  return `Handoff confirmed · ${ready.length} new AWBs · no print, packing or stock movement inferred`;
+  return (
+    `Handoff confirmed · ${ready.length} new AWBs` +
+    (remembered.length
+      ? ` · ${remembered.length} package SKU${remembered.length === 1 ? "" : "s"} remembered (${remembered.join(", ")})`
+      : "") +
+    " · no print, packing or stock movement inferred"
+  );
 }
 /**
  * The package SKU catalogue: `sku-alias-save` (a new SKU, or a change to a catalogue entry:
@@ -1149,7 +1222,7 @@ export function applySkuAliasCommand(
   type: string,
   input: Record<string, unknown>,
   at: string,
-  recordedBy: Recorder,
+  recordedBy?: Recorder,
 ): { entity: string; action: string; detail: string } {
   const aliases = (state.skuAliases ??= []);
   const text = (key: string) =>

@@ -10,6 +10,7 @@ export type Capability =
   | "stock.adjust"
   | "orders.enter"
   | "orders.import"
+  | "catalog.edit"
   | "outbound.fulfil"
   | "outbound.correct"
   | "sources.read"
@@ -70,8 +71,15 @@ export const roleCapabilities: Record<MemberRole, Capability[]> = {
     "feedback.post",
     "members.manage",
     "trips.read",
+    "catalog.edit",
   ],
-  admin: ["orders.import", "orders.enter", "sources.read", "feedback.post"],
+  admin: [
+    "orders.import",
+    "orders.enter",
+    "sources.read",
+    "feedback.post",
+    "catalog.edit",
+  ],
   hr: ["members.manage", "feedback.post"],
   management: ["review.comment", "sources.read", "feedback.post", "trips.read"],
   // Packers share one sign-in per site and record their own packed counts after unlocking
@@ -126,9 +134,11 @@ export const commandRules: Record<
     stateKeys: ["orders", "awbImports", "events"],
   },
   "import-save": { capability: "orders.import", stateKeys: ["awbImports", "events"] },
+  // A release also remembers the new package SKUs its labels were mapped to by hand
+  // (20261026090000_operator_catalog_edit.sql), so the next upload resolves them.
   "import-release": {
     capability: "orders.import",
-    stateKeys: ["awbImports", "orders", "events"],
+    stateKeys: ["awbImports", "orders", "skuAliases", "events"],
   },
   "import-receive": {
     capability: "outbound.fulfil",
@@ -139,11 +149,13 @@ export const commandRules: Record<
     stateKeys: ["awbImports", "orders", "events"],
   },
   // Package SKU catalogue for AWB imports: custom SKUs and built-in overrides
-  // (20261020090000_operator_sku_aliases.sql; same commands and state key).
-  "sku-alias-save": { capability: "orders.import", stateKeys: ["skuAliases", "events"] },
-  "sku-alias-retire": { capability: "orders.import", stateKeys: ["skuAliases", "events"] },
+  // (20261020090000_operator_sku_aliases.sql; same commands and state key). Since
+  // 20261026090000_operator_catalog_edit.sql the catalogue has its own capability, held by
+  // the office admin and the stock-out supervisor.
+  "sku-alias-save": { capability: "catalog.edit", stateKeys: ["skuAliases", "events"] },
+  "sku-alias-retire": { capability: "catalog.edit", stateKeys: ["skuAliases", "events"] },
   "sku-alias-reactivate": {
-    capability: "orders.import",
+    capability: "catalog.edit",
     stateKeys: ["skuAliases", "events"],
   },
   "sort-count": { capability: "outbound.fulfil", stateKeys: ["sortCounts", "events"] },

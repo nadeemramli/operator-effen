@@ -37,6 +37,7 @@ import {
   rowProblems,
   rowStatus,
   skuAliasProblem,
+  skusToRemember,
   type AwbImport,
   type ImportLine,
   type ImportRow,
@@ -104,6 +105,13 @@ export function AwbIntake({
     batch?.rows.map((r) => ({ row: r, status: rowStatus(r, batch, state) })) ??
     [];
   const canEdit = role === "admin" && !batch?.confirmedAt && !busy;
+  // SKUs mapped by hand on labels that are ready: confirming the orders remembers them.
+  const toRemember = batch?.confirmedAt
+    ? []
+    : skusToRemember(
+        statuses.filter((x) => x.status === "ready").map((x) => x.row),
+        state.skuAliases,
+      );
   useEffect(() => {
     if (!processing && !dirty) return;
     const prevent = (e: BeforeUnloadEvent) => {
@@ -822,6 +830,21 @@ export function AwbIntake({
                 {p.name} · {units(lang, p.unit)}
               </span>
             ))}
+            {toRemember.length > 0 && (
+              <span
+                title={toRemember
+                  .map((x) => `${x.sku} → ${x.product.toUpperCase()} × ${x.units}`)
+                  .join(" · ")}
+              >
+                <strong>{toRemember.length}</strong>{" "}
+                {t(
+                  "new SKUs remembered on confirm",
+                  "SKU baharu diingat apabila disahkan",
+                )}
+                {": "}
+                {toRemember.map((x) => x.sku).join(", ")}
+              </span>
+            )}
           </div>
           {role === "outbound" && batch.confirmedAt && !batch.receivedAt && (
             <form
@@ -1153,8 +1176,8 @@ export function AwbIntake({
                                         "SKU tidak dikenali — SKU ini telah dihentikan dalam SKU pakej. Aktifkan semula di sana, atau masukkan produk dan unit di sini.",
                                       )
                                     : t(
-                                        "Unknown SKU — add it to Package SKUs once so future labels resolve automatically.",
-                                        "SKU tidak dikenali — tambah ke SKU pakej sekali supaya label akan datang dikenal pasti secara automatik.",
+                                        "Unknown SKU — enter the product and units; confirming the orders remembers it, so later labels resolve automatically. Remember it now to fill the other labels in this upload.",
+                                        "SKU tidak dikenali — masukkan produk dan unit; mengesahkan pesanan akan mengingatnya supaya label akan datang dikenal pasti secara automatik. Ingat sekarang untuk mengisi label lain dalam muat naik ini.",
                                       )}{" "}
                                   {isRetiredSku(line.sku, state.skuAliases)
                                     ? null
