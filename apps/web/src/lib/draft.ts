@@ -988,22 +988,33 @@ export interface BoxTotalVersion {
 /** The versions of a sachet batch's box total, oldest first: counts, added deliveries, recounts. */
 export const batchBoxHistory = (s: Draft, b: Batch): BoxTotalVersion[] => {
   const cartons = s.cartons.filter((c) => c.batchId === b.id && c.unit === batchUnit(b));
-  const ids = new Set(cartons.map((c) => c.id));
-  const entries: Omit<BoxTotalVersion, "total">[] = [
-    ...cartons.map((c) => ({ kind: "add" as const, change: c.qty, at: c.at, pic: c.pic })),
-    ...s.adjustments
-      .filter((a) => a.kind === "recount" && ids.has(a.cartonId))
-      .map((a) => ({
+  // Cartons and adjustments are stored newest first. Entries recorded in the same millisecond
+  // keep their causal order: a recount follows the carton it recounts (and earlier recounts of
+  // it) and precedes a carton added after it.
+  const rank = new Map(cartons.map((c, i) => [c.id, cartons.length - 1 - i]));
+  const recounts = s.adjustments.filter((a) => a.kind === "recount" && rank.has(a.cartonId));
+  type Entry = Omit<BoxTotalVersion, "total">;
+  const entries: { entry: Entry; seq: number; sub: number }[] = [
+    ...cartons.map((c) => ({
+      entry: { kind: "add" as const, change: c.qty, at: c.at, pic: c.pic },
+      seq: rank.get(c.id)! * 2,
+      sub: 0,
+    })),
+    ...recounts.map((a, i) => ({
+      entry: {
         kind: "recount" as const,
         change: a.delta,
         at: a.at,
         pic: a.pic ?? "",
         reason: a.reason,
         recordedBy: a.recordedBy,
-      })),
-  ].sort((x, y) => x.at.localeCompare(y.at));
+      },
+      seq: rank.get(a.cartonId)! * 2 + 1,
+      sub: recounts.length - 1 - i,
+    })),
+  ].sort((x, y) => x.entry.at.localeCompare(y.entry.at) || x.seq - y.seq || x.sub - y.sub);
   let total = 0;
-  return entries.map((e, i) => {
+  return entries.map(({ entry: e }, i) => {
     total += e.change;
     return { ...e, kind: i === 0 && e.kind === "add" ? "count" : e.kind, total };
   });
@@ -1692,7 +1703,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "import-save":
     case "import-release":
     case "import-receive": {
-      const detail = applyImportCommand(s, cmd.type, v, cmd.role, at);
+      const detail = applyImportCommand(s, cmd.type, v, cmd.role, at, recorder, log);
       log(String(v.id ?? (v.batch as AwbImport)?.id), cmd.type, detail);
       break;
     }
@@ -3091,7 +3102,8 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "sku-alias-save":
     case "sku-alias-retire":
     case "sku-alias-reactivate": {
-      allow("admin");
+      // Office admin and stock-out hold catalog.edit; the site policy may narrow it.
+      allow("admin", "outbound");
       const entry = applySkuAliasCommand(s, cmd.type, v, at, recorder);
       log(entry.entity, entry.action, entry.detail);
       break;

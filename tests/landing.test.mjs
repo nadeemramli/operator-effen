@@ -85,5 +85,12 @@ test("office admin can open Stock-in, Packing and Daily tally, and still opens o
 
 test("view-only access for admin: no stock or fulfilment capability was added", async () => {
   const { roleCapabilities } = await import("../apps/web/src/lib/capabilities.ts");
-  assert.deepEqual(roleCapabilities.admin, ["orders.import", "orders.enter", "sources.read", "feedback.post"]);
+  // catalog.edit (2026-10-22) is the package SKU catalogue, not stock or fulfilment.
+  assert.deepEqual(roleCapabilities.admin, [
+    "orders.import",
+    "orders.enter",
+    "sources.read",
+    "feedback.post",
+    "catalog.edit",
+  ]);
 });

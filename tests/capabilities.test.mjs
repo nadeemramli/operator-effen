@@ -33,6 +33,7 @@ const later = [
   "20261022090000_operator_optional_stages",
   "20261023090000_operator_stock_in_sends",
   "20261025090000_operator_box_recount",
+  "20261026090000_operator_catalog_edit",
 ].map(migration);
 const merged = (table) =>
   section(table) +
@@ -175,8 +176,8 @@ test("every operational command stays inside its database scope", () => {
   run("admin", "sku-alias-save", { sku: "cov-pakej8", product: "cav", units: 8 });
   const alias = s.skuAliases[0];
   run("admin", "sku-alias-save", { id: alias.id, sku: "cov-pakej8", product: "cav", units: 9, reason: "x" });
-  run("admin", "sku-alias-retire", { id: alias.id, reason: "x" });
-  run("admin", "sku-alias-reactivate", { id: alias.id, reason: "x" });
+  run("outbound", "sku-alias-retire", { id: alias.id, reason: "x" });
+  run("outbound", "sku-alias-reactivate", { id: alias.id, reason: "x" });
   run("management", "review", { text: "Check" });
   run("packer", "feedback", { text: "Note" });
   run("production", "close", { date: "2026-10-01", note: "Done" });

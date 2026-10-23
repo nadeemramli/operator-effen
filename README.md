@@ -184,6 +184,12 @@ are never converted into box inventory. Previously counted boxes remain stock.
   skipped in the review summary; **Add missed label** can still point at one. A label read
   by OCR is marked "compare with the PDF" but does not block confirmation. Only labels with
   a real problem need the "I checked" box, and only excluding a label needs a note.
+  A SKU the package catalogue does not know shows as "Unknown SKU"; the reviewer enters its
+  product and units once. Since 22 October 2026 confirming the orders remembers every such
+  SKU in **Package SKUs** (the review summary lists them first), so the next upload resolves
+  it without review; "Remember this SKU" still fills the other labels of the same upload at
+  once. The stock-out supervisor can also add, edit or retire package SKUs (capability
+  `catalog.edit`, shared with the office admin), without waiting for an admin.
 - **Order management:** Filter by Malaysia fulfilment day, product/brand, package,
   or AWB/order/channel text. Package summaries show AWBs and required bottle/box units.
 - **Incoming orders:** Record already-printed labels, then save the supervisor's

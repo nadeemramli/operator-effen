@@ -211,22 +211,142 @@ test("unknown products, invalid units and unsafe SKUs are refused; a built-in SK
   );
 });
 
-test("only the import capability maps SKUs", () => {
+test("only the catalogue capability (office admin and stock-out) maps SKUs", () => {
   const s = createDraft();
   const input = { sku: "lip09sg", product: "lip", units: 9 };
-  for (const role of ["outbound", "production", "intake", "hr", "management", "packer", "driver"]) {
+  for (const role of ["production", "intake", "hr", "management", "packer", "driver"]) {
     assert.throws(() => run(s, "sku-alias-save", input, role), Error, role);
     assert.throws(() => member(role)(s, "sku-alias-save", input), /does not permit/, role);
   }
-  // An admin whose site policy removes PDF imports cannot map SKUs either.
+  // A site policy may take the catalogue away from either role.
   assert.throws(
-    () => member("admin", ["orders.enter", "sources.read"])(s, "sku-alias-save", input),
+    () => member("admin", ["orders.import", "orders.enter", "sources.read"])(s, "sku-alias-save", input),
+    /does not permit/,
+  );
+  assert.throws(
+    () => member("outbound", ["orders.enter", "outbound.fulfil"])(s, "sku-alias-save", input),
     /does not permit/,
   );
   const next = member("admin")(s, "sku-alias-save", input);
   assert.equal(next.skuAliases[0].history[0].recordedBy.userId, "u-admin");
   assert.equal(next.events[0].recorder.userId, "u-admin");
   assert.deepEqual(outOfScopeKeys("sku-alias-save", s, next), []);
+  // The stock-out supervisor, who sees the labels go to review, can add the SKU too.
+  const so = member("outbound")(s, "sku-alias-save", { sku: "lip10sg", product: "lip", units: 10 });
+  assert.equal(so.skuAliases[0].sku, "lip10sg");
+  assert.equal(so.skuAliases[0].history[0].recordedBy.userId, "u-outbound");
+  assert.equal(so.events[0].recorder.userId, "u-outbound");
+  assert.deepEqual(outOfScopeKeys("sku-alias-save", s, so), []);
+  assert.throws(
+    () => member("outbound")(s, "import-release", { id: "x" }),
+    /does not permit/,
+  );
+});
+
+test("confirming an upload remembers the SKUs mapped by hand, once each, so the next upload resolves them", () => {
+  // Two labels print a SKU the catalogue does not know; a third prints a known one.
+  const label = (awb, ref, sku) =>
+    `Ninja Van\n${awb}\nOrder: #${ref}\nProducts:\n1x Lipidri ${sku}`;
+  let s = createDraft();
+  const rows = parseImport(
+    [
+      page(label("NVMYTEST000901", "SKU-ORDER-91", "lip12"), 1),
+      page(label("NVMYTEST000902", "SKU-ORDER-92", "lip12"), 2),
+      page(label("NVMYTEST000903", "SKU-ORDER-93", "lip02"), 3),
+    ],
+    "Luxana",
+    "",
+    s.skuAliases,
+  ).rows;
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].lines.length, 0, "an unknown SKU is not a product line yet");
+  // The reviewer types the line in by hand on both labels (as the review screen does).
+  for (const row of rows.slice(0, 2))
+    row.lines = [{ sku: "lip12", product: "lip", packages: 1, units: 12, originalUnits: null, canonical: "Manual mapping" }];
+  const batch = {
+    id: crypto.randomUUID(),
+    name: "Synthetic remembered SKU",
+    date: "2026-10-22",
+    files: [file],
+    rows,
+    createdAt: "",
+    updatedAt: "",
+  };
+  s = member("admin")(s, "import-save", { batch });
+  const saved = s.awbImports.find((b) => b.id === batch.id);
+  assert.ok(saved.rows.every((r) => rowStatus(r, saved, s) === "ready"));
+  const before = s;
+  s = member("admin")(s, "import-release", { id: batch.id });
+  assert.deepEqual(outOfScopeKeys("import-release", before, s), []);
+  assert.equal(s.orders.length, before.orders.length + 3);
+  // One catalogue record for the new SKU, none for the built-in one.
+  assert.equal(s.skuAliases.length, 1);
+  const alias = s.skuAliases[0];
+  assert.equal(alias.sku, "lip12");
+  assert.equal(alias.product, "lip");
+  assert.equal(alias.units, 12);
+  assert.equal(alias.origin, "custom");
+  assert.equal(alias.active, true);
+  assert.equal(alias.history[0].recordedBy.userId, "u-admin");
+  assert.deepEqual(defaultFor("lip12", s.skuAliases), { sku: "lip12", product: "lip", units: 12, canonical: "LIP12" });
+  const remembered = s.events.find((e) => e.action === "Package SKU added");
+  assert.match(remembered.detail, /lip12 .* remembered from Synthetic remembered SKU/);
+  assert.equal(remembered.recorder.userId, "u-admin");
+  assert.match(s.events.find((e) => e.action === "import-release").detail, /1 package SKU remembered \(lip12\)/);
+  // The next upload with that SKU parses completely and is ready without review.
+  const next = parseImport([page(label("NVMYTEST000904", "SKU-ORDER-94", "lip12"), 1)], "Luxana", "", s.skuAliases).rows;
+  assert.equal(next[0].lines[0].product, "lip");
+  assert.equal(next[0].lines[0].units, 12);
+  assert.deepEqual(rowProblems(next[0]), []);
+});
+
+test("a release leaves out a SKU mapped two ways, a retired SKU and a SKU the catalogue refuses", () => {
+  const line = (sku, product, units) => ({ sku, product, packages: 1, units, originalUnits: null, canonical: "Manual mapping" });
+  const row = (awb, ref, lines) => ({
+    id: crypto.randomUUID(),
+    awb,
+    orderRef: ref,
+    channel: "Luxana",
+    store: "",
+    courier: "Ninja Van",
+    lines,
+    sources: [{ file: file.id, page: 1, method: "text" }],
+    warnings: [],
+    reviewed: false,
+    reviewNote: "",
+    excluded: false,
+    original: "",
+  });
+  let s = createDraft();
+  s = member("admin")(s, "sku-alias-save", { sku: "syn-old", product: "syn", units: 2 });
+  s = member("admin")(s, "sku-alias-retire", { id: s.skuAliases[0].id, reason: "Not sold" });
+  const batch = {
+    id: crypto.randomUUID(),
+    name: "Synthetic mixed SKUs",
+    date: "2026-10-22",
+    files: [file],
+    rows: [
+      // Mapped two ways across labels: left for Package SKUs.
+      row("NVMYTEST000911", "SKU-ORDER-911", [line("syn-two", "syn", 2)]),
+      row("NVMYTEST000912", "SKU-ORDER-912", [line("syn-two", "syn", 3)]),
+      // Retired in the catalogue: typed in by hand for this label, never reactivated here.
+      row("NVMYTEST000913", "SKU-ORDER-913", [line("syn-old", "syn", 2)]),
+      // Not a shape the catalogue accepts (a product name): released, not remembered.
+      row("NVMYTEST000914", "SKU-ORDER-914", [line("synovil", "syn", 1)]),
+      // A sound new SKU: remembered.
+      row("NVMYTEST000915", "SKU-ORDER-915", [line("syn-new", "syn", 4)]),
+    ],
+    createdAt: "",
+    updatedAt: "",
+  };
+  s = member("admin")(s, "import-save", { batch });
+  const before = s;
+  s = member("admin")(s, "import-release", { id: batch.id });
+  assert.equal(s.orders.length, before.orders.length + 5);
+  assert.deepEqual(s.skuAliases.map((a) => [a.sku, a.active]).sort(), [["syn-new", true], ["syn-old", false]]);
+  assert.equal(defaultFor("syn-new", s.skuAliases).units, 4);
+  assert.equal(defaultFor("syn-two", s.skuAliases), undefined);
+  assert.match(s.events.find((e) => e.action === "import-release").detail, /1 package SKU remembered \(syn-new\)/);
 });
 
 test("an edit needs a reason, records history and refuses a stale version", () => {
