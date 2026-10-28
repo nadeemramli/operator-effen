@@ -486,7 +486,7 @@ export function detectReferences(raw: string, aliases?: readonly SkuAlias[]) {
   const orderRefs = [
     ...new Set([...text.matchAll(refPattern)].map((m) => m[1].toUpperCase())),
   ];
-  const tracking = [
+  const found = [
     ...new Set(
       upper.match(
         // SPX also prints its number as MY + digits, with or without a trailing letter
@@ -495,13 +495,23 @@ export function detectReferences(raw: string, aliases?: readonly SkuAlias[]) {
       ) ?? [],
     ),
   ];
+  // An SPX cross-border label (Malaysia seller, Singapore buyer) prints the Malaysia
+  // number on the barcode and along the label edges, and the Singapore last-mile number
+  // once under the recipient (MY2659094429639 with SG2680137171381). The barcode number
+  // is the AWB the floor scans; the SG number is reported on its own so the page is not
+  // read as two labels.
+  const isMalaysiaSpx = (t: string) => /^(?:SPX)?MY\d/.test(t);
+  const lastMile = found.some(isMalaysiaSpx)
+    ? found.filter((t) => /^SG\d/.test(t))
+    : [];
+  const tracking = found.filter((t) => !lastMile.includes(t));
   const explicit = [
     ...text.matchAll(
       /(?:AWB|Tracking\s*(?:Number|No\.?)?)\s*[:#]\s*([A-Z0-9-]{6,40})/gi,
     ),
   ].map((m) => normalizeAwb(m[1]));
   explicit.forEach((a) => {
-    if (!tracking.includes(a)) tracking.push(a);
+    if (!tracking.includes(a) && !lastMile.includes(a)) tracking.push(a);
   });
   // TikTok labels print a bare tracking number with no courier name, repeated along the
   // barcode and the label edges; an order reference or phone number appears only once.
@@ -526,7 +536,7 @@ export function detectReferences(raw: string, aliases?: readonly SkuAlias[]) {
         .map((s) => s.toLowerCase()),
     ),
   ];
-  return { orderRefs, tracking, knownSkus };
+  return { orderRefs, tracking, knownSkus, lastMile };
 }
 /**
  * OCR is automatic: a page is read by OCR when its extracted text yields no AWB and no
@@ -597,6 +607,9 @@ export const isLabelPage = (
 export const OCR_NOTE = "Read by OCR — compare with the PDF";
 export const NO_ORDER_REF_NOTE =
   "No order reference printed; the AWB stands in as the reference";
+/** An SPX cross-border label's Singapore last-mile number; the AWB is the barcode number. */
+export const lastMileNote = (number: string) =>
+  `Singapore last-mile number ${number}; the AWB is the barcode number`;
 
 export function parsePages(
   pages: ParsedPage[],
@@ -626,7 +639,7 @@ export function parseImport(
       continue;
     }
     const text = page.text.replace(/\r/g, "");
-    const { orderRefs, tracking } = detectReferences(text, aliases);
+    const { orderRefs, tracking, lastMile } = detectReferences(text, aliases);
     const detectedChannel = /TIKTOK/i.test(text)
       ? "TikTok"
       : /LAZADA|\bLEX\b/i.test(text)
@@ -743,6 +756,7 @@ export function parseImport(
     }
     if (page.error) warnings.push(page.error);
     const notes = page.method === "ocr" ? [OCR_NOTE] : [];
+    lastMile.forEach((n) => notes.push(lastMileNote(n)));
     if (tracking.length > 1 || orderRefs.length > 1)
       warnings.push(
         "Multiple labels on this page: check each parcel's contents",

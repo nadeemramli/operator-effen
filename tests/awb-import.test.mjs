@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   OCR_NOTE,
   detectReferences,
+  lastMileNote,
   importLimit,
   isLabelPage,
   pageLimit,
@@ -435,6 +436,37 @@ test("a Ninja Van order keyed in by hand: Reference is the order reference, or t
   );
   assert.equal(two.length, 2);
   assert.ok(two.every((r) => r.orderRef === ""));
+});
+
+test("an SPX cross-border label keeps the Malaysia barcode number as the AWB and notes the Singapore last-mile number", () => {
+  // Shopee Malaysia seller, Singapore buyer: MY number on the barcode and the label
+  // edges, SG number printed once under the recipient (admin feedback, Oct 2026).
+  const text =
+    "MY2659094429639\nSPX EXPRESS\nATL #07-588\nOrder Details\nOrder ID: 261027Q03MJHTA\nAttempts 1 2 3\nRecipient Details\nName: Sazali Tumin\nAddress: BLOCK 294, TAMPINES STREET 22, #07-588\nPostcode: 520294\nCHN-52C-C18\nSG2680137171381\nMY2659094429639\nBuyer remark for seller\nTWJB JHB-SIP-WH-a\nShopee\nMY2659094429639\nMY2659094429639\nPacking List\nOrder ID: 261027Q03MJHTA package 1\nNo. Product Name SKU Variation Name Qty Unit Price Total\n1 Cavernosil cave04sg 3 Free 1 1 442.00 442.00";
+  const refs = detectReferences(text);
+  assert.deepEqual(refs.tracking, ["MY2659094429639"]);
+  assert.deepEqual(refs.lastMile, ["SG2680137171381"]);
+  const { rows } = parseImport([page(text)], "Shopee", "");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].awb, "MY2659094429639");
+  assert.equal(rows[0].orderRef, "261027Q03MJHTA");
+  assert.equal(rows[0].courier, "SPX");
+  assert.equal(rows[0].channel, "Shopee");
+  assert.equal(rows[0].lines.length, 1);
+  assert.equal(rows[0].lines[0].sku, "cave04sg");
+  assert.equal(rows[0].lines[0].packages, 1);
+  assert.deepEqual(rows[0].warnings, []);
+  assert.deepEqual(rows[0].notes, [lastMileNote("SG2680137171381")]);
+  assert.deepEqual(rowProblems(rows[0]), []);
+  // A text layer that OCR completes keeps the same single AWB.
+  assert.equal(
+    mergeOcrText("Order ID: 261027Q03MJHTA\n1 Cavernosil cave04sg 1", text),
+    "Order ID: 261027Q03MJHTA\n1 Cavernosil cave04sg 1\nShopee\nTracking: MY2659094429639",
+  );
+  // A Singapore-only number (no Malaysia number on the page) is still the AWB.
+  assert.deepEqual(detectReferences("SPX\nSG2680137171381\nOrder ID: 261027Q03MJHTA").tracking, [
+    "SG2680137171381",
+  ]);
 });
 
 test("an SPX Singapore tracking number (SPXSG…) is read like an SPX Malaysia one", () => {
