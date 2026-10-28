@@ -909,7 +909,10 @@ export function DraftApp() {
                 !b.cancelled &&
                 isSachet(b.product) &&
                 (batchTransferred(b) || batchRoute(b).status !== "needs-review") &&
-                !receipts.some((r) => r.batchId === b.id && !r.stockedAt),
+                // Once received, the batch leaves this list for good: a receipt awaiting
+                // boxing is finalized from the pending list, and boxes after the first
+                // count are added from the batch's Shrink machine stage.
+                !receipts.some((r) => r.batchId === b.id),
             )
             .map((b) => ({
               value: b.id,
