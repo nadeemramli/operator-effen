@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   Check,
@@ -30,6 +30,7 @@ import {
   defaultFor,
   importLimit,
   isRetiredSku,
+  normalizeAwb,
   NO_ORDER_REF_NOTE,
   OCR_NOTE,
   pageLimit,
@@ -81,6 +82,7 @@ export function AwbIntake({
   const [processing, setProcessing] = useState(false),
     [progress, setProgress] = useState(""),
     [error, setError] = useState(""),
+    [notice, setNotice] = useState(""),
     [dirty, setDirty] = useState(false),
     [forceOcr, setForceOcr] = useState(false),
     [receiveError, setReceiveError] = useState(""),
@@ -98,10 +100,19 @@ export function AwbIntake({
       null,
     );
   const abort = useRef<AbortController | null>(null);
+  // The orders the open upload's labels may duplicate, from any work day (the server
+  // sends them with the upload). The screen's state holds the dates on screen only and
+  // is refreshed in the background, so they are kept here for as long as the upload is open.
+  const [known, setKnown] = useState<Order[]>([]);
+  const view = useMemo((): Draft => {
+    if (!known.length) return state;
+    const held = new Set(state.orders.map((o) => o.id));
+    return { ...state, orders: [...state.orders, ...known.filter((o) => !held.has(o.id))] };
+  }, [state, known]);
   const batch = working;
   const row = batch?.rows.find((r) => r.id === selected);
   const statuses =
-    batch?.rows.map((r) => ({ row: r, status: rowStatus(r, batch, state) })) ??
+    batch?.rows.map((r) => ({ row: r, status: rowStatus(r, batch, view) })) ??
     [];
   const canEdit = role === "admin" && !batch?.confirmedAt && !busy;
   useEffect(() => {
@@ -113,7 +124,15 @@ export function AwbIntake({
     return () => window.removeEventListener("beforeunload", prevent);
   }, [processing, dirty]);
   useEffect(() => () => abort.current?.abort(), []);
-  async function open(b: AwbImport) {
+  /**
+   * Opens an upload. `from` is the records a save just returned, which carry the orders
+   * the upload's labels may duplicate; a list entry is fetched with them.
+   */
+  async function open(b: AwbImport, from?: Draft) {
+    const related = (orders: Order[]) => {
+      const awbs = new Set(b.rows.map((r) => normalizeAwb(r.awb)));
+      return orders.filter((o) => awbs.has(normalizeAwb(o.awb)));
+    };
     // A list entry without its label rows: fetch the whole upload first.
     if (b.rowCount !== undefined) {
       setError("");
@@ -135,7 +154,8 @@ export function AwbIntake({
         return;
       }
       b = data.import as AwbImport;
-    }
+      setKnown(Array.isArray(data.orders) ? (data.orders as Order[]) : []);
+    } else setKnown(from ? related(from.orders) : []);
     setWorking(structuredClone(b));
     setScreen("review");
     setSelected(b.rows[0]?.id ?? "");
@@ -147,13 +167,14 @@ export function AwbIntake({
   }
   // AWBs this upload released, and those that can no longer be removed.
   const releasedOrders = batch
-    ? state.orders.filter((o) => o.importId === batch.id)
+    ? view.orders.filter((o) => o.importId === batch.id)
     : [];
   const lockedOrders = releasedOrders.filter((o) =>
     orderHasActivity(state, o),
   );
   async function upload() {
     setError("");
+    setNotice("");
     if (!files.length || files.length > 10 || !date) {
       setError(
         t(
@@ -247,6 +268,30 @@ export function AwbIntake({
         });
         pages.push(...read.pages);
       }
+      // The same PDFs again (by content): their labels are in an earlier upload, which is
+      // opened instead of a second one. Released labels would be skipped as duplicates
+      // anyway; unreleased ones are reviewed where they are.
+      const uploads = state.awbImports ?? [];
+      const has = (u: AwbImport, f: ImportFile) => u.files.some((x) => x.id === f.id);
+      const earlier = uploads.find((u) => sourceFiles.every((f) => has(u, f)));
+      if (earlier) {
+        setNotice(
+          t(
+            `${sourceFiles.length === 1 ? "This PDF was" : "These PDFs were"} already uploaded as "${earlier.name}". That upload is open below; its labels are not uploaded twice. To ship its parcels on another day, release it and move the AWBs to that day.`,
+            `${sourceFiles.length === 1 ? "PDF ini" : "PDF ini"} telah dimuat naik sebagai "${earlier.name}". Muat naik itu dibuka di bawah; labelnya tidak dimuat naik dua kali. Untuk menghantar bungkusannya pada hari lain, serahkan dan pindahkan AWB ke hari itu.`,
+          ),
+        );
+        await open(earlier);
+        return;
+      }
+      const partly = sourceFiles.filter((f) => uploads.some((u) => has(u, f)));
+      if (partly.length)
+        setNotice(
+          t(
+            `Already uploaded before: ${partly.map((f) => f.name).join(", ")}. Labels already released show as duplicates and are skipped.`,
+            `Telah dimuat naik sebelum ini: ${partly.map((f) => f.name).join(", ")}. Label yang telah diserahkan ditanda pendua dan dilangkau.`,
+          ),
+        );
       // Pages with no tracking number, order reference or known SKU (cover, title,
       // separator) become no row; they are listed per file and can still be added by hand.
       const parsed = parseImport(
@@ -281,7 +326,7 @@ export function AwbIntake({
       setSelected(b.rows[0]?.id ?? "");
       setDirty(true);
       const saved = await onCommand("import-save", { batch: b }, { onError: setError });
-      if (saved) void open(saved.awbImports!.find((x) => x.id === b.id)!);
+      if (saved) void open(saved.awbImports!.find((x) => x.id === b.id)!, saved);
     } catch (e) {
       setError(
         e instanceof Error && e.name !== "AbortError"
@@ -375,14 +420,15 @@ export function AwbIntake({
     setError("");
     const saved = await onCommand("import-save", { batch }, { onError: setError });
     if (!saved) return;
-    void open(saved.awbImports!.find((b) => b.id === batch.id)!);
+    void open(saved.awbImports!.find((b) => b.id === batch.id)!, saved);
     if (release) {
       const released = await onCommand(
         "import-release",
         { id: batch.id },
         { onError: setError },
       );
-      if (released) void open(released.awbImports!.find((b) => b.id === batch.id)!);
+      if (released)
+        void open(released.awbImports!.find((b) => b.id === batch.id)!, released);
     }
   }
   const ready = statuses.filter((x) => x.status === "ready").length,
@@ -680,6 +726,11 @@ export function AwbIntake({
             </div>
           </div>
           <FormError message={error} />
+          {notice && (
+            <div className="inline-note" role="status">
+              {notice}
+            </div>
+          )}
           {deleting && role === "admin" && (
             <form
               className="awb-receive"
@@ -836,7 +887,7 @@ export function AwbIntake({
                   { onError: setReceiveError },
                 );
                 if (saved)
-                  void open(saved.awbImports!.find((b) => b.id === batch.id)!);
+                  void open(saved.awbImports!.find((b) => b.id === batch.id)!, saved);
               }}
             >
               <label>
@@ -957,7 +1008,7 @@ export function AwbIntake({
                   <div className="panel-heading">
                     <h2>{t("Label details", "Butiran label")}</h2>
                     <span className="status-pill tone-muted">
-                      {statusText(rowStatus(row, batch, state))}
+                      {statusText(rowStatus(row, batch, view))}
                     </span>
                   </div>
                   <div className="awb-editor-body">
@@ -1263,7 +1314,7 @@ export function AwbIntake({
                     )}
                     {(rowProblems(row).length > 0 ||
                       ["review", "conflict"].includes(
-                        rowStatus(row, batch, state),
+                        rowStatus(row, batch, view),
                       )) && (
                       <div className="awb-problems">
                         <strong>
@@ -1276,7 +1327,7 @@ export function AwbIntake({
                           {rowProblems(row).map((p, i) => (
                             <li key={i}>{p}</li>
                           ))}
-                          {rowStatus(row, batch, state) === "conflict" && (
+                          {rowStatus(row, batch, view) === "conflict" && (
                             <li>
                               {t(
                                 "This AWB has different details elsewhere. Resolve the conflicting draft or exclude it; a released order requires supervisor correction.",
@@ -1284,7 +1335,7 @@ export function AwbIntake({
                               )}
                             </li>
                           )}
-                          {rowStatus(row, batch, state) === "review" &&
+                          {rowStatus(row, batch, view) === "review" &&
                             !rowProblems(row).length && (
                               <li>
                                 {t(
@@ -1332,7 +1383,7 @@ export function AwbIntake({
                         {/* Only a label with something to verify asks for the check. */}
                         {(row.reviewed ||
                           row.warnings.length > 0 ||
-                          rowStatus(row, batch, state) === "review") && (
+                          rowStatus(row, batch, view) === "review") && (
                           <label className="awb-check">
                             <input
                               type="checkbox"

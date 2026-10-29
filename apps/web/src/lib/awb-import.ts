@@ -1078,7 +1078,16 @@ export function applyImportCommand(
     throw new Error(
       "Resolve or explicitly exclude the flagged labels before confirming.",
     );
-  if (!ready.length) throw new Error("No new complete labels to release.");
+  // Labels already recorded (an earlier upload or hand entry) or repeated in this upload.
+  const duplicates = batch.rows.filter(
+    (r) => rowStatus(r, batch, state) === "duplicate",
+  ).length;
+  if (!ready.length)
+    throw new Error(
+      duplicates
+        ? `No new labels to release: ${duplicates} ${duplicates === 1 ? "is" : "are"} already recorded and skipped.`
+        : "No new complete labels to release.",
+    );
   for (const row of ready) {
     const byProduct = new Map<string, number>();
     row.lines.forEach((l) =>
@@ -1134,7 +1143,7 @@ export function applyImportCommand(
   for (const row of batch.rows) row.original = "";
   batch.confirmedAt = at;
   batch.updatedAt = at;
-  return `Handoff confirmed · ${ready.length} new AWBs · no print, packing or stock movement inferred`;
+  return `Handoff confirmed · ${ready.length} new AWBs${duplicates ? ` · ${duplicates} already recorded, skipped` : ""} · no print, packing or stock movement inferred`;
 }
 /**
  * The package SKU catalogue: `sku-alias-save` (a new SKU, or a change to a catalogue entry:

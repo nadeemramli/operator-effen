@@ -155,6 +155,18 @@ test("save, release and retry create one parcel and no stock, print or packing s
   assert.ok(run(initial, "import-save", { batch: b }).awbImports[0].rows.every((r) => r.original));
   const again = batch([page(ninja())]);
   assert.equal(rowStatus(again.rows[0], again, s), "duplicate");
+  // Uploading the label again: nothing to release, and the message says why.
+  const twice = run(s, "import-save", { batch: again });
+  assert.throws(() => run(twice, "import-release", { id: again.id }), /1 is already recorded and skipped/);
+  assert.equal(twice.orders.length, s.orders.length);
+  // Mixed with a new label, the release counts what it skipped.
+  const mixed = batch([page(ninja()), page(ninja("NVMYTEST000009", "TEST-ORDER-9"), 2)]);
+  const after = run(run(s, "import-save", { batch: mixed }), "import-release", { id: mixed.id });
+  assert.equal(after.orders.length, s.orders.length + 1);
+  assert.match(
+    after.events.find((e) => e.entity === mixed.id && e.action === "import-release").detail,
+    /1 new AWBs · 1 already recorded, skipped/,
+  );
   const conflict = batch([page(ninja())]);
   conflict.rows[0].lines[0].units = 6;
   assert.equal(rowStatus(conflict.rows[0], conflict, s), "conflict");

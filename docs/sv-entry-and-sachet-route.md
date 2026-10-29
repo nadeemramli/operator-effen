@@ -556,6 +556,28 @@ PIN), then `supabase/rollback/20261007090000_operator_factory_scope.down.sql`, t
 `operator_commits` and `operator_membership_audit`. Rolling back the repair alone leaves no
 operational write path (the unsafe replacement-state RPC is intentionally not restored).
 
+## Uploading labels more than once (2026-10-29)
+
+Labels arrive in overlapping prints, so an upload is checked label by label against every
+order with the same AWB, whatever its work day, and never creates an order twice:
+
+- A label whose AWB is already recorded with the same contents shows **Duplicate · skipped**
+  and is skipped at release; with different contents it shows **Conflict** and blocks the
+  release until it is excluded or corrected. The same AWB twice in one upload is a
+  duplicate of its first row. The database's unique AWB index per site is the last guard.
+- The review used to compare against the orders the screen held (the work dates on
+  screen), so a label from another day looked **Ready** and was skipped silently at
+  release. Opening or saving an upload now also returns the orders its labels may duplicate
+  (`importAwbs`; `GET /api/draft?import=` answers `{import, orders}`, a save adds them to
+  `ordersDelta.put`), and the intake screen keeps them for the open upload across background
+  refreshes, so every status is true before release.
+- The release says what it skipped: "Handoff confirmed · 12 new AWBs · 3 already recorded,
+  skipped"; an upload with nothing new is refused with the same count.
+- The same PDF again (same content hash, in any listed upload) opens that earlier upload
+  instead of creating a second one; a mix of new and earlier PDFs proceeds with a note
+  naming the files already uploaded. To ship an earlier upload's parcels on another day,
+  release it and move the AWBs to that day.
+
 ## Known limits
 
 - One JSON document and revision per site (#10). Since 2026-10-09 unrelated saves no longer

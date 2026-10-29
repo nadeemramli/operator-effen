@@ -54,6 +54,7 @@ import {
   viewDates,
   hydrateIssues,
   addedIssues,
+  importAwbs,
   type HydratedIssues,
   type LoadedOrders,
   type OrderOp,
@@ -139,9 +140,20 @@ export async function GET(request: NextRequest) {
         const found = legacyDocument(doc)
           ? doc.awbImports!.find((b) => b.id === importId)
           : await loadImport(db, m.workspaceId, importId);
-        return found
-          ? json({ import: found })
-          : json({ error: "Upload batch not found." }, 404);
+        if (!found) return json({ error: "Upload batch not found." }, 404);
+        // With the orders it may duplicate, from any work day: the screen holds the
+        // orders of the dates on screen only, and the review shows each label's status.
+        const orders = legacyOrders(doc)
+          ? []
+          : (
+              await loadOrders(db, m.workspaceId, {
+                ids: [],
+                awbs: importAwbs(found),
+                dates: [],
+                imports: [],
+              })
+            ).orders;
+        return json({ import: found, orders });
       }
       if (archiveQuery)
         return json({
@@ -622,7 +634,16 @@ export async function POST(request: NextRequest) {
       result.data as { new_state: Draft; new_revision: number; replayed: boolean }[]
     )?.[0];
     if (!saved) return { stale: true };
-    // With orders in their table the screen gets only the orders this save changed.
+    // With orders in their table the screen gets only the orders this save changed, plus,
+    // for an upload, the orders its labels may duplicate (any work day), for the review.
+    const related = (() => {
+      if (!ops || !touched) return [];
+      const awbs = new Set(importAwbs(touched));
+      const changed = new Set(ops.map((op) => (op.op === "put" ? op.order.id : op.id)));
+      return loadedOrders.orders.filter(
+        (o) => awbs.has(normalizeAwb(o.awb)) && !changed.has(o.id),
+      );
+    })();
     const response = json({
       state: withBatchReferences(
         await clientState(
@@ -644,7 +665,7 @@ export async function POST(request: NextRequest) {
       ...(ops
         ? {
             ordersDelta: {
-              put: ops.flatMap((op) => (op.op === "put" ? [op.order] : [])),
+              put: [...ops.flatMap((op) => (op.op === "put" ? [op.order] : [])), ...related],
               removed: ops.flatMap((op) => (op.op === "delete" ? [op.id] : [])),
             },
           }

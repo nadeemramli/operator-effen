@@ -281,6 +281,22 @@ const text = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
+ * The normalized AWBs of an upload's labels. An upload is checked against every order
+ * with one of them, from any work day, so a label uploaded again shows as a duplicate (or
+ * a conflict) in the review and is never released twice.
+ */
+export function importAwbs(batch: unknown): string[] {
+  const rows = batch && typeof batch === "object" ? (batch as { rows?: unknown }).rows : [];
+  return [
+    ...new Set(
+      (Array.isArray(rows) ? rows : [])
+        .map((r) => normalize(r && typeof r === "object" ? (r as { awb?: unknown }).awb : ""))
+        .filter(Boolean),
+    ),
+  ];
+}
+
+/**
  * The orders a command reads or changes: by ID, by AWB (duplicate checks), by work date
  * (package groups and the daily tally) or by upload. `state` carries the upload a
  * release reads, when loaded.
@@ -331,9 +347,11 @@ export function orderNeeds(
     case "import-delete":
       if (id) needs.imports.push(id);
       break;
+    case "import-save":
+      needs.awbs.push(...importAwbs(input.batch));
+      break;
     case "import-release":
-      for (const row of state?.awbImports?.find((b) => b.id === id)?.rows ?? [])
-        needs.awbs.push(normalize(row.awb));
+      needs.awbs.push(...importAwbs(state?.awbImports?.find((b) => b.id === id)));
       break;
   }
   needs.awbs = needs.awbs.filter(Boolean);

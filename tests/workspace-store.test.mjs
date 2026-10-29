@@ -130,6 +130,9 @@ test("each order command loads the orders it reads: by ID, AWB, work date or upl
   assert.deepEqual(orderNeeds("import-delete", { id: "imp1" }).imports, ["imp1"]);
   const state = { ...createDraft(), awbImports: [upload("imp1", [{ awb: "nv 1" }, { awb: "nv2" }])] };
   assert.deepEqual(orderNeeds("import-release", { id: "imp1" }, state).awbs, ["NV1", "NV2"]);
+  // Saving a review checks its labels against every order with those AWBs, from any day.
+  assert.deepEqual(orderNeeds("import-save", { batch: upload("imp2", [{ awb: "nv2" }, { awb: " NV2" }, { awb: "" }, 7]) }).awbs, ["NV2"]);
+  assert.deepEqual(orderNeeds("import-save", { batch: "imp2" }).awbs, []);
   assert.deepEqual(orderNeeds("batch", { id: "b1" }), { ids: [], awbs: [], dates: [], imports: [] });
 });
 
@@ -237,4 +240,14 @@ test("a work day of more than 1,000 AWBs loads whole: every read pages past Post
   assert.deepEqual(totalRequests.map((r) => [r.from, r.to]), [[0, 999], [1000, 1999], [2000, 2999]]);
   assert.deepEqual(totalRequests[0].order.map(([c]) => c), ["carton_id", "day"]);
   assert.deepEqual(stock.requests.filter((r) => r.name === "operator_issues_for").map((r) => [r.from, r.to]), [[0, 999], [1000, 1999]]);
+});
+
+test("an upload is sent with the orders its labels may duplicate, from any work day", async () => {
+  const { importAwbs } = await import("../apps/web/src/lib/workspace-store.ts");
+  assert.deepEqual(importAwbs(upload("x", [{ awb: "spx sg1" }, { awb: "SPXSG1" }, { awb: "b" }])), ["SPXSG1", "B"]);
+  assert.deepEqual(importAwbs(null), []);
+  // Opening an upload returns them; a save returns them in the orders delta for the review.
+  assert.match(route, /awbs: importAwbs\(found\)/);
+  assert.match(route, /json\(\{ import: found, orders \}\)/);
+  assert.match(route, /put: \[\.\.\.ops\.flatMap\(\(op\) => \(op\.op === "put" \? \[op\.order\] : \[\]\)\), \.\.\.related\]/);
 });
