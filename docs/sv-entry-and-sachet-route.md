@@ -565,5 +565,15 @@ operational write path (the unsafe replacement-state RPC is intentionally not re
   The client's revision is a hint; record-level conflicts (`expectedVersion`) still return
   409 `record`, and the client reloads and keeps the form open.
 - Domain rules not re-expressed in SQL rely on the API server (see trust boundary).
+- PostgREST returns at most 1,000 rows per request (`max_rows`; the hosted default) and
+  does not say when it cut a result short. Until 2026-10-29 a work day of more than 1,000
+  AWBs loaded as its first 1,000 by ID: the orders screen and the daily tally showed fewer
+  parcels and boxes the more labels were released that day (2026-10-29: 478 Adypocide
+  parcels and 3,546 boxes on screen for 832 parcels and 6,218 boxes recorded), labels
+  released later were saved but not shown, and a supervisor count recorded that day kept
+  the short requirement. Every read that can exceed the cap (`operator_orders_for`,
+  `operator_issues_for`, `operator_issue_totals`) now pages until a short page
+  (`allRows`, `PAGE_ROWS`, kept equal to `max_rows` by a test). No database change; the
+  records were always complete.
 - No offline outbox beyond the single kept pending save (#12).
 - The membership-admin screen is a separate follow-up.

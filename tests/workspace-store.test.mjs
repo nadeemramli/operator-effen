@@ -12,6 +12,42 @@ const route = readFileSync(
   new URL("../apps/web/src/app/api/draft/route.ts", import.meta.url),
   "utf8",
 );
+/**
+ * A database whose set-returning functions answer like PostgREST: `rows(name, args)` gives
+ * the whole result (or an error object), and each request gets at most PAGE_ROWS of it
+ * from the range it asked for, in order.
+ */
+function fakeDb(rows, cap = 1000) {
+  const requests = [];
+  const db = {
+    requests,
+    rpc(name, args) {
+      const req = { name, args, order: [], from: 0, to: cap - 1 };
+      requests.push(req);
+      const builder = {
+        order(column, opts) {
+          req.order.push([column, opts]);
+          return builder;
+        },
+        range(from, to) {
+          req.from = from;
+          req.to = to;
+          return builder;
+        },
+        then(resolve, reject) {
+          const all = rows(name, args);
+          const result =
+            Array.isArray(all)
+              ? { data: all.slice(req.from, Math.min(req.to + 1, req.from + cap)), error: null }
+              : { data: null, error: all };
+          return Promise.resolve(result).then(resolve, reject);
+        },
+      };
+      return builder;
+    },
+  };
+  return db;
+}
 const upload = (id, rows = []) => ({
   id,
   date: "2026-10-14",
@@ -136,18 +172,16 @@ test("stock issues: real issues of loaded orders, plus each carton's totals per 
   const { hydrateIssues, addedIssues, commitPayload } = await import("../apps/web/src/lib/workspace-store.ts");
   const now = new Date("2026-10-16T02:00:00Z"); // window starts 2026-08-15
   const calls = [];
-  const db = {
-    rpc: async (name, args) => {
-      calls.push([name, args]);
-      if (name === "operator_issue_totals")
-        return { data: [
-          { carton_id: "c1", day: "2026-10-16", qty: 5 },
-          { carton_id: "c1", day: null, qty: 7 },
-          { carton_id: "c2", day: "2026-10-15", qty: 2 },
-        ], error: null };
-      return { data: [{ body: { id: "i1", cartonId: "c1", orderId: "o1", qty: 3, pic: "P", at: "2026-10-16T01:00:00Z" } }], error: null };
-    },
-  };
+  const db = fakeDb((name, args) => {
+    calls.push([name, args]);
+    if (name === "operator_issue_totals")
+      return [
+        { carton_id: "c1", day: "2026-10-16", qty: 5 },
+        { carton_id: "c1", day: null, qty: 7 },
+        { carton_id: "c2", day: "2026-10-15", qty: 2 },
+      ];
+    return [{ body: { id: "i1", cartonId: "c1", orderId: "o1", qty: 3, pic: "P", at: "2026-10-16T01:00:00Z" } }];
+  });
   const h = await hydrateIssues(db, "w", { ids: ["o1"], dates: [] }, now);
   assert.equal(calls[0][1].p_since, "2026-08-15");
   const byId = Object.fromEntries(h.issues.map((i) => [i.id, i]));
@@ -163,6 +197,44 @@ test("stock issues: real issues of loaded orders, plus each carton's totals per 
   assert.deepEqual(addedIssues(h, [added, ...h.issues]), [added]);
   assert.deepEqual(commitPayload({ ...createDraft(), issues: h.issues }, undefined, false, [], [added]).issues, [added]);
   // Before the migration (no such function) the document keeps every issue.
-  const old = { rpc: async () => ({ data: null, error: { code: "PGRST202" } }) };
+  const old = fakeDb(() => ({ code: "PGRST202" }));
   assert.equal(await hydrateIssues(old, "w", { ids: [], dates: [] }, now), null);
+});
+
+test("a work day of more than 1,000 AWBs loads whole: every read pages past PostgREST's row cap", async () => {
+  const { loadOrders, hydrateIssues, PAGE_ROWS } = await import("../apps/web/src/lib/workspace-store.ts");
+  // The page size is the cap itself: a larger page would be cut short and end the loop early.
+  const config = readFileSync(new URL("../supabase/config.toml", import.meta.url), "utf8");
+  assert.equal(PAGE_ROWS, Number(config.match(/^max_rows = (\d+)$/m)[1]));
+  // 2026-10-29 on the operator site: 1,745 AWBs, and the screen showed 1,000 of them.
+  const day = Array.from({ length: 1745 }, (_, i) => ({
+    doc: { id: "o" + String(i).padStart(4, "0"), awb: "A" + i, date: "2026-10-29", product: i < 832 ? "ady" : "cav", expected: 7 },
+    version: i % 3,
+  }));
+  const db = fakeDb((name) => (name === "operator_orders_for" ? day : []));
+  const loaded = await loadOrders(db, "w", { ids: [], awbs: [], dates: ["2026-10-29"], imports: [] });
+  assert.equal(loaded.orders.length, 1745);
+  assert.equal(loaded.orders.filter((o) => o.product === "ady").length, 832);
+  assert.equal(loaded.versions.get("o1744"), 1744 % 3);
+  assert.deepEqual(db.requests.map((r) => [r.from, r.to]), [[0, 999], [1000, 1999]]);
+  // Exactly a full page still asks once more, and finds nothing.
+  const full = fakeDb(() => day.slice(0, 1000));
+  assert.equal((await loadOrders(full, "w", { ids: ["x"], awbs: [], dates: [], imports: [] })).orders.length, 1000);
+  assert.equal(full.requests.length, 2);
+  // A failed page is the whole read failing, never a short result.
+  const broken = fakeDb(() => ({ code: "XX000" }));
+  await assert.rejects(loadOrders(broken, "w", { ids: ["x"], awbs: [], dates: [], imports: [] }), /Unable to load/);
+  // Stock issues and carton totals page the same way; totals, grouped in SQL, ask for an order.
+  const issues = Array.from({ length: 1200 }, (_, i) => ({ body: { id: "i" + i, cartonId: "c" + (i % 40), orderId: "o" + i, qty: 1, pic: "P", at: "2026-10-29T01:00:00Z" } }));
+  // 40 cartons with one total on each of 60 earlier days: 2,400 rows, three pages.
+  const dayAt = (n) => new Date(Date.UTC(2026, 7, 29) + n * 86400000).toISOString().slice(0, 10);
+  const totals = Array.from({ length: 2400 }, (_, i) => ({ carton_id: "c" + Math.floor(i / 60), day: dayAt(i % 60), qty: 1 }));
+  const stock = fakeDb((name) => (name === "operator_issue_totals" ? totals : issues));
+  const h = await hydrateIssues(stock, "w", { ids: ["o1"], dates: ["2026-10-29"] }, new Date("2026-10-29T02:00:00Z"));
+  assert.equal(h.issues.filter((i) => !i.id.startsWith("total:")).length, 1200);
+  assert.equal(h.issues.reduce((n, i) => n + i.qty, 0), 1200 + 2400);
+  const totalRequests = stock.requests.filter((r) => r.name === "operator_issue_totals");
+  assert.deepEqual(totalRequests.map((r) => [r.from, r.to]), [[0, 999], [1000, 1999], [2000, 2999]]);
+  assert.deepEqual(totalRequests[0].order.map(([c]) => c), ["carton_id", "day"]);
+  assert.deepEqual(stock.requests.filter((r) => r.name === "operator_issues_for").map((r) => [r.from, r.to]), [[0, 999], [1000, 1999]]);
 });

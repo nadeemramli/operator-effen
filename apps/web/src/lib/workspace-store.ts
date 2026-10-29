@@ -21,6 +21,28 @@ export const RECENT_IMPORTS = 100;
 const missingRelation = (code?: string) =>
   code === "42P01" || code === "PGRST205" || code === "PGRST200";
 
+/**
+ * PostgREST answers any request with at most `max_rows` rows (1000: supabase/config.toml and
+ * the hosted default) and does not say when it cut a result short. A day of 1,700 AWBs
+ * therefore loaded as 1,000, and the orders screen showed fewer parcels and boxes the more
+ * labels were released. Every read that can exceed that reads page by page until a short
+ * page; the page size must not be larger than `max_rows`, or a page would be cut and the
+ * loop would stop early (a test keeps it equal to the configuration).
+ */
+export const PAGE_ROWS = 1000;
+type Page<T> = PromiseLike<{ data: T[] | null; error: { code?: string } | null }>;
+export async function allRows<T>(
+  page: (from: number, to: number) => Page<T>,
+): Promise<{ data: T[]; error: { code?: string } | null }> {
+  const rows: T[] = [];
+  for (let from = 0; ; from += PAGE_ROWS) {
+    const { data, error } = await page(from, from + PAGE_ROWS - 1);
+    if (error) return { data: rows, error };
+    rows.push(...(data ?? []));
+    if ((data?.length ?? 0) < PAGE_ROWS) return { data: rows, error: null };
+  }
+}
+
 /** The upload a command reads or changes, if any. Each upload command touches one. */
 export function touchedImport(
   type: string,
@@ -340,15 +362,20 @@ export async function loadOrders(
 ): Promise<LoadedOrders> {
   const versions = new Map<string, number>();
   if (empty(needs)) return { orders: [], versions };
-  const { data, error } = await db.rpc("operator_orders_for", {
-    p_workspace: workspaceId,
-    p_ids: [...new Set(needs.ids)],
-    p_awbs: [...new Set(needs.awbs)],
-    p_dates: [...new Set(needs.dates)],
-    p_imports: [...new Set(needs.imports)],
-  });
+  // The function orders its rows (work date, then ID), so the pages line up.
+  const { data, error } = await allRows<{ doc: Order; version: number }>((from, to) =>
+    db
+      .rpc("operator_orders_for", {
+        p_workspace: workspaceId,
+        p_ids: [...new Set(needs.ids)],
+        p_awbs: [...new Set(needs.awbs)],
+        p_dates: [...new Set(needs.dates)],
+        p_imports: [...new Set(needs.imports)],
+      })
+      .range(from, to),
+  );
   if (error) throw new StoreError();
-  const orders = ((data ?? []) as { doc: Order; version: number }[]).map((r) => {
+  const orders = data.map((r) => {
     versions.set(r.doc.id, r.version);
     return r.doc;
   });
@@ -430,22 +457,33 @@ export async function hydrateIssues(
   const since = shiftDay(todayMyt(now), -ISSUE_DAYS);
   const ids = [...new Set(of.ids)],
     dates = [...new Set(of.dates)];
+  // Totals are grouped, not ordered, in SQL: the pages need an order of their own. Issues
+  // come ordered (recorded time, then ID).
   const [totals, real] = await Promise.all([
-    db.rpc("operator_issue_totals", { p_workspace: workspaceId, p_since: since }),
+    allRows<{ carton_id: string; day: string | null; qty: number }>((from, to) =>
+      db
+        .rpc("operator_issue_totals", { p_workspace: workspaceId, p_since: since })
+        .order("carton_id")
+        .order("day", { nullsFirst: false })
+        .range(from, to),
+    ),
     ids.length || dates.length
-      ? db.rpc("operator_issues_for", { p_workspace: workspaceId, p_orders: ids, p_dates: dates })
-      : Promise.resolve({ data: [], error: null }),
+      ? allRows<{ body: Issue }>((from, to) =>
+          db
+            .rpc("operator_issues_for", { p_workspace: workspaceId, p_orders: ids, p_dates: dates })
+            .range(from, to),
+        )
+      : Promise.resolve({ data: [] as { body: Issue }[], error: null }),
   ]);
   if (totals.error || real.error) {
     const code = totals.error?.code ?? real.error?.code;
     if (code === "PGRST202" || code === "42883" || missingRelation(code)) return null;
     throw new StoreError();
   }
-  const issues = ((real.data ?? []) as { body: Issue }[]).map((r) => r.body);
+  const issues = real.data.map((r) => r.body);
   const remaining = new Map<string, number>();
   const key = (carton: string, day: string | null) => carton + "|" + (day ?? "");
-  for (const t of (totals.data ?? []) as { carton_id: string; day: string | null; qty: number }[])
-    remaining.set(key(t.carton_id, t.day), Number(t.qty));
+  for (const t of totals.data) remaining.set(key(t.carton_id, t.day), Number(t.qty));
   for (const i of issues) {
     const day = mytDayOf(i.at);
     const k = key(i.cartonId, day >= since ? day : null);
