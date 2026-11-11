@@ -480,6 +480,11 @@ test("a recount retires older duplicate counts of the carton still awaiting revi
     () => run(s, "intake", "recount", { id: older.id, actual: 2, reason: "x", pic: "Nurul" }),
     /newer count/,
   );
+  // Nor can the older open count be adjusted past the newer one.
+  assert.throws(
+    () => run(s, "intake", "adjust", { id: older.id, reason: "x" }),
+    /newer count/,
+  );
   s = run(s, "intake", "recount", { id: "dup-newer", actual: 2, reason: "Keyed 136 for a 2-bottle carton", pic: "Nurul" });
   const current = s.counts[0];
   assert.equal(current.supersedes, "dup-newer");

@@ -3353,6 +3353,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const c = s.cartons.find((c) => c.id === count.cartonId)!;
       if (c.unit === "sachet")
         throw new Error("Finalize the finished box count in sachet stock-in.");
+      const newest = latestCount(s, c);
+      if (newest && newest.id !== count.id)
+        throw new Error(
+          `${c.ref} has a newer count (${newest.actual} ${c.unit}). Review that count instead; recounting it retires this one.`,
+        );
       if (available(s, c) !== count.book)
         throw new Error(
           "Stock moved after this count. Recount the carton before adjustment.",

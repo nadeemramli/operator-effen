@@ -2255,8 +2255,13 @@ export function DraftApp() {
                     </tr>
                   </thead>
                   <tbody>
-                    {stockCounts.map((c) => (
-                      <tr key={c.id}>
+                    {stockCounts.map((c) => {
+                      // Only a carton's latest count can be reviewed or recounted; an older
+                      // open count (keyed twice) is retired by the next recount.
+                      const latest =
+                        latestCount(state, { id: c.cartonId })?.id === c.id;
+                      return (
+                      <tr key={c.id} className={latest ? undefined : "count-older"}>
                         <td className="mono">
                           {state.cartons.find((x) => x.id === c.cartonId)?.ref}
                         </td>
@@ -2300,6 +2305,16 @@ export function DraftApp() {
                               <span className="status-pill tone-muted">
                                 {t("Balanced", "Seimbang")}
                               </span>
+                            ) : !latest ? (
+                              <span
+                                className="status-pill tone-muted"
+                                title={t(
+                                  "A newer count of this carton exists; recounting it retires this one.",
+                                  "Kiraan lebih baharu untuk karton ini wujud; kiraan semulanya menamatkan kiraan ini.",
+                                )}
+                              >
+                                {t("Older count", "Kiraan lama")}
+                              </span>
                             ) : !can("stock.adjust") ? (
                               <span className="status-pill tone-warning">
                                 {t("Difference", "Perbezaan")}
@@ -2336,22 +2351,20 @@ export function DraftApp() {
                                 {t("Review adjustment", "Semak pelarasan")}
                               </Button>
                             )}
-                            {can("stock.receive") &&
-                              state &&
-                              latestCount(state, { id: c.cartonId })?.id ===
-                                c.id && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => recount(c)}
-                                >
-                                  {t("Recount", "Kira semula")}
-                                </Button>
-                              )}
+                            {can("stock.receive") && latest && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => recount(c)}
+                              >
+                                {t("Recount", "Kira semula")}
+                              </Button>
+                            )}
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

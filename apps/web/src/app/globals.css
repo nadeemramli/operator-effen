@@ -3394,6 +3394,10 @@ td.actions {
 .count-history li + li::before {
   content: "→ ";
 }
+/* Stock take: an older open count of a carton, kept until the next recount retires it. */
+tr.count-older > td {
+  color: var(--muted-foreground);
+}
 /* Stock take: the count's status or review button, then its Recount, right-aligned. */
 .count-actions {
   display: inline-flex;
