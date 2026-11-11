@@ -1329,6 +1329,56 @@ do $$ begin
     raise exception 'FAIL: expected the corrected date and the cancelled batch kept in the document'; end if;
 end $$;
 
+-- 12f. Batch settings (20261029090000): the batch number may be corrected at any time and the
+--      product while the batch is unsent, each recorded as a correction by the signed-in
+--      user; corrected numbers stay unique; removing a batch is still refused.
+create function pg_temp.corr(p_field text, p_from text, p_to text, p_uid text) returns jsonb language sql as $$
+  select jsonb_build_array(jsonb_build_object('id', 'corr-' || p_field || '-' || p_to, 'field', p_field, 'from', p_from,
+    'to', p_to, 'reason', 'Typo', 'pic', 'SV', 'at', 't', 'recordedBy', jsonb_build_object('userId', p_uid))) $$;
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-correct',
+  pg_temp.patch_batch('x-cav', '{"code": "X-CAV-2"}', '00000000-0000-4000-8000-000000000001')),
+  '23514', 'rename a batch without a correction');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-correct',
+  pg_temp.patch_batch('x-cav', jsonb_build_object('code', 'X-CAV-2',
+    'corrections', pg_temp.corr('code', 'X-CAV', 'X-CAV-2', '00000000-0000-4000-8000-000000000006')),
+    '00000000-0000-4000-8000-000000000001')), '23514', 'rename recorded as another user');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-correct',
+  pg_temp.patch_batch('x-cav', jsonb_build_object('code', 'X-ADY',
+    'corrections', pg_temp.corr('code', 'X-CAV', 'X-ADY', '00000000-0000-4000-8000-000000000001')),
+    '00000000-0000-4000-8000-000000000001')), '23514', 'rename to an existing batch number');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-correct',
+  pg_temp.patch_batch('x-cav', jsonb_build_object('code', 'X-CAV-2', 'version', 2,
+    'corrections', pg_temp.corr('code', 'X-CAV', 'X-CAV-2', '00000000-0000-4000-8000-000000000001')),
+    '00000000-0000-4000-8000-000000000001')), 'ok', 'production SV corrects a batch number');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-correct',
+  pg_temp.patch_batch('b-sent', jsonb_build_object('code', 'SYN-SENT-2',
+    'corrections', pg_temp.corr('code', 'SYN-SENT', 'SYN-SENT-2', '00000000-0000-4000-8000-000000000001')),
+    '00000000-0000-4000-8000-000000000001')), 'ok', 'a sent batch is renamed; its carton follows in the app');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-correct',
+  pg_temp.patch_batch('b-sent', jsonb_build_object('product', 'gly',
+    'corrections', pg_temp.corr('product', 'cav', 'gly', '00000000-0000-4000-8000-000000000001')),
+    '00000000-0000-4000-8000-000000000001')), '23514', 'change the product of a sent batch');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-correct',
+  pg_temp.patch_batch('x-cav', jsonb_build_object('product', 'gly'), '00000000-0000-4000-8000-000000000001')),
+  '23514', 'change a product without a correction');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-correct',
+  pg_temp.patch_batch('x-cav', jsonb_build_object('product', 'gly', 'version', 3,
+    'corrections', (select b -> 'corrections' from jsonb_array_elements(pg_temp.state() -> 'batches') b where b ->> 'id' = 'x-cav')
+      || pg_temp.corr('product', 'cav', 'gly', '00000000-0000-4000-8000-000000000001')),
+    '00000000-0000-4000-8000-000000000001')), 'ok', 'production SV changes the product of an unsent batch');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-correct',
+  pg_temp.patch_batch('x-cav', jsonb_build_object('corrections', '[]'::jsonb), '00000000-0000-4000-8000-000000000001')),
+  '23514', 'erase batch corrections');
+select pg_temp.expect(pg_temp.commit_as(:SV, :A, 'batch-correct',
+  jsonb_set(pg_temp.state(), '{batches}', (select jsonb_agg(b) from jsonb_array_elements(pg_temp.state() -> 'batches') b
+    where b ->> 'id' <> 'x-cav'))), '23514', 'deleting by removing the batch');
+do $$ begin
+  if not exists (select 1 from jsonb_array_elements(pg_temp.state() -> 'batches') b
+      where b ->> 'id' = 'x-cav' and b ->> 'code' = 'X-CAV-2' and b ->> 'product' = 'gly'
+        and jsonb_array_length(b -> 'corrections') = 2) then
+    raise exception 'FAIL: expected the corrected batch number and product with both corrections kept'; end if;
+end $$;
+
 -- 12e. Package SKU mappings (20261020090000). Only the import capability (the office admin)
 --      maps, edits, retires or reactivates a SKU; the mappings are a new top-level key that
 --      only these commands change, and these commands change nothing else.

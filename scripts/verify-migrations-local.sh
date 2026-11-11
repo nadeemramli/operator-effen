@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261029090000_operator_batch_edit.down.sql"
+"${psql[@]}" -At -c "select to_regprocedure('operator_private.batch_corrected(jsonb,jsonb,text,uuid)') is null and prosrc not like '%batch_corrected%' from pg_proc where proname = 'assert_core_transition'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261028090000_operator_stock_add_recount.down.sql"
 "${psql[@]}" -At -c "select string_agg(command || ':' || capability || ':' || array_to_string(state_keys, '+'), ',' order by command) from public.operator_command_rules where command in ('count', 'recount', 'stock-add')" | grep -qx 'count:stock.receive:counts+events,recount:stock.receive:counts+events'
 "${psql[@]}" -f "$root/supabase/rollback/20261027090000_operator_stock_recount.down.sql"

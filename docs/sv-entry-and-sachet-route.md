@@ -549,6 +549,29 @@ commit;
   contains, so `tests/capabilities.test.mjs` does not see it. Reconcile the repository with
   the hosted rules before the next capability change.
 
+## Batch settings (2026-11-11)
+
+- Owner request: edit a batch's name and details, and delete a mistaken batch, easily. The
+  production batch card's "Correct date" and "Cancel batch" buttons are replaced by a
+  **Settings** menu (`BatchFixTools`, shadcn dropdown on `radix-ui`): correct batch number,
+  change product, change target quantity (bottles), correct work date, delete batch.
+- `batch-correct` takes `field` = `code` | `product` | `target` | `date` (same command and
+  rule, production.plan). The batch number may be corrected at any time except on a cancelled
+  batch; stock cartons and receipts follow it through `withBatchReferences` (the previous
+  number stays as `legacyRef`). Product (same line only), target and date lock once the batch
+  is sent or has warehouse records, as does deletion. Deletion is `batch-cancel` under a
+  clearer name: never removed, kept under previous batches as cancelled, number reserved.
+  Every correction is appended to `batch.corrections` (`field`, `from`, `to`, reason, PIC,
+  recorder) and shown under **Corrections** on the batch record.
+- Migration `20261029090000_operator_batch_edit`: `operator_private.batch_corrected` and a
+  new body of `assert_core_transition` (the 20261024 body otherwise unchanged) that lets the
+  code change at any time, and the product while unsent with no cartons or receipts, when
+  the new state carries that correction recorded by the signed-in user; batch corrections
+  are append-only and a new or corrected batch number must be unique. Removing a batch stays
+  refused. Applied to `operator-effen` on 2026-11-11 through the Supabase MCP connection;
+  the history row was corrected to the repository version. Rollback:
+  `supabase/rollback/20261029090000_operator_batch_edit.down.sql` first.
+
 ## Verification
 
 - `pnpm test` — domain, capability-parity and command-scope tests.

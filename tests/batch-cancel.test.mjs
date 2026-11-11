@@ -9,6 +9,7 @@ import {
   ConflictError,
   createDraft,
   isCalendarDate,
+  withBatchReferences,
 } from "../apps/web/src/lib/draft.ts";
 import { effectiveCapabilities } from "../apps/web/src/lib/access.ts";
 
@@ -310,8 +311,8 @@ test("date corrections are validated", () => {
     /different work date/,
   );
   assert.throws(
-    () => run(s, "batch-correct", { ...input, field: "code", date: "2026-10-16" }),
-    /work date/,
+    () => run(s, "batch-correct", { ...input, field: "rack", date: "2026-10-16" }),
+    /Choose what to correct/,
   );
   assert.throws(
     () => run(s, "batch-correct", { ...input, date: "2026-10-16", reason: "" }),
@@ -361,5 +362,81 @@ test("a supervisor of another site cannot cancel or correct this site's batch", 
         pic: "X",
       }),
     /another site/,
+  );
+});
+
+// 20261029090000: batch settings. The batch number is corrected at any time; the product and
+// target only while the batch is still in the factory; every correction is kept.
+test("the batch number is corrected at any time, uniquely, and cartons follow it", () => {
+  const { s, id } = recordedBottle();
+  const v = byCode(s, "CN0028").version ?? 0;
+  const fix = (state, input, role) =>
+    run(state, "batch-correct", { id, expectedVersion: byCode(state, "CN0028")?.version ?? v, ...input }, role);
+  assert.throws(() => fix(s, { field: "code", code: "CN0028", reason: "x", pic: "A" }), /different/);
+  assert.throws(() => fix(s, { field: "code", code: "CN0029", pic: "A" }), /reason/);
+  const taken = s.batches.find((b) => b.id !== id).code;
+  assert.throws(() => fix(s, { field: "code", code: taken.toLowerCase(), reason: "x", pic: "A" }), /already exists/);
+  assert.throws(() => fix(s, { field: "code", code: "CN0029", reason: "x", pic: "A" }, "intake"), /permit|role/i);
+  let next = fix(s, { field: "code", code: "CN0029", reason: "Typo on the plan", pic: "Supervisor A" });
+  let b = next.batches.find((x) => x.id === id);
+  assert.equal(b.code, "CN0029");
+  assert.deepEqual(
+    b.corrections.map((c) => [c.field, c.from, c.to, c.reason, c.recordedBy.userId]),
+    [["code", "CN0028", "CN0029", "Typo on the plan", "u-production"]],
+  );
+  assert.match(next.events[0].detail, /batch number: CN0028 → CN0029/);
+  // Sent to fulfilment and received into stock: the number can still be corrected and the
+  // stock carton shows the new number; nothing else can change any more.
+  next = run(next, "transfer", { id, qty: 887, pic: "F" });
+  next = run(next, "receive", { batchId: id, qty: 887, rack: "A-1", pic: "R" }, "intake");
+  assert.equal(next.cartons[0].ref, "CN0029");
+  const sentVersion = next.batches.find((x) => x.id === id).version;
+  assert.throws(
+    () => run(next, "batch-correct", { id, expectedVersion: sentVersion, field: "product", product: "gly", reason: "x", pic: "A" }),
+    /sent.*batch number can/,
+  );
+  assert.throws(
+    () => run(next, "batch-cancel", { id, expectedVersion: sentVersion, reason: "x", pic: "A" }),
+    /sent.*cancelled; its batch number/,
+  );
+  next = run(next, "batch-correct", { id, expectedVersion: sentVersion, field: "code", code: "CN0030", reason: "Second typo", pic: "A" });
+  // The API serves every state through withBatchReferences, so the carton shows the new number.
+  const served = withBatchReferences(next);
+  assert.equal(served.cartons[0].ref, "CN0030");
+  assert.equal(served.cartons[0].legacyRef, "CN0029");
+  // The old number of a cancelled batch stays reserved, for renames too.
+  const planned = run(createDraft(), "batch", { product: "cav", code: "CN0040", date: "2026-10-01", target: 2 });
+  const gone = planned.batches[0];
+  const cancelled = run(planned, "batch-cancel", { id: gone.id, expectedVersion: gone.version ?? 0, reason: "Twice", pic: "A" });
+  const other = run(cancelled, "batch", { product: "cav", code: "CN0041", date: "2026-10-01", target: 2 });
+  assert.throws(
+    () => run(other, "batch-correct", { id: other.batches[0].id, expectedVersion: 0, field: "code", code: "cn0040", reason: "x", pic: "A" }),
+    /reserved/,
+  );
+});
+test("the product changes within the same line and the target for bottles, while in the factory", () => {
+  const { s, id } = recordedBottle();
+  const at = (state) => state.batches.find((x) => x.id === id);
+  const fix = (state, input) =>
+    run(state, "batch-correct", { id, expectedVersion: at(state).version ?? 0, ...input });
+  assert.throws(() => fix(s, { field: "product", product: "ady", reason: "x", pic: "A" }), /same line/);
+  assert.throws(() => fix(s, { field: "product", product: "cav", reason: "x", pic: "A" }), /different/);
+  assert.throws(() => fix(s, { field: "product", product: "nope", reason: "x", pic: "A" }), /Choose a product/);
+  let next = fix(s, { field: "product", product: "gly", reason: "Planned under the wrong product", pic: "A" });
+  assert.equal(at(next).product, "gly");
+  assert.deepEqual(at(next).steps, at(s).steps, "recorded steps are kept");
+  assert.throws(() => fix(next, { field: "target", target: at(next).target, reason: "x", pic: "A" }), /different/);
+  assert.throws(() => fix(next, { field: "target", target: 0, reason: "x", pic: "A" }), /whole number/);
+  next = fix(next, { field: "target", target: 900, reason: "Order grew", pic: "A" });
+  assert.equal(at(next).target, 900);
+  assert.deepEqual(
+    at(next).corrections.map((c) => [c.field, c.from, c.to]),
+    [["product", "cav", "gly"], ["target", "887", "900"]],
+  );
+  assert.throws(() => fix(next, { field: "rack", reason: "x", pic: "A" }), /Choose what to correct/);
+  const sachet = run(createDraft(), "batch", { product: "ady", code: "AD-1", date: "2026-10-01", route: "sachet-v2" });
+  assert.throws(
+    () => run(sachet, "batch-correct", { id: sachet.batches[0].id, expectedVersion: 0, field: "target", target: 5, reason: "x", pic: "A" }),
+    /no target/,
   );
 });

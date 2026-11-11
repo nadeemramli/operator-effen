@@ -13,10 +13,22 @@ import {
   ClipboardList,
   Factory,
   History,
+  Package,
+  Pencil,
   Plus,
+  Settings2,
+  Target,
   Wrench,
   Search,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -107,8 +119,10 @@ function BatchStatus({ batch, lang }: { batch: Batch; lang: Lang }) {
 }
 
 /**
- * Fixes for a batch still only in the factory (nothing sent, no warehouse records): correct
- * its work date, or cancel a batch planned or recorded by mistake.
+ * Batch settings: correct the batch number (at any time; cartons and receipts follow it),
+ * change the product, target quantity or work date, or delete a batch planned or recorded
+ * by mistake (kept in history as cancelled). Everything but the batch number is locked once
+ * the batch has been sent or has warehouse records.
  */
 function BatchFixTools({
   batch: b,
@@ -124,78 +138,178 @@ function BatchFixTools({
   pic: (name?: string, label?: string) => Field;
 }) {
   const t = (en: string, ms: string) => tr(lang, en, ms);
-  if (batchLock(state, b)) return null;
+  const lock = batchLock(state, b);
+  if (lock === "cancelled") return null;
   const hidden = { id: b.id, expectedVersion: b.version ?? 0 };
   const summary = [
     { label: t("Batch", "Kelompok"), value: b.code },
+    { label: t("Product", "Produk"), value: product(b.product).name },
     { label: t("Work date", "Tarikh kerja"), value: b.date },
   ];
+  const reason: Field = {
+    name: "reason",
+    label: t("Reason for the correction", "Sebab pembetulan"),
+    type: "textarea",
+  };
+  const lockedHint = lock
+    ? lock === "sent"
+      ? t(
+          "Already sent: only the batch number can still be corrected.",
+          "Sudah dihantar: hanya nombor kelompok masih boleh dibetulkan.",
+        )
+      : t(
+          "Already in the warehouse: only the batch number can still be corrected.",
+          "Sudah di gudang: hanya nombor kelompok masih boleh dibetulkan.",
+        )
+    : undefined;
+  // Each item opens the form after the menu has closed, so focus returns cleanly.
+  const open = (spec: FormSpec) => () => setTimeout(() => show(spec), 0);
+  const rename = open({
+    type: "batch-correct",
+    title: t("Correct batch number", "Betulkan nombor kelompok"),
+    description: t(
+      "Cartons and receipts of this batch follow the new number. The old number, the new number and the reason are kept in the batch history.",
+      "Karton dan penerimaan kelompok ini mengikut nombor baharu. Nombor lama, nombor baharu dan sebabnya disimpan dalam sejarah kelompok.",
+    ),
+    hidden: { ...hidden, field: "code" },
+    summary,
+    fields: [
+      { name: "code", label: t("Batch number", "Nombor kelompok"), value: b.code },
+      reason,
+      pic(),
+    ],
+    submit: t("Save batch number", "Simpan nombor kelompok"),
+  });
+  const changeProduct = open({
+    type: "batch-correct",
+    title: t("Change product", "Tukar produk"),
+    description: t(
+      "Only a product made on the same line; the recorded steps and PICs stay as they are. The old product, the new product and the reason are kept in the batch history.",
+      "Hanya produk yang dibuat pada barisan yang sama; langkah dan PIC yang direkod kekal. Produk lama, produk baharu dan sebabnya disimpan dalam sejarah kelompok.",
+    ),
+    hidden: { ...hidden, field: "product" },
+    summary,
+    fields: [
+      {
+        name: "product",
+        label: t("Product", "Produk"),
+        type: "select",
+        value: b.product,
+        options: products
+          .filter((p) => isSachet(p.id) === isSachet(b.product))
+          .map((p) => ({ value: p.id, label: p.name })),
+      },
+      reason,
+      pic(),
+    ],
+    submit: t("Save product", "Simpan produk"),
+  });
+  const changeTarget = open({
+    type: "batch-correct",
+    title: t("Change target quantity", "Tukar kuantiti sasaran"),
+    description: t(
+      "The recorded steps stay as they are. The old target, the new target and the reason are kept in the batch history.",
+      "Langkah yang direkod kekal. Sasaran lama, sasaran baharu dan sebabnya disimpan dalam sejarah kelompok.",
+    ),
+    hidden: { ...hidden, field: "target" },
+    summary,
+    fields: [
+      {
+        name: "target",
+        label:
+          t("Target quantity", "Kuantiti sasaran") +
+          " (" +
+          units(lang, batchUnit(b)) +
+          ")",
+        type: "number",
+        value: b.target,
+        min: 1,
+      },
+      reason,
+      pic(),
+    ],
+    submit: t("Save target", "Simpan sasaran"),
+  });
+  const correctDate = open({
+    type: "batch-correct",
+    title: t("Correct work date", "Betulkan tarikh kerja"),
+    description: t(
+      "The recorded steps and PICs stay as they are. The old date, the new date and the reason are kept in the batch history.",
+      "Langkah dan PIC yang direkod kekal. Tarikh lama, tarikh baharu dan sebabnya disimpan dalam sejarah kelompok.",
+    ),
+    hidden: { ...hidden, field: "date" },
+    summary,
+    fields: [
+      {
+        name: "date",
+        label: t("Correct work date", "Tarikh kerja yang betul"),
+        type: "date",
+        value: b.date,
+      },
+      reason,
+      pic(),
+    ],
+    submit: t("Save correction", "Simpan pembetulan"),
+  });
+  const remove = open({
+    type: "batch-cancel",
+    title: t("Delete batch", "Padam kelompok"),
+    description: t(
+      "Only for a batch planned or recorded by mistake; to fix a detail, use the other settings. The batch leaves the active lists and is kept under previous batches as cancelled, with its records and your reason. Its batch number cannot be used again.",
+      "Hanya untuk kelompok yang dirancang atau direkod secara silap; untuk membetulkan butiran, gunakan tetapan lain. Kelompok keluar daripada senarai aktif dan disimpan di bawah kelompok terdahulu sebagai dibatalkan, bersama rekod dan sebab anda. Nombor kelompoknya tidak boleh digunakan semula.",
+    ),
+    hidden,
+    summary,
+    fields: [
+      {
+        name: "reason",
+        label: t("Reason for deleting", "Sebab pemadaman"),
+        type: "textarea",
+      },
+      pic(),
+    ],
+    submit: t("Delete batch", "Padam kelompok"),
+  });
   return (
-    <>
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={() =>
-          show({
-            type: "batch-correct",
-            title: t("Correct work date", "Betulkan tarikh kerja"),
-            description: t(
-              "The recorded steps and PICs stay as they are. The old date, the new date and the reason are kept in the batch history.",
-              "Langkah dan PIC yang direkod kekal. Tarikh lama, tarikh baharu dan sebabnya disimpan dalam sejarah kelompok.",
-            ),
-            hidden: { ...hidden, field: "date" },
-            summary,
-            fields: [
-              {
-                name: "date",
-                label: t("Correct work date", "Tarikh kerja yang betul"),
-                type: "date",
-                value: b.date,
-              },
-              {
-                name: "reason",
-                label: t("Reason for the correction", "Sebab pembetulan"),
-                type: "textarea",
-              },
-              pic(),
-            ],
-            submit: t("Save correction", "Simpan pembetulan"),
-          })
-        }
-      >
-        <CalendarDays size={14} />
-        {t("Correct date", "Betulkan tarikh")}
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        className="text-destructive"
-        onClick={() =>
-          show({
-            type: "batch-cancel",
-            title: t("Cancel batch", "Batalkan kelompok"),
-            description: t(
-              "Only for a batch planned or recorded by mistake. If only the date is wrong, use Correct date instead. The batch is not deleted: it moves to previous batches as cancelled, with its records and your reason, and its batch number cannot be used again.",
-              "Hanya untuk kelompok yang dirancang atau direkod secara silap. Jika hanya tarikh yang salah, gunakan Betulkan tarikh. Kelompok tidak dipadam: ia dipindahkan ke kelompok terdahulu sebagai dibatalkan, bersama rekod dan sebab anda, dan nombor kelompoknya tidak boleh digunakan semula.",
-            ),
-            hidden,
-            summary,
-            fields: [
-              {
-                name: "reason",
-                label: t("Reason for cancelling", "Sebab pembatalan"),
-                type: "textarea",
-              },
-              pic(),
-            ],
-            submit: t("Cancel batch", "Batalkan kelompok"),
-          })
-        }
-      >
-        <Ban size={14} />
-        {t("Cancel batch", "Batalkan kelompok")}
-      </Button>
-    </>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-label={t("Batch settings", "Tetapan kelompok")}
+        >
+          <Settings2 size={14} />
+          {t("Settings", "Tetapan")}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="batch-settings-menu">
+        <DropdownMenuLabel className="mono">{b.code}</DropdownMenuLabel>
+        <DropdownMenuItem onSelect={rename}>
+          <Pencil />
+          {t("Correct batch number", "Betulkan nombor kelompok")}
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!!lock} onSelect={changeProduct}>
+          <Package />
+          {t("Change product", "Tukar produk")}
+        </DropdownMenuItem>
+        {!isSachet(b.product) && (
+          <DropdownMenuItem disabled={!!lock} onSelect={changeTarget}>
+            <Target />
+            {t("Change target quantity", "Tukar kuantiti sasaran")}
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem disabled={!!lock} onSelect={correctDate}>
+          <CalendarDays />
+          {t("Correct work date", "Betulkan tarikh kerja")}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem disabled={!!lock} variant="destructive" onSelect={remove}>
+          <Ban />
+          {t("Delete batch", "Padam kelompok")}
+        </DropdownMenuItem>
+        {lockedHint && <p className="batch-settings-hint">{lockedHint}</p>}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -227,13 +341,20 @@ function BatchHistoryNotes({ batch: b, lang }: { batch: Batch; lang: Lang }) {
       {!!corrections.length && (
         <details className="pic-history">
           <summary>
-            {t("Work date corrections", "Pembetulan tarikh kerja")} (
-            {corrections.length})
+            {t("Corrections", "Pembetulan")} ({corrections.length})
           </summary>
           {corrections.map((c) => (
             <p key={c.id}>
               <strong>
-                {c.from} → {c.to}
+                {c.field === "code"
+                  ? t("Batch number", "Nombor kelompok")
+                  : c.field === "product"
+                    ? t("Product", "Produk")
+                    : c.field === "target"
+                      ? t("Target", "Sasaran")
+                      : t("Work date", "Tarikh kerja")}
+                : {c.field === "product" ? product(c.from).name : c.from} →{" "}
+                {c.field === "product" ? product(c.to).name : c.to}
               </strong>
               <br />
               {c.reason} · PIC {c.pic} · {recorderLabel(c.recordedBy)} ·{" "}

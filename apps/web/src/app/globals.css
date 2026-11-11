@@ -3411,3 +3411,16 @@ td.num .count-history {
   text-align: right;
   font-weight: normal;
 }
+
+/* Batch settings menu (production): the locked-state hint under the actions. */
+.batch-settings-menu {
+  min-width: 15rem;
+}
+.batch-settings-hint {
+  margin: 4px 0 0;
+  padding: 6px 8px 4px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+}

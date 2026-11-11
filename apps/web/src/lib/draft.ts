@@ -280,7 +280,8 @@ export interface BatchRevision {
  */
 export interface BatchCorrection {
   id: string;
-  field: "date";
+  /** What was corrected: the work date, the batch number, the product or the target quantity. */
+  field: "date" | "code" | "product" | "target";
   from: string;
   to: string;
   reason: string;
@@ -1872,10 +1873,12 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
     case "batch-cancel":
     case "batch-correct": {
       allow("production");
-      // Only while the batch is still only in the factory. Once it is sent or has warehouse
-      // records, mistakes are corrected on those records instead.
+      // Batch settings. The batch number may be corrected at any time (cartons and receipts
+      // follow it); the product, target and work date only while the batch is still only in
+      // the factory, and so may a deletion, which keeps the batch in history as cancelled.
       const b = inSite(find(s.batches));
       const cancel = cmd.type === "batch-cancel",
+        field = cancel ? "cancel" : str("field"),
         lock = batchLock(s, b);
       if (lock === "cancelled")
         throw new Error(
@@ -1883,14 +1886,18 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
             ? `Batch ${b.code} is already cancelled.`
             : `Batch ${b.code} was cancelled. Its record can no longer be changed.`,
         );
-      if (lock)
+      if (lock && field !== "code")
         throw new Error(
           (lock === "sent"
             ? `Batch ${b.code} has already been sent to ${isSachet(b.product) ? "the warehouse" : "fulfilment"}.`
             : `Batch ${b.code} already has warehouse receipts or stock cartons.`) +
             (cancel
-              ? " It can no longer be cancelled."
-              : " Its work date can no longer be corrected."),
+              ? " It can no longer be cancelled; its batch number can still be corrected."
+              : field === "date"
+                ? " Its work date can no longer be corrected; its batch number can."
+                : field === "product"
+                  ? " Its product can no longer be changed; its batch number can."
+                  : " Its target quantity can no longer be changed; its batch number can."),
         );
       expectVersion(b, b.code);
       if (cancel) {
@@ -1906,8 +1913,76 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         );
         break;
       }
-      if (str("field") !== "date")
-        throw new Error("Choose the batch work date to correct.");
+      if (!["code", "product", "target", "date"].includes(field))
+        throw new Error(
+          "Choose what to correct: the batch number, product, target quantity or work date.",
+        );
+      const correct = (
+        kind: BatchCorrection["field"],
+        from: string,
+        to: string,
+        action: string,
+        label: string,
+      ) => {
+        const reason = str("reason"),
+          pic = str("pic");
+        (b.corrections ??= []).push({
+          id: id(),
+          field: kind,
+          from,
+          to,
+          reason,
+          pic,
+          at,
+          recordedBy: recorder,
+        });
+        bump(b);
+        log(b.id, action, `${b.code} · ${label}: ${from} → ${to} · ${pic} · ${reason}`, {
+          performer: pic,
+        });
+      };
+      if (field === "code") {
+        const code = str("code");
+        if (code.length > 60)
+          throw new Error("Use a batch number of up to 60 characters.");
+        if (code === b.code) throw new Error("Enter a different batch number.");
+        const clash = s.batches.find(
+          (x) => x.id !== b.id && x.code.toLowerCase() === code.toLowerCase(),
+        );
+        if (clash)
+          throw new Error(
+            clash.cancelled
+              ? "That batch number belongs to a cancelled batch and stays reserved. Use another batch number."
+              : "That batch number already exists.",
+          );
+        const from = b.code;
+        b.code = code;
+        correct("code", from, code, "Batch number corrected", "batch number");
+        break;
+      }
+      if (field === "product") {
+        const next = str("product");
+        if (!products.some((x) => x.id === next)) throw new Error("Choose a product.");
+        if (next === b.product) throw new Error("Choose a different product.");
+        if (isSachet(next) !== isSachet(b.product))
+          throw new Error(
+            "Choose a product made on the same line: the recorded steps belong to it. For the other line, cancel this batch and plan a new one.",
+          );
+        const from = b.product;
+        b.product = next;
+        correct("product", from, next, "Batch product corrected", "product");
+        break;
+      }
+      if (field === "target") {
+        if (isSachet(b.product))
+          throw new Error("Sachet batches have no target quantity.");
+        const target = num("target", 1);
+        if (target === b.target) throw new Error("Enter a different target quantity.");
+        const from = b.target;
+        b.target = target;
+        correct("target", String(from), String(target), "Batch target corrected", "target");
+        break;
+      }
       const date = str("date");
       if (!isCalendarDate(date))
         throw new Error("Enter the work date as a calendar date (YYYY-MM-DD).");
@@ -1926,27 +2001,9 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error(
           `The work date cannot be after work already recorded on ${firstWork}.`,
         );
-      const reason = str("reason"),
-        pic = str("pic"),
-        from = b.date;
-      (b.corrections ??= []).push({
-        id: id(),
-        field: "date",
-        from,
-        to: date,
-        reason,
-        pic,
-        at,
-        recordedBy: recorder,
-      });
+      const from = b.date;
       b.date = date;
-      bump(b);
-      log(
-        b.id,
-        "Batch date corrected",
-        `${b.code} · work date: ${from} → ${date} · ${pic} · ${reason}`,
-        { performer: pic },
-      );
+      correct("date", from, date, "Batch date corrected", "work date");
       break;
     }
     case "route-review": {

@@ -153,7 +153,16 @@ balance (a further delivery counted onto the rack), and **Recount**, which reset
 to the recounted total and retires the carton's earlier entries from the **Stock counts**
 list. Both are adjustments with who counted and why, so the balance, the daily inventory and
 the audit log follow; nothing is rewritten. Physical counts recorded before that day are
-still reviewed with an adjustment until a recount retires them. Each stage row shows one status
+still reviewed with an adjustment until a recount retires them.
+
+**Batch settings** (2026-11-11, migration `20261029090000_operator_batch_edit.sql`): each
+batch in Production has a Settings menu to correct the batch number (at any time; stock
+cartons and receipts follow it), change the product (same line only), the target quantity or
+the work date, or delete a batch planned by mistake. Deleting keeps the batch in history as
+cancelled with its records and reason, and reserves its number. Everything but the batch
+number locks once the batch is sent or has warehouse records. Each correction is kept on the
+batch with who, when and why; the database accepts a batch number or product change only
+with that correction recorded by the signed-in user, and keeps corrected numbers unique. Each stage row shows one status
 (Next, Completed, Skipped) and one main button; corrections and PIC history sit under
 "Corrections & history". See
 [role-based entry and the five-stage route](docs/sv-entry-and-sachet-route.md).
