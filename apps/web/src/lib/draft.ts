@@ -775,18 +775,17 @@ export const pendingCount = (s: Draft, c: Pick<Carton, "id">) => {
   const k = latestCount(s, c);
   return k && !k.adjusted && k.actual !== k.book ? k : undefined;
 };
-/** The versions of a count, oldest first: the first count and every recount up to this one. */
+/**
+ * The versions of a count, oldest first: every count a recount replaced (a recount also
+ * retires older duplicate counts of the carton), then this one.
+ */
 export const countVersions = (s: Draft, count: Count): Count[] => {
-  const chain = [count];
-  const seen = new Set([count.id]);
-  for (let k = count; k.supersedes; ) {
-    const earlier = s.counts.find((x) => x.id === k.supersedes);
-    if (!earlier || seen.has(earlier.id)) break;
-    seen.add(earlier.id);
-    chain.unshift(earlier);
-    k = earlier;
-  }
-  return chain;
+  const seen = new Set<string>();
+  const before = (k: Count): Count[] =>
+    s.counts
+      .filter((x) => x.supersededBy === k.id && !seen.has(x.id))
+      .flatMap((x) => (seen.add(x.id), [...before(x), x]));
+  return [...before(count).sort((x, y) => x.at.localeCompare(y.at)), count];
 };
 export const available = (s: Draft, c: Carton) =>
   c.qty -
@@ -3268,7 +3267,15 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         reason,
         recordedBy: recorder,
       };
-      previous.supersededBy = count.id;
+      // The recount also retires older counts of the carton still awaiting review (counts
+      // keyed twice before recounts existed), so the carton keeps one current count.
+      for (const k of s.counts)
+        if (
+          k.cartonId === c.id &&
+          !k.supersededBy &&
+          (k.id === previous.id || !k.adjusted)
+        )
+          k.supersededBy = count.id;
       s.counts.unshift(count);
       log(
         c.batchId,

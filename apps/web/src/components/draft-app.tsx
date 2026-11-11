@@ -107,6 +107,7 @@ import {
   adypocideReceipts,
   stockCartons,
   countVersions,
+  latestCount,
   pendingCount,
   type AdypocideReceipt,
   type TeamRole,
@@ -2335,15 +2336,18 @@ export function DraftApp() {
                                 {t("Review adjustment", "Semak pelarasan")}
                               </Button>
                             )}
-                            {can("stock.receive") && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => recount(c)}
-                              >
-                                {t("Recount", "Kira semula")}
-                              </Button>
-                            )}
+                            {can("stock.receive") &&
+                              state &&
+                              latestCount(state, { id: c.cartonId })?.id ===
+                                c.id && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => recount(c)}
+                                >
+                                  {t("Recount", "Kira semula")}
+                                </Button>
+                              )}
                           </div>
                         </td>
                       </tr>

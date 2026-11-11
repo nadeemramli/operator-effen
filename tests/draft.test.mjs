@@ -471,6 +471,25 @@ test("a recount replaces a carton's count and keeps the earlier figure as a vers
     /already recounted/,
   );
 });
+test("a recount retires older duplicate counts of the carton still awaiting review", () => {
+  // Two counts keyed before recounts existed: both open, neither superseded.
+  let s = run(createDraft(), "intake", "count", { cartonId: "c-syn", actual: 136, pic: "Nurul" });
+  const older = s.counts[0];
+  s.counts.unshift({ ...older, id: "dup-newer", at: new Date(Date.now() + 1000).toISOString() });
+  assert.throws(
+    () => run(s, "intake", "recount", { id: older.id, actual: 2, reason: "x", pic: "Nurul" }),
+    /newer count/,
+  );
+  s = run(s, "intake", "recount", { id: "dup-newer", actual: 2, reason: "Keyed 136 for a 2-bottle carton", pic: "Nurul" });
+  const current = s.counts[0];
+  assert.equal(current.supersedes, "dup-newer");
+  assert.ok(s.counts.filter((k) => k.cartonId === "c-syn" && !k.supersededBy).length === 1);
+  assert.equal(s.counts.find((k) => k.id === older.id).supersededBy, current.id);
+  assert.deepEqual(
+    countVersions(s, current).map((k) => k.actual),
+    [136, 136, 2],
+  );
+});
 test("a stale count is recounted with the same figure once stock moved after it", () => {
   let s = run(createDraft(), "intake", "count", { cartonId: "c-gly", actual: 110, pic: "X" });
   const id = s.counts[0].id;
