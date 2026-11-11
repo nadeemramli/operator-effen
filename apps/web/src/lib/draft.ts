@@ -419,10 +419,11 @@ export interface Boxing {
   at: string;
 }
 /**
- * A physical count of a stock carton against its book balance at the time. Counting never
- * moves stock: a supervisor applies the difference with `adjust`. A wrong figure is not
- * edited but recounted (`recount`): the new count carries `supersedes`, the earlier one gets
- * `supersededBy`, and the chain stays in the history as the versions of the count.
+ * A physical count of a stock carton against its book balance at the time (the `count`
+ * command, retired on 2026-11-11: stock is now added with `stock-add` and reset with
+ * `recount`, both recorded as adjustments). Counts already recorded stay reviewable with
+ * `adjust` until a recount of the carton retires them. A recount of a count that was itself
+ * recorded with the short-lived count-level recount carries `supersedes`/`supersededBy`.
  */
 export interface Count {
   id: string;
@@ -462,8 +463,11 @@ export interface Adjustment {
   delta: number;
   reason: string;
   at: string;
-  /** A sachet box recount (`recount-ady`): the batch total moved from `from` to `to`. */
-  kind?: "recount";
+  /**
+   * A recount (`recount-ady` for a sachet batch, `recount` for a carton) resets the balance:
+   * it moved from `from` to `to`. `add` (`stock-add`) tops a carton up by `delta`.
+   */
+  kind?: "recount" | "add";
   from?: number;
   to?: number;
   pic?: string;
@@ -766,14 +770,78 @@ export const adypocideReceipts = (s: Draft): AdypocideReceipt[] => [
 /** The carton's current count: its newest count that no recount has replaced. */
 export const latestCount = (s: Draft, c: Pick<Carton, "id">) =>
   s.counts.find((k) => k.cartonId === c.id && !k.supersededBy);
+/** One line of a carton's count log: a legacy physical count, stock added, or a recount. */
+export interface CountEntry {
+  id: string;
+  kind: "count" | "add" | "recount";
+  at: string;
+  pic: string;
+  /** Balance before the entry (a legacy count: its book balance). */
+  before: number;
+  /** Change to the balance; null for a legacy count, which moved nothing by itself. */
+  change: number | null;
+  /** Balance after the entry (a legacy count: the figure counted). */
+  after: number;
+  reason?: string;
+  recordedBy?: Recorder;
+  /** The legacy count record, when the entry is one. */
+  count?: Count;
+}
+/** A carton's count entries, oldest first: legacy counts not yet recounted, added stock, recounts. */
+export const cartonCountEntries = (s: Draft, c: Pick<Carton, "id">): CountEntry[] => {
+  // Lists are newest first; entries recorded within the same millisecond keep that order.
+  const seq = new Map<string, number>();
+  s.counts.forEach((k, i) => seq.set(k.id, s.counts.length - i));
+  s.adjustments.forEach((a, i) => seq.set(a.id, s.adjustments.length - i));
+  return [
+    ...s.counts
+      .filter((k) => k.cartonId === c.id && !k.supersededBy)
+      .map(
+        (k): CountEntry => ({
+          id: k.id,
+          kind: "count",
+          at: k.at,
+          pic: k.pic,
+          before: k.book,
+          change: null,
+          after: k.actual,
+          reason: k.reason,
+          recordedBy: k.recordedBy,
+          count: k,
+        }),
+      ),
+    ...s.adjustments
+      .filter((a) => a.cartonId === c.id && (a.kind === "add" || a.kind === "recount"))
+      .map(
+        (a): CountEntry => ({
+          id: a.id,
+          kind: a.kind as "add" | "recount",
+          at: a.at,
+          pic: a.pic ?? "",
+          before: a.from ?? 0,
+          change: a.delta,
+          after: a.to ?? 0,
+          reason: a.reason,
+          recordedBy: a.recordedBy,
+        }),
+      ),
+  ].sort(
+    (x, y) =>
+      x.at.localeCompare(y.at) || (seq.get(x.id) ?? 0) - (seq.get(y.id) ?? 0),
+  );
+};
 /**
- * A count still waiting for review: the carton's current count, unadjusted, whose figure
- * differs from the book balance it was counted against. The racks list offers a recount of
- * it instead of a second count.
+ * A carton's count log as the stock-in screen lists it: the entries since its last recount
+ * (`current`, the recount first) and the ones that recount retired (`retired`). Retired
+ * entries leave the list but stay in the document and the audit log.
  */
-export const pendingCount = (s: Draft, c: Pick<Carton, "id">) => {
-  const k = latestCount(s, c);
-  return k && !k.adjusted && k.actual !== k.book ? k : undefined;
+export const countLog = (s: Draft, c: Pick<Carton, "id">) => {
+  const all = cartonCountEntries(s, c);
+  let i = all.length - 1;
+  while (i >= 0 && all[i].kind !== "recount") i--;
+  return i < 0
+    ? { current: all, retired: [] as CountEntry[] }
+    : { current: all.slice(i), retired: all.slice(0, i) };
 };
 /**
  * The versions of a count, oldest first: every count a recount replaced (a recount also
@@ -3193,94 +3261,74 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       );
       break;
     }
-    case "count": {
+    case "stock-add": {
+      // "Count stock": a further delivery counted onto the rack tops the carton's balance up.
+      // Recorded as an adjustment, so the balance, the daily inventory and the audit log all
+      // follow; a correction of the balance is a recount instead.
       allow("intake");
       const c = find(s.cartons, "cartonId");
-      if (c.unit === "sachet")
-        throw new Error("Finalize the finished box count in sachet stock-in.");
-      const pending = pendingCount(s, c);
-      if (pending)
+      if (isSachet(c.product))
         throw new Error(
-          `${c.ref} already has a count awaiting review (${pending.actual} ${c.unit} counted against ${pending.book}). Recount it instead of counting again.`,
+          "Add boxes to the sachet batch's total in sachet stock-in instead.",
         );
-      const count: Count = {
+      const qty = num("qty", 1),
+        pic = str("pic"),
+        note = str("note", false),
+        before = available(s, c);
+      s.adjustments.unshift({
         id: id(),
         cartonId: c.id,
-        book: available(s, c),
-        actual: num("actual"),
-        pic: str("pic"),
+        delta: qty,
+        reason: note || "Stock added",
         at,
-        adjusted: false,
+        kind: "add",
+        from: before,
+        to: before + qty,
+        pic,
         recordedBy: recorder,
-      };
-      s.counts.unshift(count);
+      });
       log(
         c.batchId,
-        "Physical stock count",
-        c.ref +
-          " · book " +
-          count.book +
-          " / counted " +
-          count.actual +
-          " · " +
-          count.pic,
+        "Stock added",
+        `${c.ref} · +${qty} ${c.unit} · ${before} → ${before + qty} · ${pic}` +
+          (note ? " · " + note : ""),
       );
       break;
     }
     case "recount": {
-      // A fresh count of a carton replaces its current count: the wrong figure is never
-      // edited, the new count carries the reason and the earlier one stays in the history as
-      // a version. Stock still moves only when a supervisor adjusts the new count.
+      // A fresh count of a carton resets its balance to the counted total: the difference is
+      // a recount adjustment, and the carton's earlier count entries leave the stock-count
+      // list (they stay in the document and the audit log).
       allow("intake");
-      const previous = find(s.counts);
-      const c = s.cartons.find((x) => x.id === previous.cartonId);
-      if (!c)
-        throw new Error("This record could not be found. Refresh and try again.");
-      if (c.unit === "sachet")
-        throw new Error("Recount a sachet batch's total boxes in sachet stock-in.");
-      if (previous.supersededBy)
+      const c = find(s.cartons, "cartonId");
+      if (isSachet(c.product))
         throw new Error(
-          `This count of ${c.ref} was already recounted. Recount the latest count instead.`,
+          "Recount a sachet batch's total boxes in sachet stock-in instead.",
         );
-      const latest = latestCount(s, c);
-      if (latest && latest.id !== previous.id)
-        throw new Error(
-          `${c.ref} has a newer count (${latest.actual} ${c.unit}). Recount that one instead.`,
-        );
-      const actual = num("actual"),
+      const total = num("total"),
         reason = str("reason"),
         pic = str("pic"),
-        book = available(s, c);
-      if (actual === previous.actual && book === previous.book)
+        before = available(s, c);
+      if (total === before)
         throw new Error(
-          `${c.ref} is already counted at ${actual} ${c.unit} against the same book balance. Enter the recounted figure if it differs.`,
+          `${c.ref} already stands at ${before} ${c.unit}. Enter the recounted total if it differs.`,
         );
-      const count: Count = {
+      s.adjustments.unshift({
         id: id(),
         cartonId: c.id,
-        book,
-        actual,
-        pic,
-        at,
-        adjusted: false,
-        supersedes: previous.id,
+        delta: total - before,
         reason,
+        at,
+        kind: "recount",
+        from: before,
+        to: total,
+        pic,
         recordedBy: recorder,
-      };
-      // The recount also retires older counts of the carton still awaiting review (counts
-      // keyed twice before recounts existed), so the carton keeps one current count.
-      for (const k of s.counts)
-        if (
-          k.cartonId === c.id &&
-          !k.supersededBy &&
-          (k.id === previous.id || !k.adjusted)
-        )
-          k.supersededBy = count.id;
-      s.counts.unshift(count);
+      });
       log(
         c.batchId,
         "Stock recounted",
-        `${c.ref} · counted ${previous.actual} → ${actual} ${c.unit} · book ${book} · ${reason} · ${pic}`,
+        `${c.ref} · ${before} → ${total} ${c.unit} · ${reason} · ${pic}`,
       );
       break;
     }
@@ -3356,11 +3404,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const newest = latestCount(s, c);
       if (newest && newest.id !== count.id)
         throw new Error(
-          `${c.ref} has a newer count (${newest.actual} ${c.unit}). Review that count instead; recounting it retires this one.`,
+          `${c.ref} has a newer count (${newest.actual} ${c.unit}). Review that count instead, or recount the carton.`,
         );
       if (available(s, c) !== count.book)
         throw new Error(
-          "Stock moved after this count. Recount the carton before adjustment.",
+          "Stock moved after this count. Recount the carton instead.",
         );
       const reason = str("reason");
       s.adjustments.unshift({

@@ -113,9 +113,10 @@ export const commandRules: Record<
     capability: "stock.receive",
     stateKeys: ["batches", "cartons", "adypocideReceipts", "events"],
   },
-  count: { capability: "stock.receive", stateKeys: ["counts", "events"] },
-  // A fresh count replacing a carton's current count (20261027090000_operator_stock_recount.sql).
-  recount: { capability: "stock.receive", stateKeys: ["counts", "events"] },
+  // "Count stock" adds to a carton's balance; "Recount" resets it. Both are adjustments
+  // (20261028090000_operator_stock_add_recount.sql; the physical-count `count` rule is gone).
+  "stock-add": { capability: "stock.receive", stateKeys: ["adjustments", "events"] },
+  recount: { capability: "stock.adjust", stateKeys: ["adjustments", "events"] },
   return: { capability: "stock.receive", stateKeys: ["returns", "events"] },
   adjust: { capability: "stock.adjust", stateKeys: ["adjustments", "counts", "events"] },
   "recount-ady": { capability: "stock.adjust", stateKeys: ["adjustments", "events"] },

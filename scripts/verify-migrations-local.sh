@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261028090000_operator_stock_add_recount.down.sql"
+"${psql[@]}" -At -c "select string_agg(command || ':' || capability || ':' || array_to_string(state_keys, '+'), ',' order by command) from public.operator_command_rules where command in ('count', 'recount', 'stock-add')" | grep -qx 'count:stock.receive:counts+events,recount:stock.receive:counts+events'
 "${psql[@]}" -f "$root/supabase/rollback/20261027090000_operator_stock_recount.down.sql"
 "${psql[@]}" -At -c "select count(*) from public.operator_command_rules where command = 'recount'" | grep -qx 0
 "${psql[@]}" -f "$root/supabase/rollback/20261025090000_operator_box_recount.down.sql"

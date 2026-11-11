@@ -34,6 +34,7 @@ const later = [
   "20261023090000_operator_stock_in_sends",
   "20261025090000_operator_box_recount",
   "20261027090000_operator_stock_recount",
+  "20261028090000_operator_stock_add_recount",
 ].map(migration);
 const merged = (table) =>
   section(table) +
@@ -61,11 +62,16 @@ test("role capabilities match the database seed", () => {
 });
 
 test("command rules match the database seed", () => {
-  const rows = Object.fromEntries(
-    [...merged("operator_command_rules").matchAll(/\('([a-z-]+)', '([a-z.]+)', '\{([a-zA-Z,]+)\}'\)/g)].map(
-      ([, cmd, cap, keys]) => [cmd, { capability: cap, stateKeys: keys.split(",") }],
-    ),
-  );
+  // Migrations in order: a later one may delete rules (20261028 removes `count`) and re-seed.
+  const rows = {};
+  for (const source of [sql, trips, packers, ...later]) {
+    for (const [, list] of source.matchAll(/delete from public\.operator_command_rules\s+where command in \(([^)]*)\)/g))
+      for (const [, cmd] of list.matchAll(/'([a-z-]+)'/g)) delete rows[cmd];
+    for (const [, cmd, cap, keys] of section("operator_command_rules", source).matchAll(
+      /\('([a-z-]+)', '([a-z.]+)', '\{([a-zA-Z,]+)\}'\)/g,
+    ))
+      rows[cmd] = { capability: cap, stateKeys: keys.split(",") };
+  }
   assert.deepEqual(rows, commandRules);
 });
 
@@ -136,9 +142,11 @@ test("every operational command stays inside its database scope", () => {
   for (let i = 0; i < 4; i++) run("production", "step", { id: bottle, step: i, pic: "P", ...(i === 3 ? { qty: 2, qc: "not-recorded" } : {}) });
   run("production", "transfer", { id: bottle, qty: 2, pic: "F" });
   run("intake", "receive", { batchId: bottle, qty: 2, rack: "R", pic: "R" });
-  run("intake", "count", { cartonId: s.cartons[0].id, actual: 1, pic: "R" });
-  run("intake", "recount", { id: s.counts[0].id, actual: 0, reason: "Keyed the wrong figure", pic: "R" });
-  run("intake", "adjust", { id: s.counts[0].id, reason: "Broken bottle" });
+  run("intake", "stock-add", { cartonId: s.cartons[0].id, qty: 3, pic: "R" });
+  run("intake", "recount", { cartonId: s.cartons[0].id, total: 4, reason: "Keyed the wrong figure", pic: "R" });
+  // A physical count recorded before 2026-11-11 is still reviewed with an adjustment.
+  s.counts.unshift({ id: "legacy-count", cartonId: s.cartons[0].id, book: 4, actual: 3, pic: "R", at: "2026-10-01T00:00:00Z", adjusted: false });
+  run("intake", "adjust", { id: "legacy-count", reason: "Broken bottle" });
   run("intake", "return", { cartonId: s.cartons[0].id, qty: 1, reason: "Courier return", awb: "RT 123", pic: "R" });
   run("admin", "order", { awb: "COV-AWB", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });
   const o = s.orders[0].id;

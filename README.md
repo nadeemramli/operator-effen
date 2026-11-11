@@ -147,11 +147,13 @@ count (350 counted, 550 on recount: the total is 550): the difference is a recou
 adjustment on the batch's carton, the rack balance follows, and the Shrink machine row lists
 every version of the total with who counted and why. A lower recount cannot go below the
 boxes still on the racks. "Add boxes to the total" remains for a further delivery.
-**Recount** on a bottle or capsule carton (2026-11-11, migration
-`20261027090000_operator_stock_recount.sql`) replaces a wrong "Count stock" figure: the new
-count names the one it replaces and why, the earlier figure stays in the Monthly stock take
-as a version, and stock still moves only through "Review adjustment" on the new count. A
-carton whose count is awaiting review offers "Recount" instead of a second count. Each stage row shows one status
+On the racks (2026-11-11, migration `20261028090000_operator_stock_add_recount.sql`) every
+bottle and capsule carton has **Count stock**, which adds the counted stock to the carton's
+balance (a further delivery counted onto the rack), and **Recount**, which resets the balance
+to the recounted total and retires the carton's earlier entries from the **Stock counts**
+list. Both are adjustments with who counted and why, so the balance, the daily inventory and
+the audit log follow; nothing is rewritten. Physical counts recorded before that day are
+still reviewed with an adjustment until a recount retires them. Each stage row shows one status
 (Next, Completed, Skipped) and one main button; corrections and PIC history sit under
 "Corrections & history". See
 [role-based entry and the five-stage route](docs/sv-entry-and-sachet-route.md).
