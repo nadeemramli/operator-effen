@@ -962,6 +962,37 @@ select pg_temp.expect(pg_temp.commit_as(:SI, :X, 'recount-ady',
 select pg_temp.expect(pg_temp.commit_as(:SI, :X, 'recount-ady',
   jsonb_set(pg_temp.state(:X), '{batches,0,code}', '"X"')), '42501', 'recount-ady used to edit batches');
 
+-- 9f. Stock recounts (20261027090000): stock.receive holders replace a carton's count with a
+--     fresh one that names the count it supersedes; the earlier count is marked superseded
+--     and kept. The rule is scoped to counts and events; stock does not move.
+create function pg_temp.cnt(p_id text, p_actual int, p_uid text, p_supersedes text default null) returns jsonb
+language sql as $$
+  select jsonb_strip_nulls(jsonb_build_object('id', p_id, 'cartonId', 'cx1', 'book', 212, 'actual', p_actual,
+    'pic', 'SI', 'at', 't', 'adjusted', false, 'recordedBy', jsonb_build_object('userId', p_uid),
+    'supersedes', p_supersedes, 'reason', case when p_supersedes is null then null else 'Keyed the wrong figure' end)) $$;
+select pg_temp.expect(pg_temp.commit_as(:SI, :X, 'count',
+  jsonb_set(pg_temp.state(:X), '{counts}', jsonb_build_array(pg_temp.cnt('k1', 88, :SI)))),
+  'ok', 'stock-in counts a carton');
+select pg_temp.expect(pg_temp.commit_as(:SI, :X, 'recount',
+  jsonb_set(pg_temp.state(:X), '{counts}', jsonb_build_array(pg_temp.cnt('k2', 208, :SI, 'k1'),
+    (pg_temp.state(:X) -> 'counts' -> 0) || '{"supersededBy": "k2"}'))),
+  'ok', 'stock-in recounts the carton');
+select pg_temp.expect(pg_temp.commit_as('00000000-0000-4000-8000-000000000001', :X, 'recount',
+  jsonb_set(pg_temp.state(:X), '{counts}', jsonb_build_array(pg_temp.cnt('k3', 1, '00000000-0000-4000-8000-000000000001', 'k2'))
+    || (pg_temp.state(:X) -> 'counts'))), '42501', 'production recounts a carton');
+select pg_temp.expect(pg_temp.commit_as(:SI, :X, 'recount',
+  jsonb_set(pg_temp.state(:X), '{adjustments}', (pg_temp.state(:X) -> 'adjustments')
+    || jsonb_build_array(jsonb_build_object('id', 'rc9', 'cartonId', 'cx1', 'delta', -4, 'reason', 'x', 'at', 't')))),
+  '42501', 'recount used to move stock');
+select pg_temp.expect(pg_temp.commit_as(:SI, :X, 'recount',
+  jsonb_set(pg_temp.state(:X), '{cartons,0,qty}', '500')), '42501', 'recount used to edit cartons');
+do $$ begin
+  if not ((pg_temp.state('10000000-0000-4000-8000-0000000000c2') -> 'counts' -> 0 ->> 'supersedes') = 'k1'
+    and (pg_temp.state('10000000-0000-4000-8000-0000000000c2') -> 'counts' -> 1 ->> 'supersededBy') = 'k2'
+    and jsonb_array_length(pg_temp.state('10000000-0000-4000-8000-0000000000c2') -> 'counts') = 2)
+  then raise exception 'FAIL: the recount did not keep both versions of the count'; end if;
+end $$;
+
 -- 10. Stock returns (20261009090002): append-only, attributed, into an existing carton.
 \set SI '''00000000-0000-4000-8000-000000000006'''
 create function pg_temp.ret(p_id text, p_carton text, p_qty jsonb, p_uid text) returns jsonb language sql as $$

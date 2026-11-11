@@ -3382,13 +3382,28 @@ td.actions {
     margin-left: 0;
   }
 }
-.stage-box-history {
+.stage-box-history,
+.count-history {
   margin: 4px 0 0;
   padding: 0;
   list-style: none;
   font-size: 11px;
   color: var(--muted-foreground);
 }
-.stage-box-history li + li::before {
+.stage-box-history li + li::before,
+.count-history li + li::before {
   content: "→ ";
+}
+/* Stock take: the count's status or review button, then its Recount, right-aligned. */
+.count-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+/* Under the counted figure: the versions read left to right, like the figure above them. */
+td.num .count-history {
+  text-align: right;
+  font-weight: normal;
 }

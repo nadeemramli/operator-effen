@@ -39,7 +39,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { ProductionWorkspace, ProcessPicHistory } from "./production-workspace";
-import { SachetProductionRecords, StageRecords } from "./sachet-records";
+import { SachetProductionRecords, StageRecords, when } from "./sachet-records";
 import { OrderWorkspace, PackerPackageSummary } from "./order-workspace";
 import { AwbIntake } from "./awb-intake";
 import { DriverTrips } from "./driver-trips";
@@ -106,6 +106,8 @@ import {
   isTeamRole,
   adypocideReceipts,
   stockCartons,
+  countVersions,
+  pendingCount,
   type AdypocideReceipt,
   type TeamRole,
   batchUnit,
@@ -126,6 +128,7 @@ import {
   variance,
   type Batch,
   type Carton,
+  type Count,
   type Draft,
   type Event as AuditEvent,
   type Lang,
@@ -1123,6 +1126,44 @@ export function DraftApp() {
         pic(),
       ],
     });
+  // A recount replaces the carton's current count; the earlier figure stays in the history.
+  const recount = (previous: Count) => {
+    const c = state?.cartons.find((x) => x.id === previous.cartonId);
+    if (!c) return;
+    const unit = units(lang, c.unit);
+    show({
+      type: "recount",
+      title: t("Recount stock", "Kira semula stok"),
+      description:
+        c.ref +
+        " · " +
+        t(
+          `Counted ${previous.actual} ${unit} by ${previous.pic} on ${when(previous.at, lang)}. The recount replaces that count and the earlier figure stays in the history. Stock still changes only when a supervisor records an adjustment.`,
+          `Dikira ${previous.actual} ${unit} oleh ${previous.pic} pada ${when(previous.at, lang)}. Kiraan semula menggantikan kiraan itu dan angka terdahulu kekal dalam sejarah. Stok hanya berubah apabila penyelia merekod pelarasan.`,
+        ),
+      hidden: { id: previous.id },
+      fields: [
+        number(
+          "actual",
+          t("Recounted physical count", "Kiraan fizikal semula") +
+            " (" +
+            unit +
+            ")",
+        ),
+        {
+          name: "reason",
+          label: t("Why was it recounted?", "Mengapa dikira semula?"),
+          type: "textarea",
+          hint: t(
+            "For example: wrong figure keyed in, or stock moved after the count.",
+            "Contohnya: angka salah dimasukkan, atau stok bergerak selepas kiraan.",
+          ),
+        },
+        pic(),
+      ],
+      submit: t("Save recount", "Simpan kiraan semula"),
+    });
+  };
   const pack = (o: Order) =>
     show({
       type: "pack",
@@ -1398,9 +1439,12 @@ export function DraftApp() {
   const receipts = state ? adypocideReceipts(state) : [];
   const pendingBoxing = receipts.filter((r) => !r.stockedAt);
   const inventoryCartons = state ? stockCartons(state) : [];
+  // The current count of each carton; a replaced count shows as a version under its recount.
   const stockCounts =
-    state?.counts.filter((count) =>
-      inventoryCartons.some((c) => c.id === count.cartonId),
+    state?.counts.filter(
+      (count) =>
+        !count.supersededBy &&
+        inventoryCartons.some((c) => c.id === count.cartonId),
     ) ?? [];
   const pending = state?.orders.filter((o) => !o.dispatched) ?? [];
   const mismatches =
@@ -2156,15 +2200,33 @@ export function DraftApp() {
                       </td>
                       <td>{units(lang, c.unit)}</td>
                       <td className="actions">
-                        {can("stock.receive") && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => count(c)}
-                          >
-                            {t("Count stock", "Kira stok")}
-                          </Button>
-                        )}
+                        {can("stock.receive") &&
+                          (() => {
+                            const pending = state
+                              ? pendingCount(state, c)
+                              : undefined;
+                            return pending ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => recount(pending)}
+                                title={t(
+                                  `Counted ${pending.actual} against ${pending.book}; awaiting review.`,
+                                  `Dikira ${pending.actual} berbanding ${pending.book}; menunggu semakan.`,
+                                )}
+                              >
+                                {t("Recount", "Kira semula")}
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => count(c)}
+                              >
+                                {t("Count stock", "Kira stok")}
+                              </Button>
+                            );
+                          })()}
                       </td>
                     </tr>
                   ))}
@@ -2175,8 +2237,8 @@ export function DraftApp() {
           <Panel
             title={t("Monthly stock take", "Kiraan stok bulanan")}
             detail={t(
-              "Record a physical count first. Apply a reasoned adjustment separately.",
-              "Rekod kiraan fizikal dahulu. Buat pelarasan dengan sebab secara berasingan.",
+              "Record a physical count first. Apply a reasoned adjustment separately. A wrong figure is recounted, not edited: the earlier count stays in the history.",
+              "Rekod kiraan fizikal dahulu. Buat pelarasan dengan sebab secara berasingan. Angka yang salah dikira semula, bukan disunting: kiraan terdahulu kekal dalam sejarah.",
             )}
           >
             {stockCounts.length ? (
@@ -2204,6 +2266,21 @@ export function DraftApp() {
                           }
                         >
                           {c.actual}
+                          {state && c.supersedes && (
+                            <ul className="count-history">
+                              {countVersions(state, c).map((v, i) => (
+                                <li key={v.id}>
+                                  <span className="mono">{v.actual}</span>{" "}
+                                  {i === 0
+                                    ? t("first count", "kiraan pertama")
+                                    : t("recount", "kiraan semula")}
+                                  {" · "}
+                                  {when(v.at, lang)} · {v.pic}
+                                  {v.reason ? " · " + v.reason : ""}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
                         </td>
                         <td>
                           <PersonBadge
@@ -2213,50 +2290,61 @@ export function DraftApp() {
                           />
                         </td>
                         <td className="actions">
-                          {c.adjusted ? (
-                            <span className="status-pill tone-success">
-                              {t("Adjusted", "Dilaras")}
-                            </span>
-                          ) : c.actual === c.book ? (
-                            <span className="status-pill tone-muted">
-                              {t("Balanced", "Seimbang")}
-                            </span>
-                          ) : !can("stock.adjust") ? (
-                            <span className="status-pill tone-warning">
-                              {t("Difference", "Perbezaan")}
-                            </span>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                show({
-                                  type: "adjust",
-                                  title: t(
-                                    "Adjust carton balance",
-                                    "Laraskan baki karton",
-                                  ),
-                                  description: t(
-                                    "The count remains in history. Record why the book balance should change.",
-                                    "Kiraan kekal dalam sejarah. Rekod sebab baki perlu diubah.",
-                                  ),
-                                  hidden: { id: c.id },
-                                  fields: [
-                                    {
-                                      name: "reason",
-                                      label: t(
-                                        "Adjustment reason",
-                                        "Sebab pelarasan",
-                                      ),
-                                      type: "textarea",
-                                    },
-                                  ],
-                                })
-                              }
-                            >
-                              {t("Review adjustment", "Semak pelarasan")}
-                            </Button>
-                          )}
+                          <div className="count-actions">
+                            {c.adjusted ? (
+                              <span className="status-pill tone-success">
+                                {t("Adjusted", "Dilaras")}
+                              </span>
+                            ) : c.actual === c.book ? (
+                              <span className="status-pill tone-muted">
+                                {t("Balanced", "Seimbang")}
+                              </span>
+                            ) : !can("stock.adjust") ? (
+                              <span className="status-pill tone-warning">
+                                {t("Difference", "Perbezaan")}
+                              </span>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  show({
+                                    type: "adjust",
+                                    title: t(
+                                      "Adjust carton balance",
+                                      "Laraskan baki karton",
+                                    ),
+                                    description: t(
+                                      "The count remains in history. Record why the book balance should change.",
+                                      "Kiraan kekal dalam sejarah. Rekod sebab baki perlu diubah.",
+                                    ),
+                                    hidden: { id: c.id },
+                                    fields: [
+                                      {
+                                        name: "reason",
+                                        label: t(
+                                          "Adjustment reason",
+                                          "Sebab pelarasan",
+                                        ),
+                                        type: "textarea",
+                                      },
+                                    ],
+                                  })
+                                }
+                              >
+                                {t("Review adjustment", "Semak pelarasan")}
+                              </Button>
+                            )}
+                            {can("stock.receive") && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => recount(c)}
+                              >
+                                {t("Recount", "Kira semula")}
+                              </Button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}

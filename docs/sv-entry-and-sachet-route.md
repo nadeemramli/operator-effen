@@ -518,6 +518,29 @@ commit;
   change) applied to `operator-effen` on 2026-10-20 through the Supabase MCP connection,
   before the commit reached `main`; the history row was corrected to the repository version.
 
+## Stock recount rollout (2026-11-11)
+
+- A wrong figure keyed into **Count stock** (SYN0088) could not be recounted: a second count
+  left the wrong count open for review beside the right one. `recount` (capability
+  `stock.receive`, scope `{counts,events}`; migration `20261027090000_operator_stock_recount`)
+  appends a new count with `supersedes`, `reason`, the counting PIC and `recordedBy`, and
+  marks the earlier count `supersededBy`; its figures are never rewritten. `latestCount`,
+  `pendingCount` and `countVersions` in `draft.ts` read the chain. `count` refuses a carton
+  whose current count is awaiting review (the racks list offers **Recount** there), `adjust`
+  refuses a replaced count, and the Monthly stock take shows one row per carton with the
+  versions under the counted figure and a **Recount** action on every current row. Sachet
+  batches keep `recount-ady`.
+- Migration applied to `operator-effen` on 2026-11-11 through the Supabase MCP connection
+  (one new command rule; no function or data change); the history row, first stored under
+  the day's timestamp by the tool, was corrected to the repository version. Rollback:
+  `supabase/rollback/20261027090000_operator_stock_recount.down.sql` first, then the box
+  recount rollback below.
+- Found while applying: the hosted project also holds a migration
+  `20261026090000_operator_catalog_edit` (a `catalog.edit` capability for admin and outbound,
+  and the SKU alias and import-release rules moved to it) that no branch of this repository
+  contains, so `tests/capabilities.test.mjs` does not see it. Reconcile the repository with
+  the hosted rules before the next capability change.
+
 ## Verification
 
 - `pnpm test` — domain, capability-parity and command-scope tests.

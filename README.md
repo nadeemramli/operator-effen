@@ -146,7 +146,12 @@ migration `20261025090000_operator_box_recount.sql`) replaces a batch's total wi
 count (350 counted, 550 on recount: the total is 550): the difference is a recount
 adjustment on the batch's carton, the rack balance follows, and the Shrink machine row lists
 every version of the total with who counted and why. A lower recount cannot go below the
-boxes still on the racks. "Add boxes to the total" remains for a further delivery. Each stage row shows one status
+boxes still on the racks. "Add boxes to the total" remains for a further delivery.
+**Recount** on a bottle or capsule carton (2026-11-11, migration
+`20261027090000_operator_stock_recount.sql`) replaces a wrong "Count stock" figure: the new
+count names the one it replaces and why, the earlier figure stays in the Monthly stock take
+as a version, and stock still moves only through "Review adjustment" on the new count. A
+carton whose count is awaiting review offers "Recount" instead of a second count. Each stage row shows one status
 (Next, Completed, Skipped) and one main button; corrections and PIC history sit under
 "Corrections & history". See
 [role-based entry and the five-stage route](docs/sv-entry-and-sachet-route.md).

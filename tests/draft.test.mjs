@@ -11,7 +11,11 @@ import {
   stepNames,
   adypocideReceipts,
   stockCartons,
+  latestCount,
+  pendingCount,
+  countVersions,
 } from "../apps/web/src/lib/draft.ts";
+import { outOfScopeKeys } from "../apps/web/src/lib/access.ts";
 const run = (s, role, type, input) => applyCommand(s, { role, type, input });
 test("factory → carton → parcel preserves batch linkage and does not deduct twice", () => {
   let s = createDraft();
@@ -392,6 +396,95 @@ test("adjustments require a reason and cannot be applied twice", () => {
   assert.throws(
     () => run(s, "intake", "adjust", { id, reason: "Again" }),
     /already/,
+  );
+});
+// 20261027090000: a wrong count is recounted, not edited; every version stays in the history.
+test("a recount replaces a carton's count and keeps the earlier figure as a version", () => {
+  let s = run(createDraft(), "intake", "count", { cartonId: "c-syn", actual: 88, pic: "Nurul" });
+  const carton = () => s.cartons.find((c) => c.id === "c-syn");
+  const first = s.counts[0];
+  const book = available(s, carton());
+  assert.equal(first.book, book);
+  assert.equal(first.recordedBy.role, "intake");
+  // The carton has a count awaiting review: a second count is refused in favour of a recount.
+  assert.throws(
+    () => run(s, "intake", "count", { cartonId: "c-syn", actual: 208, pic: "Nurul" }),
+    /awaiting review.*Recount it instead/,
+  );
+  assert.equal(pendingCount(s, carton()).id, first.id);
+  // A recount needs a reason, a changed figure and the stock-in capability.
+  assert.throws(
+    () => run(s, "intake", "recount", { id: first.id, actual: 208, pic: "Nurul" }),
+    /reason/,
+  );
+  assert.throws(
+    () => run(s, "intake", "recount", { id: first.id, actual: 88, reason: "Same", pic: "Nurul" }),
+    /already counted at 88/,
+  );
+  assert.throws(
+    () => run(s, "production", "recount", { id: first.id, actual: 208, reason: "x", pic: "Helmi" }),
+    /role/i,
+  );
+  const before = s;
+  s = run(s, "intake", "recount", {
+    id: first.id,
+    actual: 208,
+    reason: "Keyed the wrong figure",
+    pic: "Nurul",
+  });
+  assert.deepEqual(outOfScopeKeys("recount", before, s), []);
+  const second = s.counts[0];
+  assert.equal(second.supersedes, first.id);
+  assert.equal(second.reason, "Keyed the wrong figure");
+  assert.equal(second.book, book);
+  assert.equal(second.actual, 208);
+  assert.equal(second.adjusted, false);
+  const replaced = s.counts.find((k) => k.id === first.id);
+  assert.equal(replaced.supersededBy, second.id);
+  assert.equal(replaced.actual, 88, "the earlier count is never rewritten");
+  assert.equal(available(s, carton()), book, "counting never moves stock");
+  assert.equal(latestCount(s, carton()).id, second.id);
+  assert.equal(pendingCount(s, carton()).id, second.id);
+  assert.deepEqual(
+    countVersions(s, second).map((k) => k.actual),
+    [88, 208],
+  );
+  assert.match(s.events[0].detail, /88 → 208 bottle/);
+  // The replaced count is history only: it cannot be adjusted or recounted again.
+  assert.throws(() => run(s, "intake", "adjust", { id: first.id, reason: "x" }), /recounted/);
+  assert.throws(
+    () => run(s, "intake", "recount", { id: first.id, actual: 1, reason: "x", pic: "N" }),
+    /already recounted/,
+  );
+  // Adjusting the recount moves stock by its difference.
+  s = run(s, "intake", "adjust", { id: second.id, reason: "Recount confirmed" });
+  assert.equal(available(s, carton()), 208);
+  assert.equal(pendingCount(s, carton()), undefined);
+  // A third count is a recount of the adjusted one too, so the carton keeps one chain.
+  s = run(s, "intake", "recount", { id: second.id, actual: 207, reason: "One broken", pic: "Nurul" });
+  assert.deepEqual(
+    countVersions(s, s.counts[0]).map((k) => k.actual),
+    [88, 208, 207],
+  );
+  assert.throws(
+    () => run(s, "intake", "recount", { id: second.id, actual: 1, reason: "x", pic: "N" }),
+    /already recounted/,
+  );
+});
+test("a stale count is recounted with the same figure once stock moved after it", () => {
+  let s = run(createDraft(), "intake", "count", { cartonId: "c-gly", actual: 110, pic: "X" });
+  const id = s.counts[0].id;
+  s = run(s, "outbound", "issue", { cartonId: "c-gly", orderId: "o-3", qty: 1, pic: "X" });
+  assert.throws(() => run(s, "intake", "adjust", { id, reason: "Recount" }), /moved.*Recount/);
+  s = run(s, "intake", "recount", { id, actual: 110, reason: "Stock moved after the count", pic: "X" });
+  assert.equal(s.counts[0].book, 117);
+  s = run(s, "intake", "adjust", { id: s.counts[0].id, reason: "Count confirmed" });
+  assert.equal(
+    available(
+      s,
+      s.cartons.find((c) => c.id === "c-gly"),
+    ),
+    110,
   );
 });
 test("packer counts must be explicit and cannot overwrite an existing count", () => {

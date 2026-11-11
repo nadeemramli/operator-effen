@@ -387,7 +387,7 @@ test("stock-in's first warehouse stage record marks the batch as sent once mixin
 });
 
 // 20261025090000: a recount replaces the batch total and keeps the earlier total as a version.
-test("a recount replaces the box total; the history keeps every version", () => {
+test("a recount replaces the box total; the history keeps every version", async () => {
   let s = planned();
   const id = s.batches[0].id;
   for (const stage of ["mixing", "filling"]) s = record(s, "production", id, stage);
@@ -422,7 +422,9 @@ test("a recount replaces the box total; the history keeps every version", () => 
   assert.equal(adj.to, 550);
   assert.equal(adj.recordedBy.userId, "u-intake");
   assert.match(s.events[0].detail, /350 → 550 boxes/);
-  // A further delivery still adds a carton; the history shows every version in order.
+  // A further delivery still adds a carton; the history shows every version in order. The
+  // history is ordered by time, so the delivery must not share the recount's millisecond.
+  await new Promise((resolve) => setTimeout(resolve, 2));
   s = as(s, "intake", "stock-in-ady", { batchId: id, boxes: 20, rack: "B", pic: "Nurul" });
   assert.equal(batchBoxTotal(s, batch()), 570);
   assert.deepEqual(

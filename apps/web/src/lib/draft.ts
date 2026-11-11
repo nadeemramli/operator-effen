@@ -418,6 +418,12 @@ export interface Boxing {
   pic: string;
   at: string;
 }
+/**
+ * A physical count of a stock carton against its book balance at the time. Counting never
+ * moves stock: a supervisor applies the difference with `adjust`. A wrong figure is not
+ * edited but recounted (`recount`): the new count carries `supersedes`, the earlier one gets
+ * `supersededBy`, and the chain stays in the history as the versions of the count.
+ */
 export interface Count {
   id: string;
   cartonId: string;
@@ -426,6 +432,13 @@ export interface Count {
   pic: string;
   at: string;
   adjusted: boolean;
+  /** A recount: the count this one replaces. */
+  supersedes?: string;
+  /** A recount: why the carton was counted again. */
+  reason?: string;
+  /** Set when a recount replaced this count; it is then history only. */
+  supersededBy?: string;
+  recordedBy?: Recorder;
 }
 /**
  * Stock that came back (for example a parcel returned by the courier) and was put back into
@@ -750,6 +763,31 @@ export const adypocideReceipts = (s: Draft): AdypocideReceipt[] => [
       legacySourceId: c.id,
     })),
 ];
+/** The carton's current count: its newest count that no recount has replaced. */
+export const latestCount = (s: Draft, c: Pick<Carton, "id">) =>
+  s.counts.find((k) => k.cartonId === c.id && !k.supersededBy);
+/**
+ * A count still waiting for review: the carton's current count, unadjusted, whose figure
+ * differs from the book balance it was counted against. The racks list offers a recount of
+ * it instead of a second count.
+ */
+export const pendingCount = (s: Draft, c: Pick<Carton, "id">) => {
+  const k = latestCount(s, c);
+  return k && !k.adjusted && k.actual !== k.book ? k : undefined;
+};
+/** The versions of a count, oldest first: the first count and every recount up to this one. */
+export const countVersions = (s: Draft, count: Count): Count[] => {
+  const chain = [count];
+  const seen = new Set([count.id]);
+  for (let k = count; k.supersedes; ) {
+    const earlier = s.counts.find((x) => x.id === k.supersedes);
+    if (!earlier || seen.has(earlier.id)) break;
+    seen.add(earlier.id);
+    chain.unshift(earlier);
+    k = earlier;
+  }
+  return chain;
+};
 export const available = (s: Draft, c: Carton) =>
   c.qty -
   s.issues.filter((i) => i.cartonId === c.id).reduce((n, i) => n + i.qty, 0) -
@@ -3161,6 +3199,11 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const c = find(s.cartons, "cartonId");
       if (c.unit === "sachet")
         throw new Error("Finalize the finished box count in sachet stock-in.");
+      const pending = pendingCount(s, c);
+      if (pending)
+        throw new Error(
+          `${c.ref} already has a count awaiting review (${pending.actual} ${c.unit} counted against ${pending.book}). Recount it instead of counting again.`,
+        );
       const count: Count = {
         id: id(),
         cartonId: c.id,
@@ -3169,6 +3212,7 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         pic: str("pic"),
         at,
         adjusted: false,
+        recordedBy: recorder,
       };
       s.counts.unshift(count);
       log(
@@ -3181,6 +3225,55 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
           count.actual +
           " · " +
           count.pic,
+      );
+      break;
+    }
+    case "recount": {
+      // A fresh count of a carton replaces its current count: the wrong figure is never
+      // edited, the new count carries the reason and the earlier one stays in the history as
+      // a version. Stock still moves only when a supervisor adjusts the new count.
+      allow("intake");
+      const previous = find(s.counts);
+      const c = s.cartons.find((x) => x.id === previous.cartonId);
+      if (!c)
+        throw new Error("This record could not be found. Refresh and try again.");
+      if (c.unit === "sachet")
+        throw new Error("Recount a sachet batch's total boxes in sachet stock-in.");
+      if (previous.supersededBy)
+        throw new Error(
+          `This count of ${c.ref} was already recounted. Recount the latest count instead.`,
+        );
+      const latest = latestCount(s, c);
+      if (latest && latest.id !== previous.id)
+        throw new Error(
+          `${c.ref} has a newer count (${latest.actual} ${c.unit}). Recount that one instead.`,
+        );
+      const actual = num("actual"),
+        reason = str("reason"),
+        pic = str("pic"),
+        book = available(s, c);
+      if (actual === previous.actual && book === previous.book)
+        throw new Error(
+          `${c.ref} is already counted at ${actual} ${c.unit} against the same book balance. Enter the recounted figure if it differs.`,
+        );
+      const count: Count = {
+        id: id(),
+        cartonId: c.id,
+        book,
+        actual,
+        pic,
+        at,
+        adjusted: false,
+        supersedes: previous.id,
+        reason,
+        recordedBy: recorder,
+      };
+      previous.supersededBy = count.id;
+      s.counts.unshift(count);
+      log(
+        c.batchId,
+        "Stock recounted",
+        `${c.ref} · counted ${previous.actual} → ${actual} ${c.unit} · book ${book} · ${reason} · ${pic}`,
       );
       break;
     }
@@ -3246,12 +3339,16 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const count = find(s.counts);
       if (count.adjusted)
         throw new Error("This count has already been adjusted.");
+      if (count.supersededBy)
+        throw new Error(
+          "This count was recounted. Review the latest count instead.",
+        );
       const c = s.cartons.find((c) => c.id === count.cartonId)!;
       if (c.unit === "sachet")
         throw new Error("Finalize the finished box count in sachet stock-in.");
       if (available(s, c) !== count.book)
         throw new Error(
-          "Stock moved after this count. Count again before adjustment.",
+          "Stock moved after this count. Recount the carton before adjustment.",
         );
       const reason = str("reason");
       s.adjustments.unshift({

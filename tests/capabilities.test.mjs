@@ -33,6 +33,7 @@ const later = [
   "20261022090000_operator_optional_stages",
   "20261023090000_operator_stock_in_sends",
   "20261025090000_operator_box_recount",
+  "20261027090000_operator_stock_recount",
 ].map(migration);
 const merged = (table) =>
   section(table) +
@@ -136,6 +137,7 @@ test("every operational command stays inside its database scope", () => {
   run("production", "transfer", { id: bottle, qty: 2, pic: "F" });
   run("intake", "receive", { batchId: bottle, qty: 2, rack: "R", pic: "R" });
   run("intake", "count", { cartonId: s.cartons[0].id, actual: 1, pic: "R" });
+  run("intake", "recount", { id: s.counts[0].id, actual: 0, reason: "Keyed the wrong figure", pic: "R" });
   run("intake", "adjust", { id: s.counts[0].id, reason: "Broken bottle" });
   run("intake", "return", { cartonId: s.cartons[0].id, qty: 1, reason: "Courier return", awb: "RT 123", pic: "R" });
   run("admin", "order", { awb: "COV-AWB", product: "cav", channel: "TikTok", package: "P", expected: 1, date: "2026-10-01" });
