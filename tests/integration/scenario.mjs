@@ -311,13 +311,16 @@ await check("A: stock-in records Hologram through the UI person picker (visible 
   await prod.page.reload();
   const card = prod.page.locator("section.batch-card", { hasText: "INT-ADY-001" });
   await card.locator(".warehouse-stage-list").getByText("Sample PIC C").waitFor();
-  assert.equal(await card.getByRole("button", { name: /Send to warehouse/ }).isDisabled(), false);
+  // Stock-in's first warehouse stage marks the batch as sent itself (20261023090000).
+  assert.ok(stored(W.a).batches.find((b) => b.id === batchId).transferredAt);
 });
 
-await check("A: transfer succeeds once mixing and filling have PICs", async () => {
+await check("A: a batch stock-in already sent cannot be transferred a second time", async () => {
+  const sentAt = stored(W.a).batches.find((b) => b.id === batchId).transferredAt;
   const t = await post(prod, "transfer", { id: batchId, pic: "Sample PIC B" });
-  assert.equal(t.status, 200, JSON.stringify(t.body));
-  assert.ok(stored(W.a).batches.find((b) => b.id === batchId).transferredAt);
+  assert.equal(t.status, 400, JSON.stringify(t.body));
+  assert.match(t.body.error, /already been sent to the warehouse/);
+  assert.equal(stored(W.a).batches.find((b) => b.id === batchId).transferredAt, sentAt);
 });
 
 await check("A: response-loss retry applies once; reused ID with different input is rejected", async () => {
