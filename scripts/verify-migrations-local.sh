@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261117090000_operator_usage_detail.down.sql"
+"${psql[@]}" -At -c "select to_regprocedure('public.operator_usage_days(uuid, date)') is null and pg_get_constraintdef(oid) not like '%sign-in%' and not exists (select 1 from public.operator_usage_daily where kind in ('open', 'sign-in')) from pg_constraint where conname = 'operator_usage_daily_kind_check'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261116090000_operator_usage.down.sql"
 "${psql[@]}" -At -c "select to_regclass('public.operator_usage_daily') is null and to_regprocedure('public.operator_usage_report(uuid, date)') is null" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261028090000_operator_stock_add_recount.down.sql"
@@ -144,4 +146,7 @@ done
 echo "feature usage re-applies"
 "${psql[@]}" -f "$root/supabase/migrations/20261116090000_operator_usage.sql"
 "${psql[@]}" -At -c "select has_function_privilege('authenticated', 'public.operator_usage_report(uuid, date)', 'execute') and not has_table_privilege('authenticated', 'public.operator_usage_daily', 'select')" | grep -qx t
+echo "usage per person and day re-applies"
+"${psql[@]}" -f "$root/supabase/migrations/20261117090000_operator_usage_detail.sql"
+"${psql[@]}" -At -c "select has_function_privilege('authenticated', 'public.operator_usage_days(uuid, date)', 'execute') and not has_function_privilege('anon', 'public.operator_usage_days(uuid, date)', 'execute')" | grep -qx t
 echo "ok"

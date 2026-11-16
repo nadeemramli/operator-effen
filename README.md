@@ -403,3 +403,24 @@ statistic, not a performance ranking; corrections and cancellations are rightly 
 Requires migration `20261116090000_operator_usage.sql`. Until it is applied the screens work
 as before and the panel says usage tracking is not set up. The purge script clears the
 counters together with the commit log.
+
+#### Per person and day (17 November 2026)
+
+The panel now shows one role at a time (role tabs with people active). Under each role,
+every person with access is listed, including those with no activity in the period. Opening
+a person shows:
+
+- the features of the role they never used in the period;
+- each active day: first and last activity, sign-ins, which steps of the role's process
+  were done that day, refused saves, and entry forms opened more often than saved;
+- how many days every step was done, and the step the person most often stops before;
+- per entry form: opened, saved and refused.
+
+The process of each role is the ordered step list `workflows` in
+`apps/web/src/lib/usage.ts` (owner-reviewed; change it there). A step counts as done on a
+day when that person saved one of its actions or opened one of its screens. A step done by
+a teammate shows as not done for this person, so the figures say where to ask, not why.
+Sign-ins and opened forms are counted from the day migration
+`20261117090000_operator_usage_detail.sql` is applied; forms inside the order and PDF
+intake screens that do not use the shared entry dialog are not counted as opened. Without
+that migration the panel shows the per-role figures only.

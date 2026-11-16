@@ -3,10 +3,18 @@ import { commitSecret } from "@/lib/access";
 import { openPackerSession, PACKER_COOKIE } from "@/lib/packer-session";
 import { sameOrigin } from "@/lib/request-origin";
 import { resolveAccess, type Membership } from "@/lib/supabase/server";
-import { isUsageView, usagePeriod, usageSince, type UsageRow } from "@/lib/usage";
+import { commandRules } from "@/lib/capabilities";
+import {
+  isUsageView,
+  parseUsageDays,
+  usagePeriod,
+  usageRowsFromDays,
+  usageSince,
+  type UsageRow,
+} from "@/lib/usage";
 import { logUsage } from "@/lib/usage-log";
 
-// Feature usage (20261116090000_operator_usage.sql). POST counts a screen view for the
+// Feature usage (20261116090000_operator_usage.sql). POST counts a screen or form opened by the
 // signed-in member; GET returns the site's usage report to Management and HR. The database
 // decides who may do either; the role is never taken from the request.
 const json = (body: unknown, status = 200) =>
@@ -38,10 +46,11 @@ export async function GET(request: NextRequest) {
   if (!m) return json({ error: "You do not have access to that site." }, 403);
   const days = usagePeriod(params.get("days")),
     since = usageSince(days);
-  const { data, error } = await access.db.rpc("operator_usage_report", {
-    p_workspace: m.workspaceId,
-    p_since: since,
-  });
+  // The per-day detail needs 20261117090000; without it the per-role figures still load.
+  const [{ data, error }, detail] = await Promise.all([
+    access.db.rpc("operator_usage_report", { p_workspace: m.workspaceId, p_since: since }),
+    access.db.rpc("operator_usage_days", { p_workspace: m.workspaceId, p_since: since }),
+  ]);
   if (error)
     return error.code === "42501"
       ? json({ error: "Only Management and HR can read the usage report." }, 403)
@@ -62,7 +71,14 @@ export async function GET(request: NextRequest) {
     activeDays: Number(r.active_days),
     lastAt: r.last_at,
   }));
-  return json({ rows, days, since });
+  if (detail.error) return json({ rows, days, since, detail: null });
+  const perDay = parseUsageDays(detail.data);
+  return json({
+    rows: usageRowsFromDays(perDay, rows.filter((r) => r.kind === "member")),
+    days,
+    since,
+    detail: perDay,
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -70,7 +86,9 @@ export async function POST(request: NextRequest) {
   const access = await resolveAccess();
   if (access.status !== 200) return json({ error: access.error }, access.status);
   const body = await request.json().catch(() => null);
-  if (!isUsageView(body?.view)) return json({ error: "Invalid request." }, 400);
+  // Either a screen that was opened or an entry form that was opened (by its command).
+  const opened = typeof body?.open === "string" && Object.hasOwn(commandRules, body.open) ? body.open : null;
+  if (!opened && !isUsageView(body?.view)) return json({ error: "Invalid request." }, 400);
   // The fictional preview has no site and no roles to report on.
   const m = site(access.memberships, body.workspaceId);
   if (!m) return json({ recorded: false });
@@ -83,6 +101,12 @@ export async function POST(request: NextRequest) {
       })
     : null;
   return json({
-    recorded: await logUsage(access.db, m.workspaceId, "view", body.view, packer?.profileId),
+    recorded: await logUsage(
+      access.db,
+      m.workspaceId,
+      opened ? "open" : "view",
+      opened ?? body.view,
+      packer?.profileId,
+    ),
   });
 }

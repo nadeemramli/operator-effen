@@ -1543,4 +1543,49 @@ do $$ begin
 end $$;
 rollback;
 
+-- 16. Usage per person and day (20261117090000). Sign-ins and opened forms are counted the
+--     same way; the per-day report is one JSON value for Management and HR only.
+begin;
+select pg_temp.as_user(:SV);
+select public.operator_log_usage(:A, 'sign-in', 'sign-in');
+select public.operator_log_usage(:A, 'open', 'transfer');
+select public.operator_log_usage(:A, 'open', 'transfer');
+select pg_temp.expect_invalid(format('select public.operator_log_usage(%s, %L, %L)', :'A', 'sign-in', 'production'), 'a sign-in with another detail');
+select pg_temp.expect_invalid(format('select public.operator_log_usage(%s, %L, %L)', :'A', 'open', 'no-such-command'), 'opening an unknown form');
+select pg_temp.expect_denied(format('select public.operator_usage_days(%s, current_date - 30)', :'A'), 'a supervisor reads the per-day usage');
+commit;
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000011');
+select pg_temp.expect_denied(format('select public.operator_usage_days(%s, current_date - 30)', :'A'), 'a non-member reads the per-day usage');
+rollback;
+begin;
+select pg_temp.as_user(:MG);
+create temp table usage_days on commit drop as
+  select e ->> 0 as day, e ->> 1 as role, e ->> 2 as user_id, e ->> 3 as profile_id, e ->> 4 as kind,
+    e ->> 5 as detail, (e ->> 6)::int as uses, (e ->> 7)::timestamptz as first_at, (e ->> 8)::timestamptz as last_at
+  from jsonb_array_elements(public.operator_usage_days(:A, (now() at time zone 'Asia/Kuala_Lumpur')::date - 30)) e;
+do $$
+declare v_today text := to_char((now() at time zone 'Asia/Kuala_Lumpur')::date, 'YYYY-MM-DD');
+begin
+  if not exists (select 1 from usage_days where kind = 'sign-in' and detail = 'sign-in' and uses = 1
+      and role = 'production' and day = v_today and user_id = '00000000-0000-4000-8000-000000000001') then
+    raise exception 'FAIL: the sign-in is not in the per-day usage'; end if;
+  if not exists (select 1 from usage_days where kind = 'open' and detail = 'transfer' and uses = 2
+      and first_at <= last_at) then
+    raise exception 'FAIL: the opened form is not in the per-day usage'; end if;
+  if not exists (select 1 from usage_days where kind = 'view' and profile_id = 'p-use' and detail = 'packing') then
+    raise exception 'FAIL: the packer profile is not in the per-day usage'; end if;
+  if jsonb_array_length(public.operator_usage_days('10000000-0000-4000-8000-00000000000a', current_date + 2)) <> 0 then
+    raise exception 'FAIL: the start day does not limit the per-day usage'; end if;
+  if exists (select 1 from jsonb_array_elements(
+      public.operator_usage_days('10000000-0000-4000-8000-00000000000b', current_date - 30)) e
+      where e ->> 4 in ('view', 'open', 'sign-in', 'failed')) then
+    raise exception 'FAIL: site A usage shows in site B''s per-day usage'; end if;
+end $$;
+select pg_temp.expect_text(
+  (select coalesce(sum(uses), 0)::text from usage_days
+   where kind = 'command' and user_id = '00000000-0000-4000-8000-000000000001'),
+  :'COMMITS_SV', 'per-day saved actions match the commit log');
+commit;
+
 select 'operator access tests passed' as result;
