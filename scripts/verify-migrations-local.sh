@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261116090000_operator_usage.down.sql"
+"${psql[@]}" -At -c "select to_regclass('public.operator_usage_daily') is null and to_regprocedure('public.operator_usage_report(uuid, date)') is null" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261028090000_operator_stock_add_recount.down.sql"
 "${psql[@]}" -At -c "select string_agg(command || ':' || capability || ':' || array_to_string(state_keys, '+'), ',' order by command) from public.operator_command_rules where command in ('count', 'recount', 'stock-add')" | grep -qx 'count:stock.receive:counts+events,recount:stock.receive:counts+events'
 "${psql[@]}" -f "$root/supabase/rollback/20261027090000_operator_stock_recount.down.sql"
@@ -133,4 +135,13 @@ echo "package SKU mapping rules re-apply"
 echo "nurokids joins the bottle factory"
 "${psql[@]}" -f "$root/supabase/migrations/20261021090000_operator_nurokids.sql"
 "${psql[@]}" -At -c "select operator_private.product_factory('nur') = 'bottle' and operator_private.product_factory('ady') = 'sachet'" | grep -qx t
+echo "stock recount rules re-apply"
+for name in 20261022090000_operator_optional_stages 20261023090000_operator_stock_in_sends \
+  20261024090000_operator_warehouse_count 20261025090000_operator_box_recount \
+  20261027090000_operator_stock_recount 20261028090000_operator_stock_add_recount; do
+  "${psql[@]}" -f "$root/supabase/migrations/$name.sql"
+done
+echo "feature usage re-applies"
+"${psql[@]}" -f "$root/supabase/migrations/20261116090000_operator_usage.sql"
+"${psql[@]}" -At -c "select has_function_privilege('authenticated', 'public.operator_usage_report(uuid, date)', 'execute') and not has_table_privilege('authenticated', 'public.operator_usage_daily', 'select')" | grep -qx t
 echo "ok"

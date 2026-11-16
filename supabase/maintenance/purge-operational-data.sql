@@ -2,7 +2,8 @@
 --
 -- Removed:  workspace records (batches, cartons, orders/AWBs, AWB imports, trips, counts,
 --           receipts, returns, issues, boxing, adjustments, notes, events, closed days,
---           operation records) and the commit log of those records.
+--           operation records), the commit log of those records and the feature-usage
+--           counters.
 -- Kept:     auth users, operator_workspaces rows (site, name, write policy),
 --           operator_memberships, membership audit, staff PINs, role/command rules,
 --           server keys, and the staffProfiles and machines configuration inside state.
@@ -19,6 +20,10 @@ begin;
 
 -- Commit log first: it only describes the state being discarded.
 delete from public.operator_commits;
+
+-- Screen views and refused saves counted since 20261116090000_operator_usage.sql (skip this
+-- line before that). The usage report reads the commit log too, so both start again.
+delete from public.operator_usage_daily;
 
 -- PDF uploads and audit entries kept in their own tables since
 -- 20261015090000_operator_imports_and_events.sql (skip these two lines before that).

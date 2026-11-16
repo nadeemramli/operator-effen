@@ -1432,4 +1432,115 @@ select pg_temp.expect_denied($q$insert into public.operator_orders_archive (work
   values ('10000000-0000-4000-8000-00000000000a', 'forged', 'X', '{}')$q$, 'writing the archive directly');
 rollback;
 
+-- 15. Feature usage (20261116090000). Members log screen views and refused saves through
+--     operator_log_usage only; the role comes from the membership; the table is closed to
+--     direct access; only Management and HR read the report, one site at a time.
+\set MG '''00000000-0000-4000-8000-000000000004'''
+\set HR '''00000000-0000-4000-8000-000000000008'''
+update public.operator_workspaces
+set state = jsonb_set(state, '{staffProfiles}', coalesce(state -> 'staffProfiles', '[]') ||
+  '[{"id": "p-use", "name": "Synthetic usage packer", "role": "packer"}]'::jsonb)
+where site_id = 'site-a';
+select count(*) as "COMMITS_SV" from public.operator_commits
+where workspace_id = :A and user_id = :SV \gset
+begin;
+select pg_temp.as_user(:SV);
+select public.operator_log_usage(:A, 'view', 'production');
+select public.operator_log_usage(:A, 'view', 'production');
+select public.operator_log_usage(:A, 'failed', 'transfer');
+-- A supervisor has no packing.record: a packer profile in the request is dropped.
+select public.operator_log_usage(:A, 'view', 'trace', 'p-use');
+select pg_temp.expect_invalid(format('select public.operator_log_usage(%s, %L, %L)', :'A', 'view', 'payroll'), 'an unknown screen');
+select pg_temp.expect_invalid(format('select public.operator_log_usage(%s, %L, %L)', :'A', 'failed', 'no-such-command'), 'an unknown command');
+select pg_temp.expect_invalid(format('select public.operator_log_usage(%s, %L, %L)', :'A', 'sign-in', 'production'), 'an unknown usage kind');
+select pg_temp.expect_denied(format('select public.operator_log_usage(%s, %L, %L)', :'B', 'view', 'production'), 'logging usage at another site');
+select pg_temp.expect_denied($q$select * from public.operator_usage_daily$q$, 'reading the usage table directly');
+select pg_temp.expect_denied(format($q$insert into public.operator_usage_daily (workspace_id, day, user_id, role, kind, detail)
+  values (%s, current_date, %s, 'management', 'view', 'reports')$q$, :'A', :'SV'), 'writing the usage table directly');
+select pg_temp.expect_denied(format('select * from public.operator_usage_report(%s, current_date - 30)', :'A'), 'a supervisor reads the usage report');
+commit;
+begin;
+select pg_temp.as_user(:PK);
+select public.operator_log_usage(:A, 'view', 'packing', 'p-use');
+-- Not a packer profile of this site: the view is kept without a profile.
+select public.operator_log_usage(:A, 'view', 'packing', 'p-nobody');
+select pg_temp.expect_denied(format('select * from public.operator_usage_report(%s, current_date - 30)', :'A'), 'a packer reads the usage report');
+commit;
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000011');
+select pg_temp.expect_denied(format('select public.operator_log_usage(%s, %L, %L)', :'A', 'view', 'overview'), 'a non-member logs usage');
+select pg_temp.expect_denied(format('select * from public.operator_usage_report(%s, current_date - 30)', :'A'), 'a non-member reads the usage report');
+rollback;
+begin;
+select pg_temp.as_user('00000000-0000-4000-8000-000000000005');
+select pg_temp.expect_denied(format('select public.operator_log_usage(%s, %L, %L)', :'A', 'view', 'overview'), 'a revoked member logs usage');
+rollback;
+do $$ begin
+  if (select string_agg(role || ':' || profile_id || ':' || kind || ':' || detail || ':' || uses, ','
+        order by role, kind, detail, profile_id) from public.operator_usage_daily)
+     is distinct from 'packer::view:packing:1,packer:p-use:view:packing:1,' ||
+       'production::failed:transfer:1,production::view:production:2,production::view:trace:1' then
+    raise exception 'FAIL: unexpected usage rows: %', (select string_agg(role || ':' || profile_id || ':' ||
+      kind || ':' || detail || ':' || uses, ',' order by role, kind, detail, profile_id) from public.operator_usage_daily);
+  end if;
+  if exists (select 1 from public.operator_usage_daily
+      where day <> (now() at time zone 'Asia/Kuala_Lumpur')::date) then
+    raise exception 'FAIL: usage is not keyed by the Malaysia day'; end if;
+end $$;
+begin;
+select pg_temp.as_user(:MG);
+select public.operator_log_usage(:A, 'view', 'reports');
+create temp table usage_seen on commit drop as
+  select * from public.operator_usage_report(:A, (now() at time zone 'Asia/Kuala_Lumpur')::date - 30);
+do $$ begin
+  -- Active members of the site plus the all-sites ones; the revoked member is not listed.
+  if (select count(*) from usage_seen where kind = 'member'
+        and display_name in ('SV A', 'Packer A', 'Mgmt', 'HR', 'Admin')) <> 5
+     or exists (select 1 from usage_seen where kind = 'member' and display_name in ('Revoked', 'SV B'))
+     or exists (select 1 from usage_seen where kind = 'member' group by user_id having count(*) > 1) then
+    raise exception 'FAIL: usage report members: %',
+      (select string_agg(display_name, ',' order by display_name) from usage_seen where kind = 'member'); end if;
+  if not exists (select 1 from usage_seen where kind = 'view' and role = 'production'
+      and display_name = 'SV A' and detail = 'production' and uses = 2 and active_days = 1) then
+    raise exception 'FAIL: the supervisor''s screen views are not reported'; end if;
+  if not exists (select 1 from usage_seen where kind = 'failed' and detail = 'transfer' and uses = 1) then
+    raise exception 'FAIL: the refused save is not reported'; end if;
+  if not exists (select 1 from usage_seen where kind = 'view' and role = 'packer'
+      and profile_id = 'p-use' and detail = 'packing') then
+    raise exception 'FAIL: the packer profile''s view is not reported'; end if;
+  if not exists (select 1 from usage_seen where kind = 'view' and role = 'management'
+      and display_name = 'Mgmt' and detail = 'reports') then
+    raise exception 'FAIL: an all-sites member''s view is not reported at the site'; end if;
+  if not exists (select 1 from usage_seen where kind = 'active' and role = 'packer'
+      and profile_id = 'p-use' and active_days = 1 and last_at is not null)
+     or (select count(*) from usage_seen where kind = 'active' and display_name = 'SV A'
+        and role = 'production' and profile_id = '' and active_days >= 1) <> 1 then
+    raise exception 'FAIL: active days are not reported once per person and role'; end if;
+  if exists (select 1 from usage_seen where kind = 'command' and user_id is null) then
+    raise exception 'FAIL: a saved action has no user'; end if;
+end $$;
+select pg_temp.expect_text(
+  (select coalesce(sum(uses), 0)::text from usage_seen
+   where kind = 'command' and user_id = '00000000-0000-4000-8000-000000000001'),
+  :'COMMITS_SV', 'saved actions in the usage report match the commit log');
+-- Site B has none of site A's activity.
+do $$ begin
+  if exists (select 1 from public.operator_usage_report('10000000-0000-4000-8000-00000000000b', current_date - 30)
+      where kind in ('view', 'failed') or display_name = 'SV A') then
+    raise exception 'FAIL: site A usage shows in site B''s report'; end if;
+end $$;
+commit;
+begin;
+select pg_temp.as_user(:HR);
+do $$ begin
+  if not exists (select 1 from public.operator_usage_report('10000000-0000-4000-8000-00000000000a', current_date - 30)
+      where kind = 'view') then
+    raise exception 'FAIL: HR cannot read the usage report'; end if;
+  -- A start day after today leaves only the member list.
+  if exists (select 1 from public.operator_usage_report('10000000-0000-4000-8000-00000000000a', current_date + 2)
+      where kind <> 'member') then
+    raise exception 'FAIL: the start day does not limit the usage report'; end if;
+end $$;
+rollback;
+
 select 'operator access tests passed' as result;

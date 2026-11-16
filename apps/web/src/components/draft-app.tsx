@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { UsageReport } from "./usage-report";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
@@ -338,6 +339,18 @@ export function DraftApp() {
   const roleName = (id?: string) =>
     roles.find((r) => r.id === id)?.[lang === "ms" ? "ms" : "en"] ?? id;
   const view = resolveView(role, params.get("view"));
+  // Feature usage: count the screen a member opens at their site (and again under a packer's
+  // profile once their PIN unlocks it). A Management "view as" lens is a preview, not use.
+  const usageSite = member && !viewingAs ? actor?.workspaceId : undefined;
+  useEffect(() => {
+    if (!usageSite) return;
+    void fetch("/api/usage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId: usageSite, view }),
+      keepalive: true,
+    }).catch(() => null);
+  }, [usageSite, view, packerProfile]);
   const go = (next: View) => {
     router.push("/?view=" + next);
     setQuery("");
@@ -2923,6 +2936,14 @@ export function DraftApp() {
               </table>
             </div>
           </Panel>
+          {member && actor?.workspaceId && !viewingAs && (
+            <UsageReport
+              lang={lang}
+              workspaceId={actor.workspaceId}
+              staffProfiles={state.staffProfiles ?? []}
+              viewNames={navigation}
+            />
+          )}
           <Panel
             title={t("Management review log", "Log semakan pengurusan")}
             detail={t(

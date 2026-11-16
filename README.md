@@ -378,3 +378,28 @@ visible again and every minute while no form is open. Errors appear next to the 
 caused them, in a high-contrast box, and page-level errors also appear at the bottom of the
 screen.
 
+
+### Feature usage by role (16 November 2026)
+
+**Reports & people → Feature usage by role** (Management and HR) compares what each role is
+meant to use with what was used in the last 7, 30 or 90 days at the site: the screens the
+role can open, and every action its capabilities permit (`apps/web/src/lib/capabilities.ts`).
+Per role it shows people active, screens opened, actions used, refused saves, the unused
+screens and actions, and each person's active days and last activity. It is a usage
+statistic, not a performance ranking; corrections and cancellations are rightly rare.
+
+- Saved actions come from the existing commit log (`operator_commits`); nothing new is
+  recorded for them.
+- Screen views and refused saves are counted in `operator_usage_daily`, one row per site,
+  Malaysia day, user, role, packer profile and screen/command with a counter. No record
+  contents, reasons or free text are kept. Members cannot read or write the table; they
+  count through `operator_log_usage`, which takes the role from the membership.
+- Packers share one sign-in: their screen views count under the profile their PIN unlocked.
+  Their saved counts stay under the shared sign-in here; "Tally by assigned packer" shows who
+  keyed each count.
+- Management's "view as" lens and the fictional preview are not counted.
+- Nothing is sent to a third party (no GA4 or similar).
+
+Requires migration `20261116090000_operator_usage.sql`. Until it is applied the screens work
+as before and the panel says usage tracking is not set up. The purge script clears the
+counters together with the commit log.
