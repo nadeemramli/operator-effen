@@ -3413,32 +3413,87 @@ td.num .count-history {
 }
 
 /* Reports: feature usage by role */
-.usage-roles {
-  display: grid;
+.usage-body {
+  padding: 12px 16px 16px;
+  min-width: 0;
+}
+.usage-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.usage-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+}
+.usage-tabs button.active {
+  background: var(--foreground);
+  color: var(--background);
+  border-color: var(--foreground);
+}
+.usage-tabs small {
+  opacity: 0.7;
+}
+.usage-summary {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
-.usage-role {
+.usage-role h3 {
+  margin: 14px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.usage-people {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.usage-person,
+.usage-features {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
 }
-.usage-role > summary {
+.usage-features {
+  margin-top: 12px;
+}
+.usage-person > summary,
+.usage-features > summary {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   cursor: pointer;
 }
-.usage-role > summary strong {
+.usage-person,
+.usage-features {
+  min-width: 0;
+  font-size: 13px;
+}
+.usage-person > summary strong {
   min-width: 170px;
+  font-size: 14px;
 }
-.usage-role[open] > summary {
-  margin-bottom: 10px;
-}
-.usage-role .table-scroll {
+.usage-person .table-scroll,
+.usage-features .table-scroll {
   margin-top: 10px;
 }
+.usage-person th small {
+  font-weight: 400;
+}
 .usage-gap {
+  margin-top: 8px;
   font-size: 12px;
   color: var(--muted-foreground);
 }
@@ -3446,6 +3501,7 @@ td.num .count-history {
   font-weight: 600;
   background: var(--muted);
 }
-.usage-unused td {
+tr.usage-unused td,
+.usage-person.usage-unused > summary strong {
   color: var(--muted-foreground);
 }

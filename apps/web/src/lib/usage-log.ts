@@ -3,14 +3,14 @@ import type { supabaseServer } from "@/lib/supabase/server";
 type Db = Awaited<ReturnType<typeof supabaseServer>>;
 
 /**
- * Counts one screen view or refused save in the usage log (operator_log_usage). Usage
+ * Counts one sign-in, screen view, opened form or refused save in the usage log (operator_log_usage). Usage
  * tracking never gets in the way of work: every failure is swallowed, including a backend
  * that has not had 20261116090000_operator_usage.sql applied.
  */
 export async function logUsage(
   db: Db,
   workspaceId: string,
-  kind: "view" | "failed",
+  kind: "view" | "failed" | "open" | "sign-in",
   detail: string,
   profileId?: string,
 ): Promise<boolean> {

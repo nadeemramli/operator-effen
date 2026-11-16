@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveAccess, supabaseServer } from "@/lib/supabase/server";
 import { SESSION_ONLY_COOKIE } from "@/lib/supabase/remember";
+import { logUsage } from "@/lib/usage-log";
 
 export async function POST(request: NextRequest) {
   if (!sameOrigin(request))
@@ -49,6 +50,10 @@ export async function POST(request: NextRequest) {
       { status },
     );
   }
+  // Counted for the usage report, once per site the person can open.
+  await Promise.all(
+    access.memberships.map((m) => logUsage(db, m.workspaceId, "sign-in", "sign-in")),
+  );
   const jar = await cookies();
   if (remember) jar.delete(SESSION_ONLY_COOKIE);
   else

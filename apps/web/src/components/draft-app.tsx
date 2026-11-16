@@ -709,6 +709,14 @@ export function DraftApp() {
       return;
     }
     setForm(spec);
+    // Feature usage: a form opened and not saved shows where someone stopped.
+    if (usageSite)
+      void fetch("/api/usage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId: usageSite, open: spec.type }),
+        keepalive: true,
+      }).catch(() => null);
   }
   // The team whose preset names a person field offers: the signed-in supervisor's own.
   const picTeam: TeamRole | undefined = isTeamRole(role) ? role : undefined;
