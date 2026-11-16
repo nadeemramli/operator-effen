@@ -299,7 +299,7 @@ await check("A: stock-in records Hologram through the UI person picker (visible 
   await person.check();
   assert.equal(await person.isChecked(), true);
   assert.equal(await dialog.getByRole("radio", { name: /Sample PIC D/ }).isChecked(), false);
-  await dialog.getByRole("button", { name: /Save record/ }).click();
+  await dialog.getByRole("button", { name: /Save completion/ }).click();
   await dialog.waitFor({ state: "hidden" });
   const holo = stored(W.a).batches.find((b) => b.id === batchId).steps.find((s) => s.sachetStage === "hologram");
   assert.equal(holo.pic, "Sample PIC C");
