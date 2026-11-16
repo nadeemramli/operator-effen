@@ -3411,3 +3411,41 @@ td.num .count-history {
   text-align: right;
   font-weight: normal;
 }
+
+/* Reports: feature usage by role */
+.usage-roles {
+  display: grid;
+  gap: 8px;
+}
+.usage-role {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.usage-role > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.usage-role > summary strong {
+  min-width: 170px;
+}
+.usage-role[open] > summary {
+  margin-bottom: 10px;
+}
+.usage-role .table-scroll {
+  margin-top: 10px;
+}
+.usage-gap {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.usage-group td {
+  font-weight: 600;
+  background: var(--muted);
+}
+.usage-unused td {
+  color: var(--muted-foreground);
+}

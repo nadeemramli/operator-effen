@@ -66,6 +66,7 @@ import {
   touchedImport,
 } from "@/lib/workspace-store";
 import { normalizeAwb, type AwbImport } from "@/lib/awb-import";
+import { logUsage } from "@/lib/usage-log";
 const json = (body: unknown, status = 200) =>
   NextResponse.json(body, {
     status,
@@ -354,7 +355,10 @@ export async function POST(request: NextRequest) {
   if (!membership)
     return json({ error: "You do not have access to that site." }, 403);
   const denied = authorizeMember(type, membership.capabilities);
-  if (denied) return json({ error: denied }, 403);
+  if (denied) {
+    if (commandRules[type]) await logUsage(db, membership.workspaceId, "failed", type);
+    return json({ error: denied }, 403);
+  }
   const secret = commitSecret();
   if (!secret)
     return json(
@@ -409,7 +413,7 @@ export async function POST(request: NextRequest) {
   // Load the latest state, apply, commit with its revision; repeat if someone saved first.
   // The operation-ID replay check is the first step of every attempt.
   let archiveChecked = false;
-  return rebaseLoop(async (): Promise<RebaseStep<NextResponse>> => {
+  const response = await rebaseLoop(async (): Promise<RebaseStep<NextResponse>> => {
     const prior = await db
       .from("operator_commits")
       .select("command,fingerprint,result_revision")
@@ -662,6 +666,11 @@ export async function POST(request: NextRequest) {
       );
     return { done: response };
   }, staleResponse);
+  // A refused save (rule, permission or conflict) is counted for the usage report; the
+  // reason and the entered values are not kept.
+  if ([400, 403, 409].includes(response.status))
+    await logUsage(db, membership.workspaceId, "failed", type, packer?.profileId);
+  return response;
 }
 
 const staleResponse = () =>
