@@ -18,6 +18,40 @@ type Db = Awaited<ReturnType<typeof resolveAccess>>["db"];
 export const RECENT_EVENTS = 300;
 export const RECENT_IMPORTS = 100;
 
+/**
+ * Every row of a list function. The Data API returns at most `max_rows` (1,000) rows per
+ * request and drops the rest without an error, so a day with more AWBs than that used to
+ * load short and under-count. This asks for the total and reads on until it has them all.
+ * `order` must name a unique order when the function does not fix one itself.
+ */
+const PAGE = 1000;
+type Page = { data: unknown; error: { code?: string } | null; count?: number | null };
+type Paged = PromiseLike<Page> & {
+  order(column: string, options?: { nullsFirst?: boolean }): Paged;
+  range(from: number, to: number): Paged;
+};
+export async function allRows<T>(
+  db: Db,
+  fn: string,
+  args: Record<string, unknown>,
+  order: string[] = [],
+): Promise<{ data: T[]; error: { code?: string } | null }> {
+  const rows: T[] = [];
+  for (;;) {
+    let query = (
+      db.rpc as unknown as (f: string, a: unknown, o: { count: "exact" }) => Paged
+    ).call(db, fn, args, { count: "exact" });
+    for (const column of order) query = query.order(column, { nullsFirst: true });
+    const { data, error, count } = await query.range(rows.length, rows.length + PAGE - 1);
+    if (error) return { data: [], error };
+    const page = (data ?? []) as T[];
+    rows.push(...page);
+    // Without a total, an empty page is the only sure end (the row cap may be below PAGE).
+    if (!page.length || (typeof count === "number" && rows.length >= count))
+      return { data: rows, error: null };
+  }
+}
+
 const missingRelation = (code?: string) =>
   code === "42P01" || code === "PGRST205" || code === "PGRST200";
 
@@ -340,18 +374,25 @@ export async function loadOrders(
 ): Promise<LoadedOrders> {
   const versions = new Map<string, number>();
   if (empty(needs)) return { orders: [], versions };
-  const { data, error } = await db.rpc("operator_orders_for", {
-    p_workspace: workspaceId,
-    p_ids: [...new Set(needs.ids)],
-    p_awbs: [...new Set(needs.awbs)],
-    p_dates: [...new Set(needs.dates)],
-    p_imports: [...new Set(needs.imports)],
-  });
+  const { data, error } = await allRows<{ doc: Order; version: number }>(
+    db,
+    "operator_orders_for",
+    {
+      p_workspace: workspaceId,
+      p_ids: [...new Set(needs.ids)],
+      p_awbs: [...new Set(needs.awbs)],
+      p_dates: [...new Set(needs.dates)],
+      p_imports: [...new Set(needs.imports)],
+    },
+  );
   if (error) throw new StoreError();
-  const orders = ((data ?? []) as { doc: Order; version: number }[]).map((r) => {
-    versions.set(r.doc.id, r.version);
-    return r.doc;
-  });
+  const orders: Order[] = [];
+  // An order saved between two pages can come back twice; the first copy stands.
+  for (const r of data)
+    if (!versions.has(r.doc.id)) {
+      versions.set(r.doc.id, r.version);
+      orders.push(r.doc);
+    }
   return { orders, versions };
 }
 
@@ -431,20 +472,32 @@ export async function hydrateIssues(
   const ids = [...new Set(of.ids)],
     dates = [...new Set(of.dates)];
   const [totals, real] = await Promise.all([
-    db.rpc("operator_issue_totals", { p_workspace: workspaceId, p_since: since }),
+    allRows<{ carton_id: string; day: string | null; qty: number }>(
+      db,
+      "operator_issue_totals",
+      { p_workspace: workspaceId, p_since: since },
+      ["carton_id", "day"],
+    ),
     ids.length || dates.length
-      ? db.rpc("operator_issues_for", { p_workspace: workspaceId, p_orders: ids, p_dates: dates })
-      : Promise.resolve({ data: [], error: null }),
+      ? allRows<{ body: Issue }>(db, "operator_issues_for", {
+          p_workspace: workspaceId,
+          p_orders: ids,
+          p_dates: dates,
+        })
+      : Promise.resolve({ data: [] as { body: Issue }[], error: null }),
   ]);
   if (totals.error || real.error) {
     const code = totals.error?.code ?? real.error?.code;
     if (code === "PGRST202" || code === "42883" || missingRelation(code)) return null;
     throw new StoreError();
   }
-  const issues = ((real.data ?? []) as { body: Issue }[]).map((r) => r.body);
+  const seen = new Set<string>();
+  const issues = real.data
+    .map((r) => r.body)
+    .filter((i) => !seen.has(i.id) && !!seen.add(i.id));
   const remaining = new Map<string, number>();
   const key = (carton: string, day: string | null) => carton + "|" + (day ?? "");
-  for (const t of (totals.data ?? []) as { carton_id: string; day: string | null; qty: number }[])
+  for (const t of totals.data)
     remaining.set(key(t.carton_id, t.day), Number(t.qty));
   for (const i of issues) {
     const day = mytDayOf(i.at);
