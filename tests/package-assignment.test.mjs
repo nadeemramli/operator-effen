@@ -167,10 +167,22 @@ test("groups keep brands and parcel sizes separate even when package names match
     ],
   });
   const groups = packageGroups(s.orders);
-  assert.equal(groups.length, 3);
+  assert.equal(groups.length, 4);
   assert.equal(
     groups.reduce((n, g) => n + g.orders.length, 0),
-    22,
+    23,
+  );
+  // The parcel with two brands forms its own mixed group, listed last.
+  const mixed = groups.at(-1);
+  assert.ok(mixed.mixed && groups.slice(0, -1).every((g) => !g.mixed));
+  assert.deepEqual(mixed.products, ["cav", "ady"]);
+  assert.deepEqual(mixed.contents, [
+    { product: "cav", expected: 1 },
+    { product: "ady", expected: 1 },
+  ]);
+  assert.deepEqual(
+    mixed.orders.map((o) => o.id),
+    ["mixed"],
   );
   const assigned = run(s, "sort-count", {
     date,
@@ -235,49 +247,109 @@ test("legacy mixed record splits only with real distinct AWBs and preserves tota
   });
   assert.throws(() => run(s, "split-order", input), /historical record/);
 });
-test("direct legacy commands cannot assign, issue or pack a combined brand parcel", () => {
-  const s = fixture(),
-    o = s.orders[0];
-  o.lines = [
-    { product: "cav", expected: 1, originalExpected: 1, actual: null },
-    { product: "ady", expected: 1, originalExpected: 1, actual: null },
-  ];
-  o.assignedPacker = "Sample Packer A";
+function mixedFixture() {
+  const s = fixture();
+  for (const o of s.orders.slice(0, 2))
+    o.lines = [
+      { product: "cav", expected: 4, originalExpected: 4, actual: null },
+      { product: "syn", expected: 6, originalExpected: 6, actual: null },
+    ];
+  for (const o of s.orders.slice(0, 2)) {
+    o.package = "1 × cave04 (4) · 1 × syn06 (6)";
+    o.expected = 10;
+    o.originalExpected = 10;
+  }
+  return s;
+}
+const mixedInput = (s, a = 1, b = 1) => ({
+  date,
+  group: packageGroups(s.orders).find((g) => g.mixed).key,
+  packers: ["Sample Packer A", "Sample Packer B"],
+  allocation_0: a,
+  allocation_1: b,
+  pic: "Supervisor",
+});
+test("a mixed package group is assigned once every product in it has a current count", () => {
+  let s = mixedFixture();
+  const group = packageGroups(s.orders).find((g) => g.mixed);
+  assert.equal(group.orders.length, 2);
+  assert.equal(group.perParcel, 10);
+  // Cavernosil was counted; Synovil, the other product in the parcel, was not.
   assert.throws(
-    () =>
-      run(s, "assign-orders", {
-        ids: [o.id],
-        packer: "Sample Packer A",
-        pic: "Supervisor",
-      }),
-    /Separate brands/,
+    () => run(s, "assign-package", mixedInput(s)),
+    /supervisor count for Synovil/,
   );
+  s = run(s, "sort-count", {
+    date,
+    product: "syn",
+    counted: 12,
+    pic: "Supervisor",
+  });
+  s = run(s, "assign-package", mixedInput(s));
+  const parcels = s.orders.filter((o) => o.lines);
+  assert.deepEqual(parcels.map((o) => o.assignedPacker).sort(), [
+    "Sample Packer A",
+    "Sample Packer B",
+  ]);
+  // The single-product Cavernosil group is untouched by the mixed assignment.
+  assert.ok(s.orders.filter((o) => !o.lines).every((o) => !o.assignedPacker));
+});
+test("a mixed parcel takes stock per product and records each product's packed count", () => {
+  let s = mixedFixture();
+  for (const [product, counted] of [
+    ["cav", 80],
+    ["syn", 12],
+  ])
+    s = run(s, "sort-count", {
+      date,
+      product,
+      counted,
+      pic: "Supervisor",
+      note: "Mixed parcels added",
+    });
+  s = run(s, "assign-package", mixedInput(s));
+  const o = s.orders.find((x) => x.lines);
+  const cav = s.cartons.find((c) => c.id === "c-cav");
+  s = run(s, "issue-orders", {
+    ids: [o.id],
+    cartonId: cav.id,
+    qty: 4,
+    pic: "Supervisor",
+  });
+  let parcel = s.orders.find((x) => x.id === o.id);
+  assert.equal(orderIssued(s, parcel, "cav"), 4);
+  assert.equal(orderIssued(s, parcel, "syn"), 0);
+  // Only the Cavernosil share of the parcel can be taken from a Cavernosil carton.
   assert.throws(
     () =>
-      run(s, "issue", {
-        orderId: o.id,
-        cartonId: "c-cav",
+      run(s, "issue-orders", {
+        ids: [o.id],
+        cartonId: cav.id,
         qty: 1,
         pic: "Supervisor",
       }),
-    /Separate brands/,
+    /remaining demand/,
   );
-  assert.throws(
-    () =>
-      run(
-        s,
-        "pack",
-        {
-          id: o.id,
-          pic: "Sample Packer A",
-          actual_cav: 1,
-          actual_ady: 1,
-          labelPic: "Sample Packer A",
-        },
-        "outbound",
-      ),
-    /Separate brands/,
+  s = run(s, "pack", {
+    id: o.id,
+    pic: parcel.assignedPacker,
+    actual_cav: 4,
+    actual_syn: 5,
+    labelPic: parcel.assignedPacker,
+  });
+  parcel = s.orders.find((x) => x.id === o.id);
+  assert.deepEqual(
+    parcel.lines.map((l) => [l.product, l.actual]),
+    [
+      ["cav", 4],
+      ["syn", 5],
+    ],
   );
+  assert.equal(parcel.actual, 9);
+  const tally = dailyTally(s, date);
+  assert.equal(tally.find((t) => t.product === "syn").mismatched, 1);
+  assert.equal(tally.find((t) => t.product === "cav").mismatched, 0);
+  assert.match(s.events[0].detail, /Cavernosil: 4 .*Synovil: 5 /);
 });
 test("couriers form separate package groups; assigning the Ninja Van group leaves SPX parcels alone", () => {
   let s = fixture();

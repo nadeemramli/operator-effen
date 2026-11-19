@@ -159,27 +159,54 @@ test("save, release and retry create one parcel and no stock, print or packing s
   conflict.rows[0].lines[0].units = 6;
   assert.equal(rowStatus(conflict.rows[0], conflict, s), "conflict");
 });
-test("mixed brands stay in review until each actual parcel has a separate AWB", () => {
+test("two brands on one label release as one parcel under its one AWB", () => {
   const b = batch([page(ninja() + "\n2x Adipocyde [adipocyde1]")]);
-  b.rows[0].reviewed = true;
-  b.rows[0].reviewNote = "Checked source";
-  assert.match(rowProblems(b.rows[0]).join(), /own parcel/);
+  assert.deepEqual(rowProblems(b.rows[0]), []);
+  assert.equal(rowStatus(b.rows[0], b, createDraft()), "ready");
   let s = run(createDraft(), "import-save", { batch: b });
-  assert.throws(() => run(s, "import-release", { id: b.id }), /Resolve/);
-  b.updatedAt = s.awbImports[0].updatedAt;
-  const original = b.rows[0];
-  b.rows = original.lines.map((line, i) => ({
-    ...original,
-    id: crypto.randomUUID(),
-    awb: `NVMYBRAND00000${i}`,
-    lines: [line],
-  }));
-  s = run(s, "import-save", { batch: b });
   s = run(s, "import-release", { id: b.id });
   const parcels = s.orders.filter((o) => o.importId === b.id);
-  assert.equal(parcels.length, 2);
-  assert.ok(parcels.every((o) => o.lines.length === 1));
-  assert.equal(new Set(parcels.map((o) => o.awb)).size, 2);
+  assert.equal(parcels.length, 1);
+  assert.equal(parcels[0].awb, b.rows[0].awb);
+  assert.deepEqual(
+    parcels[0].lines.map((l) => [l.product, l.expected, l.actual]).sort(),
+    [
+      ["ady", 2, null],
+      ["cav", 4, null],
+    ],
+  );
+  assert.equal(parcels[0].expected, 6);
+  // The same label uploaded again is a duplicate, not a second parcel.
+  const again = batch([page(ninja() + "\n2x Adipocyde [adipocyde1]")]);
+  assert.equal(rowStatus(again.rows[0], again, s), "duplicate");
+});
+test("a Shopee label with a packing list of two brands reads as one parcel; syn06 is the six-bottle Synovil pack", () => {
+  const label = [
+    "SPXMY00000000001B",
+    "Shopee",
+    "Order ID: 260101TESTORDER",
+    "SPXMY00000000001B",
+  ].join("\n");
+  const list = [
+    "Packing List",
+    "Order ID: 260101TESTORDER package 1",
+    "# Parent Name SKU Variation Qty Unit Total",
+    "1 Synovil - syn06 Synovil 4 1 196.00 196.00",
+    "2 Cavernosil cave04 3 Percuma 1 1 196.00 196.00",
+  ].join("\n");
+  const b = batch([page(label), page(list, 2)]);
+  const rows = b.rows.filter((r) => !r.excluded);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].awb, "SPXMY00000000001B");
+  assert.deepEqual(
+    rows[0].lines.map((l) => [l.sku, l.product, l.packages, l.units]).sort(),
+    [
+      ["cave04", "cav", 1, 4],
+      ["syn06", "syn", 1, 6],
+    ],
+  );
+  assert.deepEqual(rowProblems(rows[0]), []);
+  assert.equal(defaultFor("syn06").canonical, defaultFor("syn04").canonical);
 });
 test("historical mixed-brand quantities retain independent variance", () => {
   const o = {

@@ -25,6 +25,7 @@ import {
   orderIssued,
   orderHasActivity,
   orderLines,
+  orderNeed,
   orderReady,
   packerProfiles,
   products,
@@ -35,8 +36,18 @@ import {
   type Draft,
   type Lang,
   type Order,
+  type PackageGroup,
   type Role,
 } from "@/lib/draft";
+
+/** What one parcel of a group holds, per product: "Cavernosil 4 bottles · Synovil 6 bottles". */
+const contentsText = (lang: Lang, group: PackageGroup) =>
+  group.contents
+    .map((c) => {
+      const p = products.find((p) => p.id === c.product);
+      return `${p?.name ?? c.product} ${c.expected} ${p ? units(lang, p.unit) : ""}`.trim();
+    })
+    .join(" · ");
 
 /** A package group's courier lane; groups without a recorded courier say so. */
 const courierName = (lang: Lang, courier: string) =>
@@ -54,6 +65,32 @@ function PackageCourier({
       <b>{courierName(lang, group.courier)}</b>
       {group.channels.length > 0 && <> · {group.channels.join(", ")}</>}
     </small>
+  );
+}
+
+/** A mixed group's units per product, for one parcel or for `parcels` of them. */
+function GroupContents({
+  lang,
+  group,
+  parcels,
+}: {
+  lang: Lang;
+  group: PackageGroup;
+  parcels: number;
+}) {
+  return (
+    <span className="order-line-values">
+      {group.contents.map((c) => {
+        const p = products.find((p) => p.id === c.product);
+        return (
+          <span key={c.product}>
+            {p?.name ?? c.product}{" "}
+            <strong>{c.expected * parcels}</strong>{" "}
+            {p ? units(lang, p.unit) : ""}
+          </span>
+        );
+      })}
+    </span>
   );
 }
 
@@ -137,6 +174,150 @@ export function OrderWorkspace({
     label: t("Reason", "Sebab"),
     type: "textarea",
   };
+  /**
+   * The packers, progress and assignment cells of a package group's row. `lead` names the
+   * group in the assignment form (its product, or that it is mixed); `perParcel` is what
+   * one parcel holds.
+   */
+  const groupCells = (g: PackageGroup, lead: string, perParcel: string) => {
+    const pending = g.orders.filter((o) => !o.dispatched && o.actual === null);
+    const names = [
+      ...new Set(g.orders.map((o) => o.assignedPacker).filter(Boolean)),
+    ] as string[];
+    const unassigned = pending.filter((o) => !o.assignedPacker).length;
+    return (
+      <>
+        <td>
+          <div className="package-assignments">
+            {names.map((name) => (
+              <div
+                className="package-assignment"
+                key={name}
+              >
+                <PersonBadge
+                  name={staffName(name)}
+                  lang={lang}
+                  caption={t("Packer", "Pembungkus")}
+                  compact
+                />
+                <b>
+                  {
+                    g.orders.filter(
+                      (o) => o.assignedPacker === name,
+                    ).length
+                  }
+                </b>
+              </div>
+            ))}
+            {unassigned > 0 && (
+              <small>
+                {unassigned}{" "}
+                {t("unassigned", "belum ditugaskan")}
+              </small>
+            )}
+            {!names.length && !unassigned && "—"}
+          </div>
+        </td>
+        <td>
+          {g.orders.filter((o) => o.actual !== null).length}{" "}
+          / {g.orders.length} {t("recorded", "direkod")}
+        </td>
+        {supervisor && (
+          <td>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={
+                busy || !pending.length || !packers.length
+              }
+              onClick={() =>
+                show({
+                  type: "assign-package",
+                  title: t(
+                    "Assign package to packers",
+                    "Tugaskan pakej kepada pembungkus",
+                  ),
+                  description: `${lead} · ${g.package} · ${t("Courier", "Kurier")}: ${courierName(lang, g.courier)}${g.channels.length ? ` (${g.channels.join(", ")})` : ""} · ${perParcel} ${t("per parcel", "setiap bungkusan")} · ${date}`,
+                  summary: [
+                    {
+                      label: t(
+                        "Remaining parcels",
+                        "Baki bungkusan",
+                      ),
+                      value: String(pending.length),
+                    },
+                    {
+                      label: t(
+                        "Unassigned",
+                        "Belum ditugaskan",
+                      ),
+                      value: String(unassigned),
+                    },
+                  ],
+                  hidden: {
+                    date,
+                    group: g.key,
+                    packers: packers.map((p) => p.value),
+                  },
+                  fields: [
+                    ...packers.map(
+                      (person, i): Field => ({
+                        name: "allocation_" + i,
+                        profile: {
+                          name: person.label,
+                          caption: t(
+                            "Packer",
+                            "Pembungkus",
+                          ),
+                        },
+                        label:
+                          person.label +
+                          " · " +
+                          t("parcels", "bungkusan"),
+                        type: "number",
+                        min: 0,
+                        hint:
+                          i === 0
+                            ? t(
+                                "Enter each packer's share of the remaining parcels. AWBs are assigned automatically; completed parcels stay unchanged.",
+                                "Masukkan bahagian baki bungkusan setiap pembungkus. AWB ditugaskan secara automatik; bungkusan siap kekal.",
+                              )
+                            : undefined,
+                        value: pending.filter(
+                          (o) =>
+                            o.assignedPacker ===
+                            person.value,
+                        ).length,
+                      }),
+                    ),
+                    { ...pic(), compact: true },
+                    {
+                      name: "reason",
+                      type: "textarea",
+                      label: t(
+                        "Reason if changing existing assignments",
+                        "Sebab jika mengubah tugasan sedia ada",
+                      ),
+                      required: false,
+                    },
+                  ],
+                  submit: t(
+                    "Save assignments",
+                    "Simpan tugasan",
+                  ),
+                })
+              }
+            >
+              {t("Assign packers", "Tugaskan pembungkus")}
+            </Button>
+          </td>
+        )}
+      </>
+    );
+  };
+  const mixedGroups = groups.filter(
+    (g) => g.mixed && (!productId || g.products.includes(productId)),
+  );
   return (
     <>
       <div className="order-filters">
@@ -371,12 +552,19 @@ export function OrderWorkspace({
           .filter(
             (p) =>
               (!productId || p.id === productId) &&
-              groups.some((g) => g.product === p.id),
+              groups.some((g) => g.products.includes(p.id)),
           )
           .map((p) => {
             const rows = groups.filter((g) => g.product === p.id);
             const r = tally.find((r) => r.product === p.id)!;
-            const productOrders = rows.flatMap((g) => g.orders);
+            // Parcels that hold this product together with another one under one AWB.
+            const mixedOrders = groups
+              .filter((g) => g.mixed && g.products.includes(p.id))
+              .flatMap((g) => g.orders);
+            const productOrders = [
+              ...rows.flatMap((g) => g.orders),
+              ...mixedOrders,
+            ];
             const issueOrders = productOrders.filter(
               (o) => !o.dispatched && o.actual === null,
             );
@@ -385,8 +573,7 @@ export function OrderWorkspace({
                 n +
                 Math.max(
                   0,
-                  orderLines(o).reduce((n, l) => n + l.expected, 0) -
-                    orderIssued(state, o, p.id),
+                  orderNeed(o, p.id) - orderIssued(state, o, p.id),
                 ),
               0,
             );
@@ -417,7 +604,7 @@ export function OrderWorkspace({
               <Panel
                 key={p.id}
                 title={p.name}
-                detail={`${productOrders.length} ${t("parcels", "bungkusan")} · ${productOrders.reduce((n, o) => n + o.expected, 0)} ${unit} · ${date}`}
+                detail={`${productOrders.length} ${t("parcels", "bungkusan")} · ${productOrders.reduce((n, o) => n + orderNeed(o, p.id), 0)} ${unit} · ${date}`}
               >
                 <ol className="fulfilment-steps">
                   <li className={step(0)}>
@@ -639,161 +826,61 @@ export function OrderWorkspace({
                       </tr>
                     </thead>
                     <tbody>
-                      {rows.map((g) => {
-                        const pending = g.orders.filter(
-                          (o) => !o.dispatched && o.actual === null,
-                        );
-                        const names = [
-                          ...new Set(
-                            g.orders
-                              .map((o) => o.assignedPacker)
-                              .filter(Boolean),
-                          ),
-                        ] as string[];
-                        const unassigned = pending.filter(
-                          (o) => !o.assignedPacker,
-                        ).length;
-                        return (
-                          <tr key={g.key}>
-                            <td>
-                              <strong>{g.package}</strong>
-                              <PackageCourier lang={lang} group={g} />
-                            </td>
-                            <td>
-                              {g.perParcel} {units(lang, p.unit)}
-                            </td>
-                            <td>{g.orders.length}</td>
-                            <td>
-                              <strong>{g.perParcel * g.orders.length}</strong>
-                            </td>
-                            <td>
-                              <div className="package-assignments">
-                                {names.map((name) => (
-                                  <div
-                                    className="package-assignment"
-                                    key={name}
-                                  >
-                                    <PersonBadge
-                                      name={staffName(name)}
-                                      lang={lang}
-                                      caption={t("Packer", "Pembungkus")}
-                                      compact
-                                    />
-                                    <b>
-                                      {
-                                        g.orders.filter(
-                                          (o) => o.assignedPacker === name,
-                                        ).length
-                                      }
-                                    </b>
-                                  </div>
-                                ))}
-                                {unassigned > 0 && (
-                                  <small>
-                                    {unassigned}{" "}
-                                    {t("unassigned", "belum ditugaskan")}
-                                  </small>
-                                )}
-                                {!names.length && !unassigned && "—"}
-                              </div>
-                            </td>
-                            <td>
-                              {g.orders.filter((o) => o.actual !== null).length}{" "}
-                              / {g.orders.length} {t("recorded", "direkod")}
-                            </td>
-                            {supervisor && (
-                              <td>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  disabled={
-                                    busy || !pending.length || !packers.length
-                                  }
-                                  onClick={() =>
-                                    show({
-                                      type: "assign-package",
-                                      title: t(
-                                        "Assign package to packers",
-                                        "Tugaskan pakej kepada pembungkus",
-                                      ),
-                                      description: `${p.name} · ${g.package} · ${t("Courier", "Kurier")}: ${courierName(lang, g.courier)}${g.channels.length ? ` (${g.channels.join(", ")})` : ""} · ${g.perParcel} ${units(lang, p.unit)} ${t("per parcel", "setiap bungkusan")} · ${date}`,
-                                      summary: [
-                                        {
-                                          label: t(
-                                            "Remaining parcels",
-                                            "Baki bungkusan",
-                                          ),
-                                          value: String(pending.length),
-                                        },
-                                        {
-                                          label: t(
-                                            "Unassigned",
-                                            "Belum ditugaskan",
-                                          ),
-                                          value: String(unassigned),
-                                        },
-                                      ],
-                                      hidden: {
-                                        date,
-                                        group: g.key,
-                                        packers: packers.map((p) => p.value),
-                                      },
-                                      fields: [
-                                        ...packers.map(
-                                          (person, i): Field => ({
-                                            name: "allocation_" + i,
-                                            profile: {
-                                              name: person.label,
-                                              caption: t(
-                                                "Packer",
-                                                "Pembungkus",
-                                              ),
-                                            },
-                                            label:
-                                              person.label +
-                                              " · " +
-                                              t("parcels", "bungkusan"),
-                                            type: "number",
-                                            min: 0,
-                                            hint:
-                                              i === 0
-                                                ? t(
-                                                    "Enter each packer's share of the remaining parcels. AWBs are assigned automatically; completed parcels stay unchanged.",
-                                                    "Masukkan bahagian baki bungkusan setiap pembungkus. AWB ditugaskan secara automatik; bungkusan siap kekal.",
-                                                  )
-                                                : undefined,
-                                            value: pending.filter(
-                                              (o) =>
-                                                o.assignedPacker ===
-                                                person.value,
-                                            ).length,
-                                          }),
-                                        ),
-                                        { ...pic(), compact: true },
-                                        {
-                                          name: "reason",
-                                          type: "textarea",
-                                          label: t(
-                                            "Reason if changing existing assignments",
-                                            "Sebab jika mengubah tugasan sedia ada",
-                                          ),
-                                          required: false,
-                                        },
-                                      ],
-                                      submit: t(
-                                        "Save assignments",
-                                        "Simpan tugasan",
-                                      ),
-                                    })
-                                  }
-                                >
-                                  {t("Assign packers", "Tugaskan pembungkus")}
-                                </Button>
-                              </td>
-                            )}
-                          </tr>
-                        );
-                      })}
+                      {rows.map((g) => (
+                        <tr key={g.key}>
+                          <td>
+                            <strong>{g.package}</strong>
+                            <PackageCourier lang={lang} group={g} />
+                          </td>
+                          <td>
+                            {g.perParcel} {units(lang, p.unit)}
+                          </td>
+                          <td>{g.orders.length}</td>
+                          <td>
+                            <strong>{g.perParcel * g.orders.length}</strong>
+                          </td>
+                          {groupCells(
+                            g,
+                            p.name,
+                            `${g.perParcel} ${units(lang, p.unit)}`,
+                          )}
+                        </tr>
+                      ))}
+                      {mixedOrders.length > 0 && (
+                        <tr>
+                          <td>
+                            <strong>
+                              {t("In mixed parcels", "Dalam bungkusan campuran")}
+                            </strong>
+                            <small>
+                              {t(
+                                "Packed with another product under one AWB. Assign them under Mixed parcels below.",
+                                "Dibungkus bersama produk lain di bawah satu AWB. Tugaskan di bahagian Bungkusan campuran di bawah.",
+                              )}
+                            </small>
+                          </td>
+                          <td>—</td>
+                          <td>{mixedOrders.length}</td>
+                          <td>
+                            <strong>
+                              {mixedOrders.reduce(
+                                (n, o) => n + orderNeed(o, p.id),
+                                0,
+                              )}
+                            </strong>
+                          </td>
+                          <td>
+                            {mixedOrders.filter((o) => o.assignedPacker).length}{" "}
+                            / {mixedOrders.length}{" "}
+                            {t("assigned", "ditugaskan")}
+                          </td>
+                          <td>
+                            {mixedOrders.filter((o) => o.actual !== null).length}{" "}
+                            / {mixedOrders.length} {t("recorded", "direkod")}
+                          </td>
+                          {supervisor && <td></td>}
+                        </tr>
+                      )}
                     </tbody>
                     <tfoot>
                       <tr>
@@ -801,7 +888,10 @@ export function OrderWorkspace({
                         <td></td>
                         <td>{productOrders.length}</td>
                         <td>
-                          {productOrders.reduce((n, o) => n + o.expected, 0)}
+                          {productOrders.reduce(
+                            (n, o) => n + orderNeed(o, p.id),
+                            0,
+                          )}
                         </td>
                         <td colSpan={supervisor ? 3 : 2}></td>
                       </tr>
@@ -811,6 +901,60 @@ export function OrderWorkspace({
               </Panel>
             );
           })}
+      {mode !== "tally" && mixedGroups.length > 0 && (
+        <Panel
+          title={t("Mixed parcels", "Bungkusan campuran")}
+          detail={`${mixedGroups.reduce((n, g) => n + g.orders.length, 0)} ${t("parcels", "bungkusan")} · ${t("more than one product in one parcel, under one AWB", "lebih daripada satu produk dalam satu bungkusan, di bawah satu AWB")} · ${date}`}
+        >
+          <div className="inline-note">
+            {t(
+              "Each product is counted and taken from the racks in its own section above. Assign the packers here: one packer packs the whole parcel and records every product in it.",
+              "Setiap produk dikira dan diambil dari rak di bahagiannya sendiri di atas. Tugaskan pembungkus di sini: seorang pembungkus membungkus seluruh bungkusan dan merekod setiap produk di dalamnya.",
+            )}
+          </div>
+          <div className="table-scroll">
+            <table className="package-table">
+              <thead>
+                <tr>
+                  <th>{t("Package", "Pakej")}</th>
+                  <th>{t("Per parcel", "Setiap bungkusan")}</th>
+                  <th>{t("Parcels", "Bungkusan")}</th>
+                  <th>{t("Total", "Jumlah")}</th>
+                  <th>{t("Packers", "Pembungkus")}</th>
+                  <th>{t("Progress", "Kemajuan")}</th>
+                  {supervisor && <th>{t("Assignment", "Tugasan")}</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {mixedGroups.map((g) => (
+                  <tr key={g.key}>
+                    <td>
+                      <strong>{g.package}</strong>
+                      <PackageCourier lang={lang} group={g} />
+                    </td>
+                    <td>
+                      <GroupContents lang={lang} group={g} parcels={1} />
+                    </td>
+                    <td>{g.orders.length}</td>
+                    <td>
+                      <GroupContents
+                        lang={lang}
+                        group={g}
+                        parcels={g.orders.length}
+                      />
+                    </td>
+                    {groupCells(
+                      g,
+                      t("Mixed parcel", "Bungkusan campuran"),
+                      contentsText(lang, g),
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
       {mode !== "tally" && !groups.length && (
         <Empty>
           {t(
@@ -821,10 +965,7 @@ export function OrderWorkspace({
       )}
       <details
         className="parcel-details"
-        open={
-          visible.some((o) => !orderReady(o) || !singleProductOrder(o)) ||
-          mode === "tally"
-        }
+        open={visible.some((o) => !orderReady(o)) || mode === "tally"}
       >
         <summary>
           {t("Parcel records & review", "Rekod bungkusan & semakan")} ·{" "}
@@ -949,62 +1090,7 @@ export function OrderWorkspace({
                     </td>
                     <td>
                       <div className="order-row-actions">
-                        {!singleProductOrder(o) ? (
-                          <>
-                            <span>
-                              {t(
-                                "Separate brand parcels",
-                                "Asingkan bungkusan jenama",
-                              )}
-                            </span>
-                            {(role === "admin" || supervisor) && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() =>
-                                  show({
-                                    type: "split-order",
-                                    title: t(
-                                      "Separate brands into parcels",
-                                      "Asingkan jenama kepada bungkusan",
-                                    ),
-                                    description: t(
-                                      "Enter the actual AWB and package for each brand. Existing stock or packing records must be reconciled separately.",
-                                      "Masukkan AWB sebenar dan pakej untuk setiap jenama. Rekod stok atau pembungkusan sedia ada perlu diselaraskan berasingan.",
-                                    ),
-                                    hidden: { id: o.id },
-                                    fields: [
-                                      ...[
-                                        ...new Set(
-                                          orderLines(o).map((l) => l.product),
-                                        ),
-                                      ].flatMap((id): Field[] => [
-                                        {
-                                          name: "awb_" + id,
-                                          label:
-                                            products.find((p) => p.id === id)!
-                                              .name + " · AWB",
-                                        },
-                                        {
-                                          name: "package_" + id,
-                                          label:
-                                            products.find((p) => p.id === id)!
-                                              .name +
-                                            " · " +
-                                            t("Package", "Pakej"),
-                                        },
-                                      ]),
-                                      pic(),
-                                      reason,
-                                    ],
-                                  })
-                                }
-                              >
-                                {t("Separate parcels", "Asingkan bungkusan")}
-                              </Button>
-                            )}
-                          </>
-                        ) : !orderReady(o) ? (
+                        {!orderReady(o) ? (
                           <>
                             <span>
                               {t("Awaiting review", "Menunggu semakan")}
@@ -1113,6 +1199,54 @@ export function OrderWorkspace({
                         ) : (
                           <Status order={o} lang={lang} />
                         )}{" "}
+                          {(role === "admin" || supervisor) &&
+                        !singleProductOrder(o) &&
+                        !orderHasActivity(state, o) && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() =>
+                                show({
+                                  type: "split-order",
+                                  title: t(
+                                    "Separate brands into parcels",
+                                    "Asingkan jenama kepada bungkusan",
+                                  ),
+                                  description: t(
+                                    "Only when the products really ship as separate parcels with their own AWBs. A parcel that holds several products under one AWB stays as it is. Enter the actual AWB and package for each product.",
+                                    "Hanya jika produk benar-benar dihantar sebagai bungkusan berasingan dengan AWB sendiri. Bungkusan yang mengandungi beberapa produk di bawah satu AWB kekal seperti sedia ada. Masukkan AWB sebenar dan pakej untuk setiap produk.",
+                                  ),
+                                  hidden: { id: o.id },
+                                  fields: [
+                                    ...[
+                                      ...new Set(
+                                        orderLines(o).map((l) => l.product),
+                                      ),
+                                    ].flatMap((id): Field[] => [
+                                      {
+                                        name: "awb_" + id,
+                                        label:
+                                          products.find((p) => p.id === id)!
+                                            .name + " · AWB",
+                                      },
+                                      {
+                                        name: "package_" + id,
+                                        label:
+                                          products.find((p) => p.id === id)!
+                                            .name +
+                                          " · " +
+                                          t("Package", "Pakej"),
+                                      },
+                                    ]),
+                                    pic(),
+                                    reason,
+                                  ],
+                                })
+                              }
+                            >
+                              {t("Separate parcels", "Asingkan bungkusan")}
+                            </Button>
+                          )}
                         {(role === "admin" || supervisor) &&
                           !orderHasActivity(state, o) && (
                             <Button
@@ -1355,6 +1489,58 @@ export function PackerPackageSummary({
             </div>
           </Panel>
         ))}
+      {groups.some((g) => g.mixed) && (
+        <Panel
+          title={t("Mixed parcels", "Bungkusan campuran")}
+          detail={t(
+            "More than one product in one parcel. Record each product when you pack it.",
+            "Lebih daripada satu produk dalam satu bungkusan. Rekod setiap produk semasa membungkus.",
+          )}
+        >
+          <div className="table-scroll">
+            <table className="package-table">
+              <thead>
+                <tr>
+                  <th>{t("Package", "Pakej")}</th>
+                  <th>{t("Per parcel", "Setiap bungkusan")}</th>
+                  <th>{t("Parcels", "Bungkusan")}</th>
+                  <th>{t("Recorded", "Direkod")}</th>
+                  <th>{t("Action", "Tindakan")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups
+                  .filter((g) => g.mixed)
+                  .map((g) => (
+                    <tr key={g.key}>
+                      <td>
+                        {g.package}
+                        <PackageCourier lang={lang} group={g} />
+                      </td>
+                      <td>
+                        <GroupContents lang={lang} group={g} parcels={1} />
+                      </td>
+                      <td>{g.orders.length}</td>
+                      <td>
+                        {g.orders.filter((o) => o.actual !== null).length} /{" "}
+                        {g.orders.length}
+                      </td>
+                      <td>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => onSelect(g.orders.map((o) => o.id))}
+                        >
+                          {t("View parcels", "Lihat bungkusan")}
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
     </>
   );
 }

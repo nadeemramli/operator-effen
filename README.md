@@ -341,11 +341,31 @@ allocates parcel IDs to meet the quantities. Reassignments require a reason;
 completed records stay unchanged. Packers see their product/package totals and
 can open the assigned parcels to enter actual contents.
 
-Each brand is an independent parcel with its actual AWB. New mixed-brand import
-rows stay in review until separated using the actual labels. Existing mixed-brand
-records without stock or packing activity can be explicitly separated in Order
-management with a reason and actual AWBs. Historical activity is preserved and
-requires supervisor reconciliation; it is never silently split or duplicated.
+That paragraph's rule for mixed brands was replaced on 19 November 2026; see Mixed
+parcels below.
+
+### Mixed parcels (19 November 2026)
+
+One AWB may carry more than one product (owner decision 2026-11-19: marketplace buyers
+check out two brands in one order and it ships as one parcel, daily). This replaces the
+25 September rule that each brand is its own parcel.
+
+- **Input orders.** A label whose packing list has two brands is one label row with one
+  line per SKU and releases as one order with a line per product. It no longer blocks
+  the upload.
+- **Order management.** Each product's section still covers everything that product
+  needs that day: its count, rack stock and packed units include its share of the mixed
+  parcels, shown as an "In mixed parcels" row. Mixed parcels are assigned to packers in
+  their own **Mixed parcels** section, grouped by contents, package and courier. A mixed
+  group can be assigned once every product in it has a current supervisor count.
+- **Stock and packing.** Stock is taken per product from that product's cartons. One
+  packer packs the parcel and records the packed count of each product; a difference on
+  one product is never cancelled by another.
+- **Separate parcels** stays in Parcel records for the case where the products really
+  ship as separate parcels with their own AWBs, before any stock or packing activity.
+
+`syn06` (Shopee's SKU for Synovil 4 + 2) is a built-in package SKU: six bottles, the
+same package as `syn04`.
 
 ### Office admin on stock screens (9 October 2026)
 

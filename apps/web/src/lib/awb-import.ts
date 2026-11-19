@@ -67,6 +67,8 @@ export const packageDefaults: PackageDefault[] = [
     ["syn02", 2],
     ["syn03", 3],
     ["syn04", 6],
+    // Shopee prints the 4 + 2 pack as syn06; the same six bottles as syn04.
+    ["syn06", 6],
     ["syn08", 8],
     ["9botol", 9],
     ["syn1nsg", 1],
@@ -79,7 +81,7 @@ export const packageDefaults: PackageDefault[] = [
     sku: String(sku),
     product: "syn",
     units: Number(units),
-    canonical: `SYN-${String(sku).endsWith("sg") || sku === "synovil03" ? "SG" : "MY"}-${sku === "syn01n" || sku === "syn01" || sku === "syn1nsg" ? "PK1N" : sku === "syn2nsg" ? "PK2N" : sku === "syn6nsg" ? "PK6N" : sku === "syn04" ? "PK42" : `PK${units}`}`,
+    canonical: `SYN-${String(sku).endsWith("sg") || sku === "synovil03" ? "SG" : "MY"}-${sku === "syn01n" || sku === "syn01" || sku === "syn1nsg" ? "PK1N" : sku === "syn2nsg" ? "PK2N" : sku === "syn6nsg" ? "PK6N" : sku === "syn04" || sku === "syn06" ? "PK42" : `PK${units}`}`,
   })),
   ...[
     ["adipocyde1", 1],
@@ -833,10 +835,8 @@ export function rowProblems(row: ImportRow): string[] {
   if (!channels.includes(row.channel)) problems.push("Source required");
   if (!couriers.includes(row.courier)) problems.push("Courier required");
   if (!row.lines.length) problems.push("Product details missing");
-  if (new Set(row.lines.map((l) => l.product)).size > 1)
-    problems.push(
-      "Each brand needs its own parcel and actual AWB. Keep one product here and use Add missed label for the other parcel.",
-    );
+  // One parcel may carry several brands under one AWB (a marketplace order with two
+  // products); each brand becomes its own line on the released order.
   if (
     row.lines.some(
       (l) =>

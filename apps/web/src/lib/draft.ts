@@ -911,37 +911,72 @@ export const dailyOrders = (s: Draft, date: string) =>
  */
 export const orderCourier = (o: Pick<Order, "courier">) =>
   (o.courier ?? "").trim();
+/** What one parcel of a packing group holds of one product. */
+export type PackageContent = { product: string; expected: number };
+export type PackageGroup = {
+  key: string;
+  /** The group's product; for a mixed group, its products joined by "+". */
+  product: string;
+  /** The products in each parcel, in product order (one, unless the group is mixed). */
+  products: string[];
+  /** Units of each product in one parcel, in the same order as `products`. */
+  contents: PackageContent[];
+  /** Each parcel holds more than one product under a single AWB. */
+  mixed: boolean;
+  package: string;
+  /** Units per parcel, all products together. */
+  perParcel: number;
+  /** "" when the orders have no recorded courier. */
+  courier: string;
+  /** Sales channels in the group, sorted. */
+  channels: string[];
+  orders: Order[];
+};
+/** Units of one product an order needs (0 when the parcel does not hold it). */
+export const orderNeed = (o: Order, productId: string) =>
+  orderLines(o)
+    .filter((l) => l.product === productId)
+    .reduce((n, l) => n + l.expected, 0);
 /**
  * Packing groups: one per product, package, units per parcel and courier. Couriers stay
  * apart because different teams pack them (for example Ninja Van and Shopee SPX), so each
  * lane can be assigned to its own packers. Orders without a recorded courier form their
- * own group (courier "") rather than being guessed from the sales channel.
+ * own group (courier "") rather than being guessed from the sales channel. A parcel that
+ * holds several products under one AWB joins a mixed group: one per combination of
+ * products, units of each, package and courier, listed after the single-product groups.
  */
-export function packageGroups(orders: Order[]) {
-  const groups = new Map<
-    string,
-    {
-      key: string;
-      product: string;
-      package: string;
-      perParcel: number;
-      /** "" when the orders have no recorded courier. */
-      courier: string;
-      /** Sales channels in the group, sorted. */
-      channels: string[];
-      orders: Order[];
-    }
-  >();
-  for (const o of orders.filter(
-    (o) => orderReady(o) && singleProductOrder(o),
-  )) {
-    const product = orderLines(o)[0].product;
-    const perParcel = orderLines(o).reduce((n, l) => n + l.expected, 0);
+export function packageGroups(orders: Order[]): PackageGroup[] {
+  const groups = new Map<string, PackageGroup>();
+  const rank = (id: string) => {
+    const i = products.findIndex((p) => p.id === id);
+    return i < 0 ? products.length : i;
+  };
+  for (const o of orders.filter(orderReady)) {
+    const totals = new Map<string, number>();
+    for (const l of orderLines(o))
+      totals.set(l.product, (totals.get(l.product) ?? 0) + l.expected);
+    const contents = [...totals]
+      .map(([product, expected]) => ({ product, expected }))
+      .sort(
+        (a, b) =>
+          rank(a.product) - rank(b.product) ||
+          a.product.localeCompare(b.product),
+      );
+    const mixed = contents.length > 1;
+    const product = contents.map((c) => c.product).join("+");
+    const perParcel = contents.reduce((n, c) => n + c.expected, 0);
     const courier = orderCourier(o);
-    const key = JSON.stringify([product, o.package, perParcel, courier]);
+    const key = JSON.stringify(
+      mixed
+        ? [product, o.package, contents.map((c) => c.expected), courier]
+        : [product, o.package, perParcel, courier],
+    );
     const group = groups.get(key) ?? {
       key,
       product,
+      products: contents.map((c) => c.product),
+      contents,
+      mixed,
       package: o.package,
       perParcel,
       courier,
@@ -957,6 +992,7 @@ export function packageGroups(orders: Order[]) {
   }
   return [...groups.values()].sort(
     (a, b) =>
+      Number(a.mixed) - Number(b.mixed) ||
       a.product.localeCompare(b.product) ||
       a.package.localeCompare(b.package) ||
       a.perParcel - b.perParcel ||
@@ -2749,13 +2785,17 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         throw new Error(
           "This package group is no longer available. Refresh the day's packages and try again.",
         );
-      const tally = dailyTally(s, date).find(
-        (t) => t.product === group.product,
-      )!;
-      if (!tally.count || tally.stale)
-        throw new Error(
-          "Record a current supervisor count before assigning packers.",
-        );
+      // A mixed group needs a current count for every product its parcels hold.
+      const tallies = dailyTally(s, date);
+      for (const productId of group.products) {
+        const tally = tallies.find((t) => t.product === productId)!;
+        if (!tally.count || tally.stale)
+          throw new Error(
+            group.mixed
+              ? `Record a current supervisor count for ${product(productId).name} before assigning packers.`
+              : "Record a current supervisor count before assigning packers.",
+          );
+      }
       const orders = group.orders
         .filter((o) => !o.dispatched && o.actual === null)
         .sort((a, b) => a.id.localeCompare(b.id));
@@ -2899,10 +2939,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const pic = str("pic");
       if (cmd.type === "assign-orders" || cmd.type === "issue-orders") {
         for (const o of orders) {
-          if (!singleProductOrder(o))
-            throw new Error(
-              "Separate brands into independent parcels before fulfilment.",
-            );
           for (const line of orderLines(o)) {
             const tally = dailyTally(s, o.date).find(
               (t) => t.product === line.product,
@@ -3013,10 +3049,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
         o = find(s.orders, "orderId"),
         qty = num("qty", 1);
       if (!orderReady(o)) throw new Error("Review this order first.");
-      if (!singleProductOrder(o))
-        throw new Error(
-          "Separate brands into independent parcels before fulfilment.",
-        );
       if (o.dispatched)
         throw new Error("This parcel has already been handed over.");
       if (
@@ -3049,10 +3081,6 @@ export function applyCommand(current: Draft, cmd: Command): Draft {
       const own = cmd.type === "pack-own";
       allow(own ? "packer" : "outbound");
       const o = find(s.orders);
-      if (!singleProductOrder(o))
-        throw new Error(
-          "Separate brands into independent parcels before fulfilment.",
-        );
       if (o.actual !== null)
         throw new Error(
           "Saved parcel quantities require a supervisor correction.",
