@@ -83,6 +83,17 @@ export const packageDefaults: PackageDefault[] = [
     units: Number(units),
     canonical: `SYN-${String(sku).endsWith("sg") || sku === "synovil03" ? "SG" : "MY"}-${sku === "syn01n" || sku === "syn01" || sku === "syn1nsg" ? "PK1N" : sku === "syn2nsg" ? "PK2N" : sku === "syn6nsg" ? "PK6N" : sku === "syn04" || sku === "syn06" ? "PK42" : `PK${units}`}`,
   })),
+  // Luminosyl and Cissupetide (2026-11-23): the label prints the Fullkit bundle SKU itself.
+  ...(["lum", "cis"] as const).flatMap((product) =>
+    (["MY", "SG"] as const).flatMap((market) =>
+      [1, 2, 4].map((units) => ({
+        sku: `${product}-${market.toLowerCase()}-${units}`,
+        product,
+        units,
+        canonical: `${product.toUpperCase()}-${market}-PK${units}`,
+      })),
+    ),
+  ),
   ...[
     ["adipocyde1", 1],
     ["adipocyde2", 2],
@@ -218,6 +229,8 @@ const productLabels: Record<string, string> = {
   lip: "Lipidri",
   syn: "Synovil",
   nur: "Nurokids",
+  lum: "Luminosyl",
+  cis: "Cissupetide",
   ady: "Adypocide",
 };
 const normSku = (sku: string) => sku.trim().toLowerCase();
@@ -443,7 +456,7 @@ function skuTokens(text: string, aliases?: readonly SkuAlias[]) {
     : skuShape;
   return text.match(pattern) ?? [];
 }
-const productIds = ["cav", "gly", "lip", "syn", "nur", "ady"];
+const productIds = ["cav", "gly", "lip", "syn", "nur", "lum", "cis", "ady"];
 // Product names alone never choose a package, so they cannot become a mapped SKU either.
 const productWords = [
   ...productIds,
@@ -452,6 +465,9 @@ const productWords = [
   "lipidri",
   "synovil",
   "nurokids",
+  "luminosyl",
+  "cissupetide",
+  "cissupeptide",
   "adypocide",
   "adipocyde",
 ];

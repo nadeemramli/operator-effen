@@ -16,6 +16,8 @@ for file in "$root"/supabase/migrations/*.sql; do
 done
 "${psql[@]}" -At -f "$root/supabase/tests/operator_access.test.sql"
 echo "rollback rehearsal"
+"${psql[@]}" -f "$root/supabase/rollback/20261123090000_operator_luminosyl_cissupetide.down.sql"
+"${psql[@]}" -At -c "select operator_private.product_factory('lum') is null and operator_private.product_factory('cis') is null and operator_private.product_factory('nur') = 'bottle'" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261116090000_operator_usage.down.sql"
 "${psql[@]}" -At -c "select to_regclass('public.operator_usage_daily') is null and to_regprocedure('public.operator_usage_report(uuid, date)') is null" | grep -qx t
 "${psql[@]}" -f "$root/supabase/rollback/20261028090000_operator_stock_add_recount.down.sql"
@@ -144,4 +146,7 @@ done
 echo "feature usage re-applies"
 "${psql[@]}" -f "$root/supabase/migrations/20261116090000_operator_usage.sql"
 "${psql[@]}" -At -c "select has_function_privilege('authenticated', 'public.operator_usage_report(uuid, date)', 'execute') and not has_table_privilege('authenticated', 'public.operator_usage_daily', 'select')" | grep -qx t
+echo "luminosyl and cissupetide join the bottle factory"
+"${psql[@]}" -f "$root/supabase/migrations/20261123090000_operator_luminosyl_cissupetide.sql"
+"${psql[@]}" -At -c "select operator_private.product_factory('lum') = 'bottle' and operator_private.product_factory('cis') = 'bottle' and operator_private.product_factory('ady') = 'sachet'" | grep -qx t
 echo "ok"

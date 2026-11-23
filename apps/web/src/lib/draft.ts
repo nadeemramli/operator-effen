@@ -76,6 +76,22 @@ export const products = [
     color: "var(--chart-2)",
   },
   {
+    id: "lum",
+    name: "Luminosyl",
+    short: "LUM",
+    unit: "bottle" as Unit,
+    factory: "bottle" as const,
+    color: "var(--chart-4)",
+  },
+  {
+    id: "cis",
+    name: "Cissupetide",
+    short: "CIS",
+    unit: "bottle" as Unit,
+    factory: "bottle" as const,
+    color: "var(--chart-3)",
+  },
+  {
     id: "ady",
     name: "Adypocide",
     short: "ADY",

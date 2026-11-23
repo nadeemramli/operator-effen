@@ -21,7 +21,7 @@ import { commandRules } from "../apps/web/src/lib/capabilities.ts";
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const sql = read("../supabase/migrations/20261007090000_operator_factory_scope.sql");
 // Products added later redefine operator_private.product_factory; the newest wins.
-const factoryMap = read("../supabase/migrations/20261021090000_operator_nurokids.sql");
+const factoryMap = read("../supabase/migrations/20261123090000_operator_luminosyl_cissupetide.sql");
 const route = read("../apps/web/src/app/api/draft/route.ts");
 
 const member = (role) => ({
@@ -195,4 +195,17 @@ test("Nurokids is a bottle product: the bottle supervisor plans it, the sachet o
   assert.equal(isSachet(batch.product), false);
   assert.equal(batch.steps.length, s.batches.find((b) => b.product === "cav").steps.length);
   assert.match(save(s, "sachet", "batch", input).denied ?? "", /sachet factory only/);
+});
+
+test("Luminosyl and Cissupetide are bottle products at the bottle factory", () => {
+  const s = createDraft();
+  for (const [product, code] of [["lum", "LUM-1"], ["cis", "CIS-1"]]) {
+    const input = { product, code, date: "2026-11-23", target: 100 };
+    const planned = save(s, "bottle", "batch", input);
+    assert.ok(planned.state, planned.denied);
+    const batch = planned.state.batches.find((b) => b.code === code);
+    assert.equal(isSachet(batch.product), false);
+    assert.equal(batch.steps.length, s.batches.find((b) => b.product === "cav").steps.length);
+    assert.match(save(s, "sachet", "batch", input).denied ?? "", /sachet factory only/);
+  }
 });

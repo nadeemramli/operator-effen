@@ -483,3 +483,28 @@ test("an SPX Singapore tracking number (SPXSG…) is read like an SPX Malaysia o
   assert.equal(rows[0].lines[0].units, 4);
   assert.deepEqual(rowProblems(rows[0]), []);
 });
+test("Luminosyl and Cissupetide bundle SKUs resolve to their bottles, names and markets", async () => {
+  const { packageCatalog, catalogSections } = await import("../apps/web/src/lib/awb-import.ts");
+  for (const [product, label] of [["lum", "Luminosyl"], ["cis", "Cissupetide"]])
+    for (const market of ["MY", "SG"])
+      for (const units of [1, 2, 4]) {
+        const sku = `${product}-${market.toLowerCase()}-${units}`;
+        const d = defaultFor(sku.toUpperCase());
+        assert.deepEqual([d.product, d.units], [product, units], sku);
+        const entry = packageCatalog([]).find((e) => e.sku === sku);
+        assert.equal(entry.market, market);
+        assert.equal(entry.name, `${label}${market === "SG" ? " SG" : ""} Pakej ${units}`);
+      }
+  const titles = catalogSections(packageCatalog([])).map((x) => x.title);
+  for (const t of ["Luminosyl", "Luminosyl SG", "Cissupetide", "Cissupetide SG"]) assert.ok(titles.includes(t), t);
+  const b = batch([
+    page("Ninja Van\nNVMYTEST000077\nOrder: #TEST-LUM-1\nProducts:\n2x Luminosyl Pakej 4 [LUM-MY-4]\n1x Cissupetide Pakej 2 [CIS-SG-2]"),
+  ]);
+  assert.deepEqual(
+    b.rows[0].lines.map((l) => [l.sku, l.product, l.packages, l.units]).sort(),
+    [
+      ["cis-sg-2", "cis", 1, 2],
+      ["lum-my-4", "lum", 2, 4],
+    ],
+  );
+});
